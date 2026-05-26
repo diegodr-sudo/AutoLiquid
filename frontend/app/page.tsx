@@ -3132,6 +3132,23 @@ export default function HomePage() {
     };
   }, [startupConcluido, apiDisponivel, activeMainTab]);
 
+  // Quando o usuário abre a aba Registro e as datas estão vazias,
+  // re-busca as datas globais do Turso. Garante que mesmo que o startup
+  // tenha falhado (schema ainda criando), as datas apareçam quando disponíveis.
+  useEffect(() => {
+    if (activeMainTab !== "registro" || !apiDisponivel || !startupConcluido) return;
+    if (dates.vencimento || dates.apuracao) return;
+    void fetchDatasGlobais()
+      .then((remote) => {
+        const normalized = normalizeDatesForDisplay(remote);
+        if (normalized.vencimento || normalized.apuracao) {
+          setDates(normalized);
+          lastSavedDatesRef.current = JSON.stringify(normalized);
+        }
+      })
+      .catch(() => {});
+  }, [activeMainTab, apiDisponivel, startupConcluido]);
+
   const handleFileSelect = (file: File | null, source: "drop" | "input" | "clear") => {
     setErro("");
     setSelectedFile(file);

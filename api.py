@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+import sys
+
+# Garante UTF-8 no stdout/stderr no Windows (evita UnicodeEncodeError com → ⚠ etc.)
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import importlib
 import asyncio
 import base64
@@ -14,7 +28,6 @@ import os
 import re
 import shutil
 import socket
-import sys
 import tempfile
 import inspect
 import time
@@ -2219,8 +2232,78 @@ def _executar_uma_etapa(
         raise
 
 
+def _auto_concluir_na_fila(doc_id: str) -> None:
+    """Marca automaticamente o processo como concluído na fila ao terminar todas as etapas."""
+    try:
+        doc = _local_cache_service().obter_documento(doc_id)
+        if not doc:
+            return
+        d = doc.get("dados_extraidos") or {}
+        numero_processo = str(d.get("Processo") or "").strip()
+        sol_pagamento = str(d.get("Solicitação de Pagamento") or "").strip()
+        if not numero_processo and not sol_pagamento:
+            return
+
+        autor = str(os.getenv("AUTO_LIQUID_NOME") or os.getenv("USER") or os.getenv("USERNAME") or "").strip()
+        result = {
+            "concluido": True,
+            "concluidoPor": autor,
+            "concluidoEm": datetime.now().isoformat(timespec="seconds"),
+        }
+
+        if _fonte_dados_habilitada("fila_processos_edicoes", "turso"):
+            turso = _turso_service()
+            if turso.turso_configurado():
+                result = turso.salvar_conclusao_fila(
+                    numero_processo=numero_processo,
+                    sol_pagamento=sol_pagamento,
+                    concluido=True,
+                    autor=autor,
+                )
+        elif _fonte_dados_habilitada("fila_processos_edicoes", "supabase"):
+            result = _postgres_service().salvar_conclusao_fila(
+                numero_processo=numero_processo,
+                sol_pagamento=sol_pagamento,
+                concluido=True,
+            )
+
+        row_key = f"{numero_processo}::{sol_pagamento}"
+        updated_rows: list[dict[str, Any]] = []
+        for row in FILA_PROCESSOS_CACHE.get("rows", []) or []:
+            current_key = f"{str(row.get('Número Processo') or '').strip()}::{str(row.get('Sol. Pagamento') or '').strip()}"
+            if current_key == row_key:
+                next_row = dict(row)
+                next_row["__concluido"] = "1"
+                next_row["__concluido_por"] = str(result.get("concluidoPor") or autor)
+                next_row["__concluido_em"] = str(result.get("concluidoEm") or "")
+                updated_rows.append(next_row)
+            else:
+                updated_rows.append(row)
+
+        if updated_rows:
+            FILA_PROCESSOS_CACHE["rows"] = updated_rows
+            FILA_PROCESSOS_CACHE["columns"] = _colunas_fila(updated_rows)
+            try:
+                _local_cache_service().salvar_fila_processos_snapshot(updated_rows, FILA_PROCESSOS_CACHE.get("updatedAt"))
+            except Exception:
+                pass
+            _sincronizar_fila_turso_async(updated_rows, FILA_PROCESSOS_CACHE.get("updatedAt"))
+
+        _broadcast_fila_event({
+            "type": "conclusao-alterada",
+            "rowKey": row_key,
+            "concluido": True,
+            "concluidoPor": str(result.get("concluidoPor") or autor),
+            "concluidoEm": str(result.get("concluidoEm") or ""),
+        })
+        _log(doc_id, f"✓ Processo {numero_processo or sol_pagamento} marcado como concluído na fila.")
+    except Exception:
+        log.debug("Falha ao marcar processo como concluído na fila.", exc_info=True)
+
+
 def _task_executar_todas(doc_id: str):
     playwright_obj = None
+    concluiu_todas = False
     try:
         playwright_obj, pagina = _comprasnet_base().conectar()
         for etapa_id in range(0, 6):
@@ -2229,6 +2312,7 @@ def _task_executar_todas(doc_id: str):
             if doc.get("cancel_requested"):
                 raise ExecucaoInterrompida("Cancelado pelo usuário.")
             _executar_uma_etapa(doc_id, etapa_id, playwright_obj, pagina)
+        concluiu_todas = True
     except ExecucaoInterrompida:
         _log(doc_id, "Execução interrompida pelo usuário.")
     except Exception as exc:
@@ -2245,6 +2329,8 @@ def _task_executar_todas(doc_id: str):
                 playwright_obj.stop()
             except Exception:
                 pass
+    if concluiu_todas:
+        _auto_concluir_na_fila(doc_id)
 
 
 def _task_executar_etapa(doc_id: str, etapa_id: int):
@@ -4071,11 +4157,13 @@ def _registrar_liquidacao_sincrono(payload: RegistroLiquidacaoPayload) -> dict[s
 def datas_globais_get() -> dict[str, str]:
     if _fonte_dados_habilitada("datas_globais", "turso"):
         turso = _turso_service()
-        if not turso.turso_configurado():
-            raise HTTPException(status_code=503, detail="Turso não configurado.")
-        datas = turso.obter_datas_globais()
-        if datas.get("vencimento") or datas.get("apuracao"):
-            return datas
+        if turso.turso_configurado():
+            try:
+                datas = turso.obter_datas_globais()
+                if datas.get("vencimento") or datas.get("apuracao"):
+                    return datas
+            except Exception:
+                log.debug("Falha ao obter datas globais do Turso; usando fallback local.", exc_info=True)
         locais = obter_datas_salvas()
         return {
             "apuracao": str(locais.get("apuracao", "")),
@@ -4083,7 +4171,11 @@ def datas_globais_get() -> dict[str, str]:
         }
     if not _fonte_dados_habilitada("datas_globais", "supabase"):
         return {"vencimento": "", "apuracao": ""}
-    return _postgres_service().obter_datas_globais()
+    try:
+        return _postgres_service().obter_datas_globais()
+    except Exception:
+        log.debug("Falha ao obter datas globais do Supabase.", exc_info=True)
+        return {"vencimento": "", "apuracao": ""}
 
 
 def _salvar_datas_globais(payload: ProcessDatesPayload, *, exigir_turso: bool = False) -> dict[str, str]:
@@ -5257,6 +5349,22 @@ def simples_batch(body: dict[str, Any]) -> dict[str, Any]:
                     resultado[futures[future]] = None
 
     return {"resultado": resultado}
+
+
+def _warmup_turso_schema() -> None:
+    """
+    Inicializa o schema do Turso em background logo que a API sobe.
+    Evita que a primeira requisição do usuário (ex: login, datas-globais)
+    fique bloqueada pelos ~30-60s de criação das tabelas.
+    """
+    try:
+        from services import turso_service as _turso
+        if _turso.turso_configurado():
+            _turso.garantir_schema_cache(timeout=60)
+    except Exception:
+        log.debug("Warmup do schema Turso falhou (não crítico).", exc_info=True)
+
+Thread(target=_warmup_turso_schema, name="turso-warmup", daemon=True).start()
 
 
 if __name__ == "__main__":

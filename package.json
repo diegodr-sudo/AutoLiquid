@@ -1,6 +1,6 @@
 {
   "name": "autoliquid",
-  "version": "3.0.4",
+  "version": "1.0.1",
   "private": true,
   "scripts": {
     "sync-version": "node scripts/sync_version.mjs",

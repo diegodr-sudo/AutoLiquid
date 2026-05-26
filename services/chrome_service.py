@@ -65,15 +65,18 @@ def chrome_esta_pronto(porta=None, timeout_s: float = 1.5) -> bool:
 
 
 def _spawn_detached(cmd: list[str]) -> None:
-    kwargs = {
+    kwargs: dict = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
-        "close_fds": True,
-        "start_new_session": True,
     }
     if os.name == "nt":
+        # No Windows, start_new_session e creationflags são mutuamente exclusivos.
+        # Usar apenas creationflags com DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP.
         kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+        kwargs["close_fds"] = True
     subprocess.Popen(cmd, **kwargs)
 
 
