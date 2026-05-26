@@ -226,7 +226,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "AutoLiquid ${{ github.ref_name }}"
           releaseBody: "Atualização automática habilitada pelo AutoLiquid. Os assets abaixo ficam como fallback de instalação manual."
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
 
@@ -246,4 +246,17 @@ jobs:
         if: runner.os == 'macOS'
         uses: softprops/action-gh-release@v2
         with:
+          draft: true
+          prerelease: false
           files: ${{ matrix.signed-asset }}
+
+  publish-release:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false --prerelease=false
