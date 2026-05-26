@@ -711,7 +711,7 @@ def registrar_liquidacao(
     dificuldade_valor = None
     if finalizada:
         dificuldade_float = _to_float(dificuldade or 1)
-        dificuldade_valor = max(1.0, min(10.0, round(dificuldade_float * 2) / 2))
+        dificuldade_valor = max(1.0, min(5.0, round(dificuldade_float * 2) / 2))
     if finalizada and not numero_doc:
         raise ValueError("Número do documento obrigatório.")
 

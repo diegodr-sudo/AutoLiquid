@@ -1036,7 +1036,7 @@ function isFilaSnapshotFresh(next: FilaProcessosInfo, current: FilaProcessosInfo
 }
 
 function getDifficultyTone(value: number) {
-  if (value <= 3) {
+  if (value <= 1) {
     return {
       color: "#10b981",
       bg: "bg-emerald-500",
@@ -1045,7 +1045,7 @@ function getDifficultyTone(value: number) {
       label: "Rotineiro",
     };
   }
-  if (value <= 6) {
+  if (value <= 2) {
     return {
       color: "#f59e0b",
       bg: "bg-amber-500",
@@ -1054,7 +1054,7 @@ function getDifficultyTone(value: number) {
       label: "Atenção Média",
     };
   }
-  if (value <= 8) {
+  if (value <= 3) {
     return {
       color: "#f43f5e",
       bg: "bg-rose-500",
@@ -1090,9 +1090,9 @@ function DifficultySlider({
   disabled?: boolean;
 }) {
   const tone = getDifficultyTone(value);
-  const progress = ((value - 1) / 9) * 100;
-  const ticks = Array.from({ length: 10 }, (_, index) => index + 1);
-  const tooltipOffset = value === 1 ? 14 : value === 10 ? -14 : 0;
+  const progress = ((value - 1) / 4) * 100;
+  const ticks = Array.from({ length: 5 }, (_, index) => index + 1);
+  const tooltipOffset = value === 1 ? 14 : value === 5 ? -14 : 0;
 
   const handleChange = (nextValue: number) => {
     onInteract?.();
@@ -1145,14 +1145,14 @@ function DifficultySlider({
         <input
           type="range"
           min={1}
-          max={10}
+          max={5}
           step={1}
           value={value}
           onChange={(event) => handleChange(Number(event.target.value))}
           disabled={disabled}
           className="difficulty-range absolute left-0 right-0 top-6 z-20 h-11 w-full cursor-pointer bg-transparent disabled:cursor-not-allowed disabled:opacity-60"
           aria-label="Dificuldade da liquidação"
-          aria-valuetext={`${formatDifficultyValue(value)} de 10, ${tone.label}`}
+          aria-valuetext={`${formatDifficultyValue(value)} de 5, ${tone.label}`}
         />
       </div>
 
@@ -1298,7 +1298,7 @@ export default function HomePage() {
   const [registroPendente, setRegistroPendente] = useState<RegistroLiquidacaoPendente | null>(null);
   const [registroTipoDocumento, setRegistroTipoDocumento] = useState<RegistroLiquidacaoTipoDocumento>("NP");
   const [registroNumeroDocumento, setRegistroNumeroDocumento] = useState("");
-  const [registroDificuldade, setRegistroDificuldade] = useState(5);
+  const [registroDificuldade, setRegistroDificuldade] = useState(3);
   const [registroDificuldadeInteragida, setRegistroDificuldadeInteragida] = useState(false);
   const [registroSaving, setRegistroSaving] = useState(false);
   const [registroError, setRegistroError] = useState("");
@@ -3359,7 +3359,7 @@ export default function HomePage() {
       }
       setRegistroPendente(null);
       setRegistroNumeroDocumento("");
-      setRegistroDificuldade(5);
+      setRegistroDificuldade(3);
       setRegistroDificuldadeInteragida(false);
       setDashboardRefreshSeq((seq) => seq + 1);
       if (typeof window !== "undefined") {

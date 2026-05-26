@@ -124,7 +124,7 @@ function ConferenciaPageContent() {
   const [pendenciasExpanded, setPendenciasExpanded] = useState(true);
   const [conclusaoOpen, setConclusaoOpen] = useState(false);
   const [conclusaoNumeroNp, setConclusaoNumeroNp] = useState("");
-  const [conclusaoDificuldade, setConclusaoDificuldade] = useState(5);
+  const [conclusaoDificuldade, setConclusaoDificuldade] = useState(3);
   const [conclusaoDificuldadeInteragida, setConclusaoDificuldadeInteragida] = useState(false);
   const [conclusaoSaving, setConclusaoSaving] = useState(false);
   const [conclusaoErro, setConclusaoErro] = useState("");
@@ -1367,13 +1367,13 @@ function ConferenciaPageContent() {
                   Dificuldade
                 </span>
                 <span className="rounded-full border border-glass-border bg-background px-3 py-1 text-sm font-semibold text-foreground">
-                  {conclusaoDificuldade}/10
+                  {conclusaoDificuldade}/5
                 </span>
               </div>
               <input
                 type="range"
                 min={1}
-                max={10}
+                max={5}
                 step={1}
                 value={conclusaoDificuldade}
                 onChange={(event) => {
@@ -1386,7 +1386,7 @@ function ConferenciaPageContent() {
               />
               <div className="mt-1 flex justify-between text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
                 <span>1</span>
-                <span>10</span>
+                <span>5</span>
               </div>
             </div>
           </div>
