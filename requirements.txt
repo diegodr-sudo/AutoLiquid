@@ -1,0 +1,17 @@
+PyQt6>=6.6.0
+PyQt6-Qt6>=6.6.0
+PyQt6-sip>=13.6.0
+playwright>=1.40.0
+pdfplumber>=0.10.0
+requests>=2.31.0
+pandas
+openpyxl>=3.1.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+python-multipart>=0.0.9
+psycopg[binary]>=3.2
+python-dotenv>=1.0.0
+psycopg[binary]>=3.1.0
+nfelib>=2.0.0
+xsdata>=24.0
+cryptography>=42.0

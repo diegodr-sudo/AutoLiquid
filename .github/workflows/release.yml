@@ -1,0 +1,215 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"   # Dispara ao criar uma tag: git tag v1.0.0 && git push --tags
+
+jobs:
+  release:
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-14
+            target: aarch64-apple-darwin
+            args: "--target aarch64-apple-darwin"
+            python-arch: arm64
+            sidecar-bin: api-aarch64-apple-darwin
+            signed-asset: AutoLiquid-macos-arm64.zip
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: "--target x86_64-pc-windows-msvc"
+            python-arch: x64
+            sidecar-bin: api-x86_64-pc-windows-msvc.exe
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Node.js ─────────────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      # ── Rust ────────────────────────────────────────────────────────────────
+      - name: Setup Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      # ── Python ──────────────────────────────────────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Sync app version from tag
+        shell: bash
+        run: |
+          node scripts/sync_version.mjs "$GITHUB_REF_NAME"
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Prepare bundled app config
+        shell: bash
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          ROCKET_CHAT_URL: ${{ secrets.ROCKET_CHAT_URL }}
+          ROCKET_CHAT_USER_ID: ${{ secrets.ROCKET_CHAT_USER_ID }}
+          ROCKET_CHAT_AUTH_TOKEN: ${{ secrets.ROCKET_CHAT_AUTH_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import urllib.error
+          import urllib.request
+
+          config_path = pathlib.Path("configuracoes.json")
+          data = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+
+          turso_url = os.environ.get("TURSO_DATABASE_URL", "").strip()
+          turso_token = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
+          if not turso_url or not turso_token:
+              raise SystemExit("Configure os secrets TURSO_DATABASE_URL e TURSO_AUTH_TOKEN antes de publicar a release.")
+          if not (turso_url.startswith("libsql://") or turso_url.startswith("https://")):
+              raise SystemExit("TURSO_DATABASE_URL deve comecar com libsql:// ou https://.")
+          if not turso_token.startswith("ey"):
+              raise SystemExit("TURSO_AUTH_TOKEN parece invalido. Confira se voce colou o valor do token, nao o nome do secret.")
+
+          pipeline_url = turso_url
+          if pipeline_url.startswith("libsql://"):
+              pipeline_url = "https://" + pipeline_url.removeprefix("libsql://")
+          pipeline_url = pipeline_url.rstrip("/") + "/v2/pipeline"
+          payload = json.dumps({
+              "requests": [
+                  {"type": "execute", "stmt": {"sql": "select 1 as ok"}},
+                  {"type": "execute", "stmt": {"sql": "create table if not exists autoliquid_release_probe (id text primary key, checked_at text)"}},
+                  {"type": "execute", "stmt": {"sql": "insert into autoliquid_release_probe (id, checked_at) values ('release', current_timestamp) on conflict(id) do update set checked_at = excluded.checked_at"}},
+                  {"type": "close"},
+              ]
+          }).encode("utf-8")
+          request = urllib.request.Request(
+              pipeline_url,
+              data=payload,
+              headers={
+                  "Authorization": f"Bearer {turso_token}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  result = json.loads(response.read().decode("utf-8"))
+          except urllib.error.HTTPError as exc:
+              raise SystemExit(f"Turso recusou os secrets da release: HTTP {exc.code}. Confira TURSO_DATABASE_URL e TURSO_AUTH_TOKEN.") from exc
+          except Exception as exc:
+              raise SystemExit(f"Nao foi possivel validar os secrets do Turso: {exc}") from exc
+          first = (result.get("results") or [{}])[0]
+          if first.get("type") != "ok":
+              raise SystemExit("Turso recusou a consulta de validacao. Confira TURSO_DATABASE_URL e TURSO_AUTH_TOKEN.")
+          for item in result.get("results") or []:
+              if item.get("type") == "error":
+                  message = ((item.get("error") or {}).get("message") or "").strip()
+                  raise SystemExit(f"Turso recusou a validacao de escrita. O secret TURSO_AUTH_TOKEN precisa permitir leitura e escrita. Detalhe: {message}")
+
+          data.update({
+              "turso_database_url": turso_url,
+              "turso_auth_token": turso_token,
+              "database_mode": "turso",
+          })
+
+          optional = {
+              "rocket_chat_url": os.environ.get("ROCKET_CHAT_URL", "").strip(),
+              "rocket_chat_user_id": os.environ.get("ROCKET_CHAT_USER_ID", "").strip(),
+              "rocket_chat_auth_token": os.environ.get("ROCKET_CHAT_AUTH_TOKEN", "").strip(),
+          }
+          for key, value in optional.items():
+              if value:
+                  data[key] = value
+
+          config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          print("configuracoes.json preparado para o pacote da release.")
+          PY
+
+      # ── Empacotar backend Python como binário nativo ─────────────────────────
+      - name: Build Python sidecar (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller api.spec
+          mkdir -p src-tauri/binaries
+          cp dist/api src-tauri/binaries/${{ matrix.sidecar-bin }}
+
+      - name: Build Python sidecar (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller api.spec
+          mkdir -p src-tauri/binaries
+          cp dist/api.exe src-tauri/binaries/${{ matrix.sidecar-bin }}
+
+      # ── Frontend ─────────────────────────────────────────────────────────────
+      - name: Install root dependencies (Tauri CLI)
+        run: npm ci --no-audit --prefer-offline
+
+      - name: Install frontend dependencies
+        run: npm ci --no-audit --prefer-offline
+        working-directory: frontend
+
+      # ── Assinatura ad-hoc (macOS) — remove erro "danificado", permite abrir com botão direito ──
+      - name: Ad-hoc sign Python sidecar (macOS)
+        if: runner.os == 'macOS'
+        run: codesign --force --deep --sign - src-tauri/binaries/${{ matrix.sidecar-bin }}
+
+      # ── Build Tauri (gera .dmg e .msi/.exe) ─────────────────────────────────
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "AutoLiquid ${{ github.ref_name }}"
+          releaseBody: "Veja os assets abaixo para baixar o instalador."
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Ad-hoc sign macOS app bundle
+        if: runner.os == 'macOS'
+        run: |
+          APP_PATH=$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -name "*.app" -print -quit)
+          if [ -z "$APP_PATH" ]; then
+            echo "App bundle nao encontrado."
+            exit 1
+          fi
+
+          codesign --force --deep --sign - "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "${{ matrix.signed-asset }}"
+
+      - name: Upload signed macOS app bundle
+        if: runner.os == 'macOS'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.signed-asset }}

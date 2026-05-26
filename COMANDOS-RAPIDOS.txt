@@ -1,0 +1,238 @@
+COMANDOS RAPIDOS DO AUTOLIQUID
+=================================
+
+Este arquivo serve para você copiar e colar os comandos mais usados
+sem precisar lembrar tudo ou fazer commit toda hora só para testar.
+
+
+1. ENTRAR NA PASTA DO PROJETO
+---------------------------------
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0"
+
+
+2. RODAR O PROJETO LOCALMENTE SEM COMMIT
+---------------------------------
+
+2.1. Web + API local
+
+Esse é o principal para testar o sistema sem subir nada:
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && ./iniciar_web.sh
+
+
+2.2. Interface Python antiga
+
+Agora o script já pode ser executado direto:
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && ./iniciar.sh
+
+
+3. INSTALAR DEPENDENCIAS
+---------------------------------
+
+3.1. Python
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && source .venv/bin/activate && python3 -m pip install -r requirements.txt
+
+
+3.2. Frontend
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0/frontend" && npm ci
+
+
+3.3. Dependencias da raiz
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && npm ci
+
+
+4. VALIDACOES ANTES DE SUBIR
+---------------------------------
+
+4.1. Validar Python
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && python3 -m py_compile api.py services/postgres_service.py
+
+
+4.2. Validar TypeScript
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0/frontend" && ./node_modules/.bin/tsc --noEmit
+
+
+4.3. Ver arquivos alterados
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && git status --short
+
+
+5. BUILDAR O APP INTERNAMENTE
+---------------------------------
+
+5.1. Build local completo do app Tauri
+
+Esse comando faz o build do frontend e empacota o app localmente:
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && npm run tauri build
+
+
+5.2. Rodar o app Tauri em modo desenvolvimento
+
+Bom para abrir o app desktop localmente sem release:
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && npm run tauri dev
+
+5.2.1 Limpar o cache dessas buildes sem release: 
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0/src-tauri" && cargo clean
+
+5.3. Build só do frontend
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0/frontend" && npm run build
+
+
+5.4. Onde ficam os arquivos do build
+
+Normalmente os artefatos do Tauri ficam em algo parecido com:
+
+src-tauri/target/release/bundle/
+
+
+6. COMMITS
+---------------------------------
+
+6.1. Commit simples de tudo
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && git add . && git commit -m "Descreva aqui a mudança"
+
+
+6.2. Commit só dos arquivos principais
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && git add api.py frontend src-tauri services requirements.txt package.json package-lock.json && git commit -m "Descreva aqui a mudança"
+
+
+6.3. Se aparecer erro de HEAD.lock
+
+Use apenas se não houver outro git commit aberto:
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && rm .git/HEAD.lock
+
+
+7. SUBIR PARA O GITHUB
+---------------------------------
+
+7.1. Push do main
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && git push origin main
+
+
+7.2. Conferir se o push foi mesmo
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && git log --oneline -3
+
+
+8. CRIAR RELEASE E DISPARAR ACTIONS
+---------------------------------
+
+Seu workflow de release roda por tag.
+
+Exemplo:
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && git tag v1.2.5 && git push origin v1.2.5
+
+
+Ver tags existentes:
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && git tag --sort=-creatordate | head -20
+
+
+9. SUPABASE / DATABASE_URL
+---------------------------------
+
+9.1. Exportar DATABASE_URL no terminal
+
+Troque SUA-SENHA:
+
+export DATABASE_URL="postgresql://postgres.fxffsintfysatyglcmmi:SUA-SENHA@aws-1-us-west-2.pooler.supabase.com:5432/postgres"
+
+
+9.2. Depois abrir o app web com Supabase
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && ./iniciar_web.sh
+
+
+10. DESBLOQUEAR O APP NO MACOS
+---------------------------------
+
+10.1. Em Downloads
+
+find ~/Downloads -maxdepth 2 -name "AutoLiquid.app" -exec xattr -dr com.apple.quarantine "{}" \;
+
+
+10.2. Em Applications
+
+find /Applications -maxdepth 2 -name "AutoLiquid.app" -exec xattr -dr com.apple.quarantine "{}" \; 2>/dev/null
+
+
+11. ALIASES OPCIONAIS PARA O TERMINAL
+---------------------------------
+
+Se quiser encurtar os comandos, adicione isso no ~/.zshrc:
+
+alias autoliquid='cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0"'
+alias autoliquid-web='cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && ./iniciar_web.sh'
+alias autoliquid-python='cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && ./iniciar.sh'
+alias autoliquid-build='cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && npm run tauri build'
+alias autoliquid-dev='cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && npm run tauri dev'
+alias autoliquid-status='cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && git status --short'
+alias autoliquid-push='cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && git push origin main'
+alias desbloquear-autoliquid='find ~/Downloads -maxdepth 2 -name "AutoLiquid.app" -exec xattr -dr com.apple.quarantine "{}" \;'
+
+
+Depois recarregue:
+
+source ~/.zshrc
+
+
+12. FLUXO RECOMENDADO DO DIA A DIA
+---------------------------------
+
+12.1. Testar localmente sem subir nada
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && ./iniciar_web.sh
+
+
+12.2. Abrir app desktop em dev
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && npm run tauri dev
+
+
+12.3. Buildar app localmente
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && npm run tauri build
+
+
+12.4. Quando terminar uma mudança
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && git add . && git commit -m "Sua mensagem" && git push origin main
+
+
+12.5. Quando quiser gerar release
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && git tag v1.2.5 && git push origin v1.2.5
+
+
+13. OBSERVACAO MAIS IMPORTANTE
+---------------------------------
+
+Voce NAO precisa fazer commit para rodar o programa localmente.
+
+Para testar no seu computador:
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && ./iniciar_web.sh
+
+ou
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && npm run tauri dev
+
+
+
+cd "/Users/diegodutraramos/Documents/AutoLiquid/AutoLiquid 1.0" && npm run tauri dev
+

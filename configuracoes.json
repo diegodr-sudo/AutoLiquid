@@ -1,0 +1,11 @@
+{
+  "apuracao": "30/04/2026",
+  "vencimento": "20/05/2026",
+  "chrome_porta": 9222,
+  "navegador": "chrome",
+  "perguntar_limpar_mes": true,
+  "tema_web": "light",
+  "nivel_log": "desenvolvedor",
+  "database_url": "",
+  "nome_usuario": ""
+}

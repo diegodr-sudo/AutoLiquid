@@ -1,0 +1,8 @@
+__pycache__/
+.venv/
+.opencode/
+build/
+dist/
+erros.log
+.DS_Store
+*.pyc
