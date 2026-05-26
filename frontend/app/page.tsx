@@ -2,7 +2,7 @@
 
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowDownToLine, ArrowUp, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, FileUp, Info, Loader2, MessageSquare, Minus, Pencil, Plus, RefreshCw, Settings2, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowDownToLine, ArrowUp, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Chrome, FileUp, Info, Loader2, MessageSquare, Minus, Pencil, Plus, RefreshCw, Settings2, Trash2, X } from "lucide-react";
 import { Header } from "@/components/header";
 import { DateFields } from "@/components/date-fields";
 import { UploadZone } from "@/components/upload-zone";
@@ -51,6 +51,7 @@ import {
   fetchContratosIcLookup,
   deleteFilaAlerta,
   openChromeSession,
+  openSiafiIncognito,
   openSolarProcess,
   registrarLiquidacao,
   saveProcessDates,
@@ -60,6 +61,9 @@ import {
   saveAlertaServicoConfig,
   saveRegrasDatasDeducoes,
   saveQueueServersConfig,
+  checarAtualizacaoTauri,
+  instalarAtualizacaoTauri,
+  isTauriRuntime,
   waitForBackendReady,
   verificarAtualizacao,
   type AlertaServicoConfig,
@@ -1274,6 +1278,7 @@ export default function HomePage() {
   const [apiDisponivel, setApiDisponivel] = useState(true);
   const [chromeStatus, setChromeStatus] = useState<"pronto" | "carregando" | "erro">("carregando");
   const [abrindoChrome, setAbrindoChrome] = useState(false);
+  const [abrindoSiafi, setAbrindoSiafi] = useState(false);
   const [bannerUpdate, setBannerUpdate] = useState<VersaoInfo | null>(null);
   const [browserName, setBrowserName] = useState("Chrome");
   const [nomeUsuario, setNomeUsuario] = useState<string | null>(null); // null = ainda carregando
@@ -2567,6 +2572,20 @@ export default function HomePage() {
       await new Promise(r => setTimeout(r, 3000));
       if (!ativo) return;
       try {
+        if (isTauriRuntime()) {
+          // No Tauri: só checa — não instala automaticamente.
+          // O usuário instala via Configurações → "Verificar e instalar".
+          const info = await checarAtualizacaoTauri();
+          if (ativo && info.temAtualizacao && info.versaoNova) {
+            setBannerUpdate({
+              tem_atualizacao: true,
+              versao_nova: info.versaoNova,
+              versao_atual: info.versaoAtual ?? "",
+              url_download: "",
+            });
+          }
+          return;
+        }
         const info = await verificarAtualizacao();
         if (ativo && info.tem_atualizacao) setBannerUpdate(info);
       } catch {
@@ -3247,7 +3266,26 @@ export default function HomePage() {
     registroNoticeTimerRef.current = setTimeout(() => {
       setRegistroNotice("");
       registroNoticeTimerRef.current = null;
-    }, 2200);
+    }, 2000);
+  };
+
+  const handleAbrirSiafi = async () => {
+    setAbrindoSiafi(true);
+    setErro("");
+    try {
+      const status = await openSiafiIncognito();
+      // Não altera chromeStatus — a janela incógnita do SIAFI é independente
+      // do Chrome CDP usado para automação do Comprasnet.
+      mostrarRegistroNotice(status.mensagem || "SIAFI aberto.");
+    } catch (error) {
+      setErro(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível abrir o SIAFI."
+      );
+    } finally {
+      setAbrindoSiafi(false);
+    }
   };
 
   const temRegistroLiquidacaoPendente = () => {
@@ -3259,6 +3297,9 @@ export default function HomePage() {
       return false;
     }
   };
+
+  const montarTextoEncaminhamento = () =>
+    `Para conformidade, ${registroTipoDocumento} ${registroNumeroDocumento.trim()}.`;
 
   const copiarTextoParaAreaTransferencia = async (texto: string) => {
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
@@ -3273,8 +3314,11 @@ export default function HomePage() {
     textarea.style.left = "-9999px";
     document.body.appendChild(textarea);
     textarea.select();
-    document.execCommand("copy");
+    const copiado = document.execCommand("copy");
     document.body.removeChild(textarea);
+    if (!copiado) {
+      throw new Error("O navegador recusou a cópia automática.");
+    }
   };
 
   const concluirRegistroLiquidacao = async (finalizada: boolean) => {
@@ -3298,14 +3342,14 @@ export default function HomePage() {
       servidorUsername: auth.session?.username || "",
     };
 
+    let encaminhamentoCopiado = false;
     try {
       if (finalizada) {
-        await copiarTextoParaAreaTransferencia(
-          `Para conformidade, ${registroTipoDocumento} ${registroNumeroDocumento.trim()}.`
-        );
+        await copiarTextoParaAreaTransferencia(montarTextoEncaminhamento());
+        encaminhamentoCopiado = true;
       }
     } catch (error) {
-      console.warn("Não foi possível copiar o despacho automaticamente.", error);
+      console.warn("Não foi possível copiar o encaminhamento automaticamente.", error);
     }
 
     try {
@@ -3321,8 +3365,10 @@ export default function HomePage() {
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("autoliquid:liquidacao-registrada", { detail: payload }));
       }
-      if (finalizada) {
-        mostrarRegistroNotice("Despacho copiado!");
+      if (finalizada && encaminhamentoCopiado) {
+        mostrarRegistroNotice("Encaminhamento copiado!");
+      } else if (finalizada) {
+        setRegistroError("Registro salvo, mas não foi possível copiar o encaminhamento automaticamente.");
       }
     } catch (error) {
       setRegistroError(error instanceof Error ? error.message : "Não foi possível registrar a liquidação.");
@@ -4301,6 +4347,34 @@ export default function HomePage() {
             {/* Coluna esquerda: datas + upload (cards separados) */}
             <div className="flex min-w-0 flex-col gap-4">
               <DateFields dates={dates} onDatesChange={setDates} compact />
+
+              <section className="min-w-0 rounded-2xl border border-glass-border bg-background/55 p-4 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.4)]">
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                      Preenchimento no Siafi
+                    </p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      SIAFI Web em aba anônima do Chrome.
+                    </p>
+                  </div>
+                  <GlassButton
+                    variant="secondary"
+                    size="lg"
+                    onClick={() => void handleAbrirSiafi()}
+                    disabled={abrindoSiafi || !apiDisponivel}
+                    className="w-full sm:w-auto"
+                    title="Abrir SIAFI em aba anônima do Chrome"
+                  >
+                    {abrindoSiafi ? (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <Chrome className="h-5 w-5" />
+                    )}
+                    {abrindoSiafi ? "Abrindo..." : "Abrir SIAFI"}
+                  </GlassButton>
+                </div>
+              </section>
 
               <div className="min-w-0 rounded-2xl border border-glass-border bg-background/55 p-4 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.4)]">
                 <UploadZone

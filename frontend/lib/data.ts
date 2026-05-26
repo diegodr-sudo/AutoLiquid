@@ -6,6 +6,9 @@ const EXECUTION_API_TIMEOUT_MS = 5 * 60 * 1000
 const PDF_PROCESS_TIMEOUT_MS = 2 * 60 * 1000
 const DEFAULT_API_STARTUP_TIMEOUT_MS = 60000
 const DEFAULT_API_STARTUP_RETRY_MS = 1000
+export const AUTO_LIQUID_REPO =
+  process.env.NEXT_PUBLIC_AUTO_LIQUID_REPO ?? "diegodr-sudo/AutoLiquid"
+export const AUTO_LIQUID_REPO_URL = `https://github.com/${AUTO_LIQUID_REPO}`
 
 export type ChromeStatus = "pronto" | "carregando" | "erro"
 
@@ -874,6 +877,12 @@ export async function openChromeSession(): Promise<OpenChromeResponse> {
   })
 }
 
+export async function openSiafiIncognito(): Promise<OpenChromeResponse> {
+  return apiFetch<OpenChromeResponse>("/api/siafi/abrir", {
+    method: "POST",
+  })
+}
+
 export async function fetchDatasGlobais(): Promise<ProcessDates> {
   return apiFetch<ProcessDates>("/api/datas-globais", undefined, { timeoutMs: 20000 })
 }
@@ -1387,12 +1396,100 @@ export interface VersaoInfo {
   erro?: string
 }
 
+export interface AtualizacaoTauriInfo {
+  suportado: boolean
+  temAtualizacao: boolean
+  instalada: boolean
+  versaoAtual?: string
+  versaoNova?: string
+  mensagem: string
+}
+
+export function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+}
+
 export async function obterVersao(): Promise<{ versao: string }> {
   return apiFetch<{ versao: string }>("/versao")
 }
 
 export async function verificarAtualizacao(): Promise<VersaoInfo> {
   return apiFetch<VersaoInfo>("/versao/verificar", {}, { timeoutMs: 8000 })
+}
+
+/**
+ * Só verifica se há atualização disponível, sem baixar nem instalar.
+ * Usado no startup para mostrar o banner sem interromper o usuário.
+ */
+export async function checarAtualizacaoTauri(): Promise<AtualizacaoTauriInfo> {
+  if (!isTauriRuntime()) {
+    return { suportado: false, temAtualizacao: false, instalada: false, mensagem: "" }
+  }
+  try {
+    const { check } = await import("@tauri-apps/plugin-updater")
+    const update = await check({ timeout: 30_000 })
+    if (!update) {
+      return { suportado: true, temAtualizacao: false, instalada: false, mensagem: "O aplicativo está atualizado." }
+    }
+    return {
+      suportado: true,
+      temAtualizacao: true,
+      instalada: false,
+      versaoAtual: update.currentVersion,
+      versaoNova: update.version,
+      mensagem: `Nova versão disponível: ${update.version}`,
+    }
+  } catch {
+    return { suportado: true, temAtualizacao: false, instalada: false, mensagem: "" }
+  }
+}
+
+/**
+ * Baixa, instala e relança o app. Usado apenas quando o usuário clica
+ * "Verificar e instalar" nas Configurações.
+ */
+export async function instalarAtualizacaoTauri(): Promise<AtualizacaoTauriInfo> {
+  if (!isTauriRuntime()) {
+    return {
+      suportado: false,
+      temAtualizacao: false,
+      instalada: false,
+      mensagem: "Atualização automática disponível apenas no aplicativo instalado.",
+    }
+  }
+
+  const [{ check }, { relaunch }] = await Promise.all([
+    import("@tauri-apps/plugin-updater"),
+    import("@tauri-apps/plugin-process"),
+  ])
+
+  const update = await check({ timeout: 30_000 })
+  if (!update) {
+    return {
+      suportado: true,
+      temAtualizacao: false,
+      instalada: false,
+      mensagem: "O aplicativo já está na versão mais recente.",
+    }
+  }
+
+  await update.downloadAndInstall()
+
+  try {
+    await relaunch()
+  } catch {
+    // No Windows o instalador pode encerrar o app antes do relaunch completar.
+  }
+
+  // Se chegou aqui, relaunch() falhou silenciosamente — avisa o usuário.
+  return {
+    suportado: true,
+    temAtualizacao: true,
+    instalada: true,
+    versaoAtual: update.currentVersion,
+    versaoNova: update.version,
+    mensagem: `Versão ${update.version} instalada. Feche e reabra o AutoLiquid para aplicar.`,
+  }
 }
 
 
