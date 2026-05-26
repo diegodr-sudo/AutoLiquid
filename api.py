@@ -1763,10 +1763,17 @@ def _montar_pendencias_documento(
                 natureza_vpd = str(dados_extraidos.get("Natureza", "") or "").strip()
                 vpd_tabela = ""
                 try:
-                    import comprasnet.principal_orcamento as _cpo
-                    vpd_tabela = _cpo._buscar_vpd(natureza_vpd, tipo_liquidacao_norm)
+                    from services import turso_service as _ts_vpd
+                    if _ts_vpd.turso_configurado():
+                        vpd_tabela = _ts_vpd._buscar_vpd(natureza_vpd, tipo_liquidacao_norm)
                 except Exception:
                     pass
+                if not vpd_tabela:
+                    try:
+                        from comprasnet.principal_helpers import _buscar_vpd as _ph_buscar_vpd
+                        vpd_tabela = _ph_buscar_vpd(natureza_vpd, tipo_liquidacao_norm)
+                    except Exception:
+                        pass
                 if not vpd_tabela:
                     nat_label = f" para a natureza '{natureza_vpd}'" if natureza_vpd else ""
                     adicionar(
@@ -5391,12 +5398,18 @@ def simples_batch(body: dict[str, Any]) -> dict[str, Any]:
         max_workers = min(5, len(pendentes))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_consultar_um, cnpj): cnpj for cnpj in pendentes}
-            for future in _as_completed(futures, timeout=60):
-                try:
-                    cnpj, optante = future.result(timeout=30)
-                    resultado[cnpj] = optante
-                except Exception:
-                    resultado[futures[future]] = None
+            try:
+                for future in _as_completed(futures, timeout=60):
+                    try:
+                        cnpj, optante = future.result(timeout=30)
+                        resultado[cnpj] = optante
+                    except Exception:
+                        resultado[futures[future]] = None
+            except TimeoutError:
+                # Retorna resultado parcial: CNPJs restantes ficam como None
+                for future, cnpj in futures.items():
+                    if cnpj not in resultado:
+                        resultado[cnpj] = None
 
     return {"resultado": resultado}
 
