@@ -2872,16 +2872,17 @@ def _preencher_deducao_darf_total(
     # tudo de uma vez sem que nenhum clique de "+" resete o que já foi preenchido.
     print(f"    [Pré-expansão] Abrindo recolhedor e pré-doc antes de preencher...")
     rid_expandido: str = ""
-    # Aguarda o botão '+' do recolhedor estar visível (pode demorar após select DDF055)
+    # Aguarda o botão '+' do recolhedor estar visível — DDF055 pode demorar mais
+    # no Windows; usa 25s igual ao DDR001 para máxima compatibilidade.
     try:
-        pagina.locator(f"#novo-recolhedor{did}").wait_for(state="visible", timeout=10000)
+        pagina.locator(f"#novo-recolhedor{did}").wait_for(state="visible", timeout=25000)
     except Exception as ex_wait_rid:
-        print(f"      [Aviso] novo-recolhedor{did} não ficou visível em 10s: {ex_wait_rid}")
-    for _tent_rid in range(2):
+        print(f"      [Aviso] novo-recolhedor{did} nao ficou visivel em 25s: {ex_wait_rid}")
+    for _tent_rid in range(3):
         try:
             rid_ant = _obter_rid(pagina, did)
             pagina.locator(f"#novo-recolhedor{did}").click()
-            rid_expandido = _aguardar_novo_recolhedor(pagina, did, rid_anterior=rid_ant, timeout_ms=12000)
+            rid_expandido = _aguardar_novo_recolhedor(pagina, did, rid_anterior=rid_ant, timeout_ms=20000)
             print(f"      recolhedor aberto: rid={rid_expandido}")
             break
         except Exception as ex_rid:
@@ -2889,18 +2890,17 @@ def _preencher_deducao_darf_total(
             print(f"      recolhedor: rid fallback={rid_expandido} (tentativa {_tent_rid+1}: {ex_rid})")
             if rid_expandido:
                 break
-            if _tent_rid == 0:
-                time.sleep(1.5)  # aguarda AJAX e tenta de novo
+            time.sleep(2.0)  # aguarda AJAX e tenta de novo
 
     pdid_expandido: str = ""
     try:
         pdid_expandido = _abrir_predoc_resiliente(pagina, did, erros)
-        print(f"      pré-doc aberto: pdid={pdid_expandido}")
+        print(f"      pre-doc aberto: pdid={pdid_expandido}")
     except Exception as ex_pdid:
-        print(f"      pré-doc: falhou ao pré-abrir ({ex_pdid})")
+        print(f"      pre-doc: falhou ao pre-abrir ({ex_pdid})")
 
     # Aguarda o AJAX de expansão terminar antes de preencher os campos
-    time.sleep(1.0)
+    time.sleep(1.5)
     _verificar_interrupcao(deve_parar)
 
     # ── Campos principais (formulário de dedução) ─────────────────────────────
@@ -2908,6 +2908,12 @@ def _preencher_deducao_darf_total(
     _fill_money(pagina, f"sfdeducaovlr{did}", valor_item_br, erros, "Valor do Item")
 
     if siafi != "DDF050" and natureza and natureza != "—":
+        # Aguarda o campo Natureza de Rendimento ficar visível antes de preencher.
+        # O AJAX do DDF055 pode demorar mais no Windows; espera até 12s.
+        try:
+            pagina.locator(f"#txtinscrb{did}").wait_for(state="visible", timeout=12000)
+        except Exception:
+            pass
         _fill(pagina, f"txtinscrb{did}", natureza, erros, "Natureza de Rendimento")
 
     _select(pagina, f"sfdeducaopossui_acrescimo{did}", "NÃƒO", erros, "Possui AcrÃ©scimo")

@@ -175,17 +175,17 @@ export function PendenciasPanel({
                 </div>
                 <button
                   type="button"
-                  onClick={() => podeConcluir && onToggleResolvida?.(pendencia, !pendencia.resolvida)}
-                  disabled={!podeConcluir}
+                  onClick={() => podeConcluir && !estaSalvando && onToggleResolvida?.(pendencia, !pendencia.resolvida)}
+                  disabled={!podeConcluir || estaSalvando}
                   className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border px-3 text-xs font-semibold transition-all ${
                     pendencia.resolvida
                       ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15"
                       : "border-sky-500/25 bg-background/80 text-sky-800 shadow-sm hover:-translate-y-0.5 hover:border-sky-500/45 hover:bg-sky-500/10 hover:shadow-md"
-                  } ${!podeConcluir ? "cursor-not-allowed opacity-45" : ""} ${estaSalvando ? "ring-2 ring-primary/15" : ""}`}
+                  } ${!podeConcluir || estaSalvando ? "cursor-not-allowed opacity-45" : ""} ${estaSalvando ? "ring-2 ring-primary/15" : ""}`}
                   aria-label={pendencia.resolvida ? "Reabrir pendência" : "Concluir pendência"}
                 >
                   <CheckCircle2 className="h-4 w-4" />
-                  {pendencia.resolvida ? "Concluída" : "Concluir"}
+                  {estaSalvando ? "Salvando…" : pendencia.resolvida ? "Concluída" : "Concluir"}
                 </button>
               </div>
               {/* Descrição / tabela abaixo, ocupa largura total */}

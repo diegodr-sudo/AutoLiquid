@@ -189,6 +189,23 @@ def abrir_chrome(
     return porta
 
 
+def abrir_chrome_incognito(url: str) -> None:
+    """Abre uma nova janela anônima do Google Chrome na URL informada."""
+    url = str(url or "").strip()
+    if not url:
+        raise ValueError("URL inicial não informada.")
+
+    sistema = platform.system()
+    exe = _resolver_executavel_chrome(sistema)
+    args = ["--incognito", "--new-window", url]
+    if sistema == "Darwin":
+        cmd = ["open", "-na", exe, "--args", *args]
+    else:
+        cmd = [exe, *args]
+
+    _spawn_detached(cmd)
+
+
 def conectar_chrome_cdp(porta=None, abrir_se_fechado=True):
     import asyncio
     from playwright.sync_api import sync_playwright

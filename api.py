@@ -1756,7 +1756,7 @@ def _montar_pendencias_documento(
                 "automacao",
             )
 
-        _DSP_SITUACOES_VPD = {"DSP001", "DSP101", "DSP102"}  # DSP201 não requer VPD
+        _DSP_SITUACOES_VPD = {"DSP001", "DSP102"}  # DSP101 e DSP201 não possuem campo VPD
         if tipo_liquidacao_norm in _DSP_SITUACOES_VPD:
             vpd_manual = str(dados.get("vpd_manual", "") or "").strip()
             if not vpd_manual:
@@ -3400,6 +3400,26 @@ def abrir_chrome_endpoint() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+_SIAFI_WEB_URL = "https://siafi.tesouro.gov.br/"
+
+
+@app.post("/api/siafi/abrir")
+def abrir_siafi_endpoint() -> dict[str, Any]:
+    chrome_service = _chrome_service()
+    porta = obter_porta_chrome()
+    try:
+        chrome_service.abrir_chrome_incognito(_SIAFI_WEB_URL)
+        return {
+            "success": True,
+            "chromeStatus": "pronto",
+            "chromePorta": porta,
+            "url": _SIAFI_WEB_URL,
+            "mensagem": "SIAFI aberto em aba anônima do Chrome.",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 _SOLAR_BASE_URL = "https://solar.egestao.ufsc.br/solar/"
 _SOLAR_CONSULTA_PROCESSO_URL = (
     "https://solar.egestao.ufsc.br/cpav/abrirConsultaProcesso.do"
@@ -4542,7 +4562,37 @@ def deletar_servidor_config(nome: str) -> dict[str, Any]:
 # VERSÃO / ATUALIZAÇÃO
 # ─────────────────────────────────────────────────────────────────────────────
 
-_GITHUB_REPO  = "diegodr-sudo/AutoLiquid"
+_GITHUB_REPO_PADRAO = "diegodr-sudo/AutoLiquid"
+
+
+def _normalizar_github_repo(valor: str) -> str:
+    texto = str(valor or "").strip()
+    texto = texto.removesuffix(".git")
+    if "github.com/" in texto:
+        texto = texto.split("github.com/", 1)[1]
+    texto = texto.strip("/")
+    partes = [parte for parte in texto.split("/") if parte]
+    if len(partes) >= 2:
+        return f"{partes[0]}/{partes[1]}"
+    return ""
+
+
+def _obter_github_repo() -> str:
+    repo = _normalizar_github_repo(os.getenv("AUTO_LIQUID_GITHUB_REPO", ""))
+    if repo:
+        return repo
+    try:
+        from services.config_service import carregar_config_app
+
+        repo = _normalizar_github_repo(str(carregar_config_app().get("github_repo") or ""))
+        if repo:
+            return repo
+    except Exception:
+        pass
+    return _GITHUB_REPO_PADRAO
+
+
+_GITHUB_REPO  = _obter_github_repo()
 _GITHUB_API   = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
 _RELEASES_URL = f"https://github.com/{_GITHUB_REPO}/releases/latest"
 

@@ -9,6 +9,9 @@ jobs:
   release:
     permissions:
       contents: write
+    env:
+      AUTO_LIQUID_GITHUB_REPO: ${{ github.repository }}
+      NEXT_PUBLIC_AUTO_LIQUID_REPO: ${{ github.repository }}
 
     strategy:
       fail-fast: false
@@ -68,6 +71,24 @@ jobs:
         shell: bash
         run: |
           node scripts/sync_version.mjs "$GITHUB_REF_NAME"
+
+      - name: Sync updater repository
+        shell: bash
+        run: |
+          node - <<'JS'
+          const fs = require("node:fs");
+          const repo = process.env.GITHUB_REPOSITORY;
+          if (!repo) throw new Error("GITHUB_REPOSITORY nao informado.");
+          const path = "src-tauri/tauri.conf.json";
+          const config = JSON.parse(fs.readFileSync(path, "utf8"));
+          config.plugins ||= {};
+          config.plugins.updater ||= {};
+          config.plugins.updater.endpoints = [
+            `https://github.com/${repo}/releases/latest/download/latest.json`,
+          ];
+          fs.writeFileSync(path, JSON.stringify(config, null, 2) + "\n", "utf8");
+          console.log(`Updater endpoint apontando para ${repo}.`);
+          JS
 
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt pyinstaller
@@ -140,6 +161,7 @@ jobs:
               "turso_database_url": turso_url,
               "turso_auth_token": turso_token,
               "database_mode": "turso",
+              "github_repo": os.environ.get("GITHUB_REPOSITORY", "").strip(),
           })
 
           optional = {
@@ -183,15 +205,27 @@ jobs:
         if: runner.os == 'macOS'
         run: codesign --force --deep --sign - src-tauri/binaries/${{ matrix.sidecar-bin }}
 
+      - name: Validate updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::Configure o secret TAURI_SIGNING_PRIVATE_KEY para assinar os artefatos do updater."
+            exit 1
+          fi
+
       # ── Build Tauri (gera .dmg e .msi/.exe) ─────────────────────────────────
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "AutoLiquid ${{ github.ref_name }}"
-          releaseBody: "Veja os assets abaixo para baixar o instalador."
+          releaseBody: "Atualização automática habilitada pelo AutoLiquid. Os assets abaixo ficam como fallback de instalação manual."
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

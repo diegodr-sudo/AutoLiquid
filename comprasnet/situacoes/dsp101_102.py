@@ -4,7 +4,7 @@ Handler para DSP101 / DSP102 — Material de Consumo (Almoxarifado / Entrega Dir
 
 Fluxo após seleção da situação:
     1. Expande barra do empenho
-    2. Preenche VPD (lookup por natureza)
+    2. Preenche VPD somente para DSP102 (lookup por natureza)
     3. Preenche Conta de Estoque = "60100" → 1.1.5.6.1.01.00
     4. Preenche Contas a Pagar  = "1104"  → 2.1.3.1.1.04.00
 """
@@ -51,15 +51,26 @@ def _preencher_situacao_DSP101_102(
     _verificar_interrupcao(deve_parar)
     _verificar_empenho(pagina, num_empenho_pdf, erros)
 
-    # VPD — preferência para valor informado manualmente
-    vpd_manual = dados.get("VPD_MANUAL", "").strip()
-    vpd = vpd_manual or _buscar_vpd(natureza, "DSP101/102")
-    if vpd:
-        origem = " (informado manualmente)" if vpd_manual else ""
-        print(f"    VPD para natureza '{natureza}': {vpd}{origem}")
+    # DSP101 não possui campo VPD no portal. DSP102 mantém lookup por natureza.
+    situacao_norm = dados.get("_SITUACAO_NORM", "").strip().upper()
+    if not situacao_norm:
+        descricao = str(cfg.get("descricao", "") or "").upper()
+        if "ENTREGA DIRETA" in descricao:
+            situacao_norm = "DSP102"
+        elif "ALMOXARIFADO" in descricao:
+            situacao_norm = "DSP101"
+
+    if situacao_norm == "DSP102":
+        vpd_manual = dados.get("VPD_MANUAL", "").strip()
+        vpd = vpd_manual or _buscar_vpd(natureza, "DSP101/102")
+        if vpd:
+            origem = " (informado manualmente)" if vpd_manual else ""
+            print(f"    VPD para natureza '{natureza}': {vpd}{origem}")
+        else:
+            print(f"    VPD nao encontrado para natureza '{natureza}' — preencher manualmente.")
+        _preencher_vpd(pagina, vpd, erros)
     else:
-        print(f"    VPD não encontrado para natureza '{natureza}' — preencher manualmente.")
-    _preencher_vpd(pagina, vpd, erros)
+        print("    DSP101: VPD não aplicável — preenchimento ignorado.")
     _verificar_interrupcao(deve_parar)
 
     _preencher_conta_estoque(pagina, cfg.get("conta_estoque", "60100"), erros)

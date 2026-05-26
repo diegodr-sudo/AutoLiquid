@@ -726,10 +726,13 @@ def registrar_liquidacao(
           numero_processo = excluded.numero_processo,
           servidor_nome = excluded.servidor_nome,
           servidor_username = excluded.servidor_username,
-          finalizada = excluded.finalizada,
-          tipo_documento = excluded.tipo_documento,
-          numero_documento = excluded.numero_documento,
-          dificuldade = excluded.dificuldade,
+          -- Nunca faz downgrade de finalizada (1→0): garante que chamadas tardias
+          -- de "pendente" não sobrescrevam um registro já concluído.
+          finalizada = max(coalesce(liquidacao_registros.finalizada, 0), excluded.finalizada),
+          -- Tipo, número e dificuldade só são sobrescritos quando a nova entrada é finalizada.
+          tipo_documento = case when excluded.finalizada = 1 then excluded.tipo_documento else liquidacao_registros.tipo_documento end,
+          numero_documento = case when excluded.finalizada = 1 then excluded.numero_documento else liquidacao_registros.numero_documento end,
+          dificuldade = case when excluded.finalizada = 1 then excluded.dificuldade else liquidacao_registros.dificuldade end,
           registrado_em = current_timestamp
         """,
         [

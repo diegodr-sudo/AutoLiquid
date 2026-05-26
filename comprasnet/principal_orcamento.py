@@ -260,12 +260,15 @@ def executar(dados_extraidos, deve_parar=None, *, pagina=None, playwright=None):
 
             handler = _HANDLERS.get(cod_completo) or _HANDLERS.get(cod_numerico)
             if handler:
+                # Injeta o código da situação no dict de dados para que os
+                # handlers possam adaptar o comportamento por situação.
+                dados_handler = {**(dados_extraidos or {}), "_SITUACAO_NORM": cod_completo}
                 handler(
                     pagina,
                     num,
                     cfg,
                     erros,
-                    dados_extraidos=dados_extraidos,
+                    dados_extraidos=dados_handler,
                     deve_parar=deve_parar,
                 )
             else:

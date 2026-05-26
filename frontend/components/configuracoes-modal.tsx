@@ -47,9 +47,14 @@ import {
   upsertServidorConfig,
   updateAuthUsuario,
   verificarAtualizacao,
+  instalarAtualizacaoTauri,
+  isTauriRuntime,
   abrirUrl,
+  AUTO_LIQUID_REPO,
+  AUTO_LIQUID_REPO_URL,
   deletarServidorConfig,
   type AppSettings,
+  type AtualizacaoTauriInfo,
   type AuthUsuario,
   type ProcessDates,
   type ServidorConfigRemoto,
@@ -174,6 +179,7 @@ export function ConfiguracoesModal({
   // Atualização
   const [verificandoUpdate, setVerificandoUpdate] = useState(false);
   const [infoUpdate, setInfoUpdate] = useState<VersaoInfo | null>(null);
+  const [resultadoUpdate, setResultadoUpdate] = useState<AtualizacaoTauriInfo | null>(null);
   const [baixando, setBaixando] = useState(false);
   const [showDbUrl, setShowDbUrl] = useState(false);
   const [showTursoToken, setShowTursoToken] = useState(false);
@@ -195,6 +201,7 @@ export function ConfiguracoesModal({
   const [erroUsuarios, setErroUsuarios] = useState("");
   const [erroDatasGlobais, setErroDatasGlobais] = useState("");
   const [mensagemDatasGlobais, setMensagemDatasGlobais] = useState("");
+  const atualizacaoAutomaticaDisponivel = isTauriRuntime();
 
   useEffect(() => {
     if (!isOpen) return;
@@ -407,7 +414,14 @@ export function ConfiguracoesModal({
   const handleVerificarUpdate = async () => {
     setVerificandoUpdate(true);
     setErro("");
+    setResultadoUpdate(null);
     try {
+      if (isTauriRuntime()) {
+        const resultado = await instalarAtualizacaoTauri();
+        setResultadoUpdate(resultado);
+        setInfoUpdate(null);
+        return;
+      }
       const info = await verificarAtualizacao();
       setInfoUpdate(info);
     } catch (error) {
@@ -873,7 +887,9 @@ export function ConfiguracoesModal({
                             <div>
                               <h3 className="text-sm font-semibold text-foreground">Atualização</h3>
                               <p className="mt-1 text-sm text-muted-foreground">
-                                Verifique se há uma nova versão disponível.
+                                {atualizacaoAutomaticaDisponivel
+                                  ? "Instala novas versões automaticamente pelo app instalado."
+                                  : "Verifique se há uma nova versão disponível."}
                               </p>
                             </div>
                             <GlassButton
@@ -888,11 +904,25 @@ export function ConfiguracoesModal({
                               ) : (
                                 <RefreshCw className="h-4 w-4" />
                               )}
-                              {verificandoUpdate ? "Verificando..." : "Verificar"}
+                              {verificandoUpdate
+                                ? atualizacaoAutomaticaDisponivel ? "Atualizando..." : "Verificando..."
+                                : atualizacaoAutomaticaDisponivel ? "Verificar e instalar" : "Verificar"}
                             </GlassButton>
                           </div>
 
                           {/* Resultado da verificação */}
+                          {resultadoUpdate && (
+                            <div
+                              className={`mt-3 flex items-center gap-2 rounded-xl border px-3 py-2 text-sm ${
+                                resultadoUpdate.instalada || !resultadoUpdate.temAtualizacao
+                                  ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-700"
+                                  : "border-violet-500/30 bg-background/75 text-violet-700"
+                              }`}
+                            >
+                              <CheckCircle2 className="h-4 w-4 shrink-0" />
+                              {resultadoUpdate.mensagem}
+                            </div>
+                          )}
                           {infoUpdate && (
                             <div className="mt-3 space-y-2">
                               <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -986,7 +1016,7 @@ export function ConfiguracoesModal({
                           </button>
                           <button
                             type="button"
-                            onClick={() => abrirUrl("https://github.com/diegodr-sudo/AutoLiquid")}
+                            onClick={() => abrirUrl(AUTO_LIQUID_REPO_URL)}
                             className="group flex items-center gap-3 rounded-xl border border-glass-border bg-background/70 px-3 py-2.5 text-sm transition hover:border-primary/40 hover:bg-background text-left"
                           >
                             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-glass-border bg-secondary/60 text-muted-foreground transition group-hover:border-primary/30 group-hover:text-primary">
@@ -994,7 +1024,7 @@ export function ConfiguracoesModal({
                             </span>
                             <span className="min-w-0 flex-1">
                               <span className="block text-xs font-medium text-muted-foreground">GitHub</span>
-                              <span className="block truncate text-sm text-foreground">diegodr-sudo/AutoLiquid</span>
+                              <span className="block truncate text-sm text-foreground">{AUTO_LIQUID_REPO}</span>
                             </span>
                             <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50 transition group-hover:text-muted-foreground" />
                           </button>

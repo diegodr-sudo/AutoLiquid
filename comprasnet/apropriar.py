@@ -399,10 +399,7 @@ def _clicar_apropriar(pagina) -> None:
 
     log.info("Botão clicado: '%s'", clicado)
 
-    # Aguarda o modal "Como deseja apropriar?" aparecer
-    time.sleep(2)
-
-    # Clica em "NOVA APROPRIAÇÃO" no modal
+    # Clica em "NOVA APROPRIAÇÃO" assim que o modal ficar disponível.
     js_nova = """
         () => {
             var termos = ['nova apropriação', 'nova apropriacão', 'nova apropriacao', 'nova apropriaçao'];
@@ -420,7 +417,12 @@ def _clicar_apropriar(pagina) -> None:
             return null;
         }
     """
-    clicado_nova = pagina.evaluate(js_nova)
+    clicado_nova = None
+    limite_modal = time.time() + 8
+    while time.time() < limite_modal and not clicado_nova:
+        clicado_nova = pagina.evaluate(js_nova)
+        if not clicado_nova:
+            time.sleep(0.25)
 
     if not clicado_nova:
         raise RuntimeError(
@@ -429,8 +431,23 @@ def _clicar_apropriar(pagina) -> None:
         )
 
     log.info("Clicado em Nova Apropriação: '%s'", clicado_nova)
-    time.sleep(2)
-    pagina.wait_for_load_state("networkidle", timeout=30_000)
+
+    # Não espera networkidle: o portal pode manter requisições abertas e atrasar
+    # a transição para Dados Básicos. Basta aguardar a tela de apropriação iniciar.
+    try:
+        pagina.wait_for_function(
+            """() => {
+                const texto = document.body ? document.body.innerText.toLowerCase() : '';
+                return texto.includes('dados básicos')
+                    || texto.includes('dados basicos')
+                    || texto.includes('tipo dh')
+                    || texto.includes('principal com orçamento')
+                    || texto.includes('principal com orcamento');
+            }""",
+            timeout=10_000,
+        )
+    except Exception:
+        log.info("Tela pós-apropriação ainda carregando; seguindo para a próxima etapa.")
 
 
 def _garantir_na_pagina_apropriar(pagina) -> None:

@@ -71,6 +71,10 @@ function ConferenciaPageContent() {
   const documentoId = searchParams.get("id");
   const execucaoAbortControllerRef = useRef<AbortController | null>(null);
   const registroPendenteRemotoRef = useRef("");
+  // Ref para proteger polling: não sobrescreve pendências enquanto um toggle está em voo
+  const pendenciaToggleInFlightRef = useRef(false);
+  // Ref para bloquear chamadas tardias de registrarLiquidacaoPendente após a finalização
+  const liquidacaoFinalizadaRef = useRef(false);
   const [documento, setDocumento] = useState<Documento>(MOCK_DOCUMENTO);
   const [resumo, setResumo] = useState<ResumoFinanceiro>(MOCK_RESUMO_FINANCEIRO);
   const [notasFiscais, setNotasFiscais] = useState<NotaFiscal[]>(MOCK_NOTAS_FISCAIS);
@@ -153,7 +157,10 @@ function ConferenciaPageContent() {
     setDates(payload.dates);
     setLogs(payload.logs);
     setLogsSimples(payload.logsSimples ?? []);
-    setPendencias(payload.pendencias ?? []);
+    // Não sobrescreve pendências se um toggle está em andamento (evita race condition)
+    if (!pendenciaToggleInFlightRef.current) {
+      setPendencias(payload.pendencias ?? []);
+    }
     setStatusGeral(
       payload.statusGeral ?? {
         tipo: "atencao",
@@ -222,7 +229,7 @@ function ConferenciaPageContent() {
       }),
     );
     const chaveRemota = `${documentoId}:${numeroProcesso}`;
-    if (registroPendenteRemotoRef.current !== chaveRemota) {
+    if (registroPendenteRemotoRef.current !== chaveRemota && !liquidacaoFinalizadaRef.current) {
       registroPendenteRemotoRef.current = chaveRemota;
       void registrarLiquidacao({
         documentoId,
@@ -281,6 +288,9 @@ function ConferenciaPageContent() {
 
     setConclusaoErro("");
     setConclusaoSaving(true);
+    // Marca como finalizado antes da chamada para bloquear qualquer
+    // void registrarLiquidacaoPendente(finalizada=false) ainda em voo.
+    liquidacaoFinalizadaRef.current = true;
     try {
       await registrarLiquidacao({
         documentoId,
@@ -308,6 +318,8 @@ function ConferenciaPageContent() {
       setConclusaoOpen(false);
       router.push("/");
     } catch (error) {
+      // Permite nova tentativa se a chamada falhar
+      liquidacaoFinalizadaRef.current = false;
       setConclusaoErro(error instanceof Error ? error.message : "Não foi possível concluir o processo agora.");
     } finally {
       setConclusaoSaving(false);
@@ -316,6 +328,8 @@ function ConferenciaPageContent() {
 
   const handleTogglePendenciaResolvida = async (pendencia: PendenciaDocumento, resolvida: boolean) => {
     if (!documentoId) return;
+    // Guard: bloqueia duplo-clique e cliques enquanto outro toggle está em progresso
+    if (pendenciaToggleId !== null) return;
     if (pendencia.id.startsWith("local-")) {
       setErro("Essa pendência é concluída preenchendo o campo correspondente no próprio painel.");
       setPendenciasExpanded(true);
@@ -324,7 +338,10 @@ function ConferenciaPageContent() {
 
     setErro("");
     setPendenciaToggleId(pendencia.id);
-    const pendenciasAntes = pendencias;
+    pendenciaToggleInFlightRef.current = true;
+    // Deep copy para rollback correto em caso de erro
+    const pendenciasAntes = pendencias.map((p) => ({ ...p }));
+    // Atualização otimista: reflete visualmente antes da resposta do servidor
     setPendencias((current) =>
       current.map((item) =>
         item.id === pendencia.id ? { ...item, resolvida } : item
@@ -332,11 +349,24 @@ function ConferenciaPageContent() {
     );
     try {
       const payload = await atualizarPendenciaDocumento(documentoId, pendencia.id, resolvida);
-      aplicarPayload(payload);
+      // Atualização cirúrgica: aplica só a pendência alterada do servidor,
+      // sem sobrescrever todo o estado (evita race condition com o polling).
+      const pendenciaServidor = payload.pendencias?.find((p) => p.id === pendencia.id);
+      setPendencias((current) =>
+        current.map((item) =>
+          item.id === pendencia.id
+            ? (pendenciaServidor ?? { ...item, resolvida })
+            : item
+        )
+      );
+      // Atualiza statusGeral e resumo que podem ter mudado com a resolução da pendência
+      if (payload.statusGeral) setStatusGeral(payload.statusGeral);
+      if (payload.resumo !== undefined) setResumo(payload.resumo);
     } catch (error) {
       setPendencias(pendenciasAntes);
       setErro(error instanceof Error ? error.message : "Não foi possível atualizar a pendência agora.");
     } finally {
+      pendenciaToggleInFlightRef.current = false;
       setPendenciaToggleId(null);
     }
   };
