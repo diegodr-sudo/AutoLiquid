@@ -986,7 +986,7 @@ export function ConfiguracoesModal({
                           </button>
                           <button
                             type="button"
-                            onClick={() => abrirUrl("https://github.com/diegodutraramos-maker")}
+                            onClick={() => abrirUrl("https://github.com/diegodr-sudo/AutoLiquid")}
                             className="group flex items-center gap-3 rounded-xl border border-glass-border bg-background/70 px-3 py-2.5 text-sm transition hover:border-primary/40 hover:bg-background text-left"
                           >
                             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-glass-border bg-secondary/60 text-muted-foreground transition group-hover:border-primary/30 group-hover:text-primary">
@@ -994,7 +994,7 @@ export function ConfiguracoesModal({
                             </span>
                             <span className="min-w-0 flex-1">
                               <span className="block text-xs font-medium text-muted-foreground">GitHub</span>
-                              <span className="block truncate text-sm text-foreground">diegodutraramos-maker</span>
+                              <span className="block truncate text-sm text-foreground">diegodr-sudo/AutoLiquid</span>
                             </span>
                             <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50 transition group-hover:text-muted-foreground" />
                           </button>

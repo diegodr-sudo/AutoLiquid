@@ -419,6 +419,14 @@ def _fila_remote_watcher_loop() -> None:
             token = _fila_remote_token()
             if token and last_token is None:
                 last_token = token
+                snapshot = _refresh_fila_cache_remoto()
+                if snapshot:
+                    _broadcast_fila_event({
+                        "type": "fila-remota-atualizada",
+                        "token": token,
+                        "updatedAt": snapshot.get("updatedAt"),
+                        "total": snapshot.get("total"),
+                    })
             elif token and token != last_token:
                 last_token = token
                 snapshot = _refresh_fila_cache_remoto()
@@ -512,6 +520,13 @@ def _carregar_snapshot_fila_turso() -> dict[str, Any] | None:
         _local_cache_service().salvar_fila_processos_snapshot(rows, updated_at)
     except Exception:
         log.debug("Falha ao atualizar cache local com snapshot do Turso", exc_info=True)
+
+    _broadcast_fila_event({
+        "type": "fila-cache-atualizada",
+        "updatedAt": updated_at,
+        "total": len(rows),
+        "source": "turso",
+    })
 
     return {
         "total": len(rows),
@@ -2628,6 +2643,10 @@ def fila_processos(refresh: bool = Query(default=False)) -> dict[str, Any]:
                 "columns": columns_local,
                 "updatedAt": snapshot_local.get("updatedAt"),
             }
+            # Serve o cache local imediatamente para o startup ser rápido,
+            # mas dispara um refresh do Turso em background para garantir que
+            # outros usuários que atualizaram a fila sejam refletidos logo.
+            _atualizar_fila_turso_background()
             return {
                 "total": len(rows_local),
                 "columns": columns_local,
@@ -4431,7 +4450,7 @@ def deletar_servidor_config(nome: str) -> dict[str, Any]:
 # VERSÃO / ATUALIZAÇÃO
 # ─────────────────────────────────────────────────────────────────────────────
 
-_GITHUB_REPO  = "diegodutraramos-maker/AutoLiquid"
+_GITHUB_REPO  = "diegodr-sudo/AutoLiquid"
 _GITHUB_API   = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
 _RELEASES_URL = f"https://github.com/{_GITHUB_REPO}/releases/latest"
 
