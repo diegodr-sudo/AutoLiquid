@@ -19,6 +19,43 @@ class ExecucaoInterrompida(Exception):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# UTILITÁRIOS DE MÁSCARA (jquery.mask.js)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Posiciona o cursor no primeiro '_' do campo mascarado (sem selecionar),
+# permitindo que `press_sequentially` preencha somente a parte editável.
+# Retorna true se encontrou '_'; false se o campo já está completo (sem '_').
+_JS_POSICIONAR_MASCARA = """
+(el) => {
+    const valor = String(el.value || '');
+    const primeiro = valor.indexOf('_');
+    el.focus();
+    if (primeiro >= 0) {
+        el.setSelectionRange(primeiro, primeiro);
+        return true;
+    }
+    el.setSelectionRange(valor.length, valor.length);
+    return false;
+}
+"""
+
+
+def _aguardar_mascara_campo(campo, timeout_s: float = 3.0) -> bool:
+    """Aguarda até que o campo mascarado exiba ao menos um '_' (template pronto).
+
+    Retorna True se a máscara ficou disponível dentro do timeout,
+    False caso o campo permaneça vazio ou preenchido sem placeholder.
+    """
+    inicio = time.time()
+    while time.time() - inicio < timeout_s:
+        val = campo.input_value().strip()
+        if "_" in val:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # VPD — tabela de fallback embutida
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -428,6 +465,8 @@ def _preencher_contas_a_pagar(pagina, codigo: str, erros: list, desc: str = ""):
             "/following::input[1]"
         ).first
         codigo_str = str(codigo or "").strip()
+        # Somente os dígitos são digitados na máscara
+        codigo_digitos = re.sub(r"\D+", "", codigo_str)
         valor_final = campo.input_value(timeout=3000).strip()
 
         if _codigo_equivalente(valor_final, codigo_str):
@@ -438,43 +477,23 @@ def _preencher_contas_a_pagar(pagina, codigo: str, erros: list, desc: str = ""):
             return
 
         for tentativa in range(1, 4):
-            campo.click(click_count=3)
-            campo.fill("")
-            try:
-                campo.press_sequentially(codigo_str, delay=110)
-            except Exception:
-                campo.fill(codigo_str)
+            # 1. Foco — aguarda template da máscara aparecer (evita fill("") que corrompe)
+            campo.click()
+            time.sleep(0.15)
+            _aguardar_mascara_campo(campo)
+
+            # 2. Posiciona cursor no primeiro '_' (sem selecionar — a máscara avança sozinha)
+            campo.evaluate(_JS_POSICIONAR_MASCARA)
+
+            # 3. Digita somente os dígitos editáveis
+            campo.press_sequentially(codigo_digitos, delay=90)
             pagina.keyboard.press("Tab")
             time.sleep(0.8)
             valor_final = campo.input_value().strip()
 
-            if not _codigo_equivalente(valor_final, codigo_str):
-                try:
-                    campo.evaluate(
-                        """(el, valor) => {
-                            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-                            el.focus();
-                            if (setter) {
-                                setter.call(el, valor);
-                            } else {
-                                el.value = valor;
-                            }
-                            el.defaultValue = valor;
-                            el.setAttribute('value', valor);
-                            el.dispatchEvent(new Event('input', { bubbles: true }));
-                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                        }""",
-                        codigo_str,
-                    )
-                    pagina.keyboard.press("Tab")
-                    time.sleep(0.8)
-                    valor_final = campo.input_value().strip()
-                except Exception:
-                    pass
-
             if _codigo_equivalente(valor_final, codigo_str):
                 print(
-                    f"    Contas a Pagar: '{valor_final}' → 2.1.3.1.1.04.00"
+                    f"    Contas a Pagar: '{valor_final}'"
                     f"{' ' + desc if desc else ''}"
                 )
                 return
@@ -573,42 +592,16 @@ def _preencher_vpd(pagina, vpd_codigo: str, erros: list):
             return
 
         campo = locator_vpd
-        valor_atual = campo.input_value(timeout=5000).strip()
+        # Foco primeiro — só depois lemos o valor, para garantir que a máscara
+        # inicializou e exibe os '_' de placeholder.
         campo.click()
+        time.sleep(0.15)
+        _aguardar_mascara_campo(campo)
 
-        if valor_atual and vpd_editavel:
-            selecao_ok = campo.evaluate(
-                """(el) => {
-                    const valor = String(el.value || '');
-                    const primeiro = valor.indexOf('_');
-                    if (primeiro >= 0) {
-                        let ultimo = primeiro;
-                        while (ultimo + 1 < valor.length && valor[ultimo + 1] === '_') {
-                            ultimo += 1;
-                        }
-                        el.focus();
-                        el.setSelectionRange(primeiro, ultimo + 1);
-                        return true;
-                    }
-
-                    const match = valor.match(/^(\\d+\\.\\d+\\.\\d+\\.\\d+\\.)(.*?)(\\.\\d+)$/);
-                    if (match) {
-                        const inicio = match[1].length;
-                        const fim = valor.length - match[3].length;
-                        el.focus();
-                        el.setSelectionRange(inicio, fim);
-                        return true;
-                    }
-
-                    return false;
-                }""",
-            )
-            if selecao_ok:
-                campo.press_sequentially(vpd_digitos, delay=80)
-            else:
-                campo.press_sequentially(vpd_digitos or vpd_normalizado.replace(".", ""), delay=80)
-        else:
-            campo.press_sequentially(vpd_digitos or vpd_normalizado.replace(".", ""), delay=80)
+        # Posiciona cursor no primeiro '_' (sem selecionar intervalo — a
+        # máscara avança sozinha pelos separadores fixos ao digitar).
+        campo.evaluate(_JS_POSICIONAR_MASCARA)
+        campo.press_sequentially(vpd_digitos or re.sub(r"\D+", "", vpd_normalizado), delay=80)
 
         pagina.keyboard.press("Tab")
         time.sleep(0.8)

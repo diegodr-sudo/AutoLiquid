@@ -8,6 +8,7 @@ Fluxo após seleção da situação:
     3. Preenche Conta de Estoque = "60100" → 1.1.5.6.1.01.00
     4. Preenche Contas a Pagar  = "1104"  → 2.1.3.1.1.04.00
 """
+import re
 import time
 
 from comprasnet.principal_helpers import (
@@ -17,23 +18,35 @@ from comprasnet.principal_helpers import (
     _verificar_interrupcao,
     _preencher_contas_a_pagar,
     _preencher_vpd,
+    _aguardar_mascara_campo,
+    _JS_POSICIONAR_MASCARA,
 )
 
 
 def _preencher_conta_estoque(pagina, codigo: str, erros: list):
-    """Preenche o campo 'Conta de Estoque' com o código informado (ex: '60100' → 1.1.5.6.1.01.00)."""
+    """Preenche o campo 'Conta de Estoque' (ex: '60100' → 1.1.5.6.1.01.00).
+
+    Usa a mesma estratégia de máscara: foco, aguarda '_', posiciona cursor,
+    digita somente os dígitos editáveis — nunca usa fill("") que corrompe a máscara.
+    """
     try:
         campo = pagina.locator(
             "xpath=//*[normalize-space(text())='Conta de Estoque']"
             "/following::input[1]"
         ).first
-        campo.click(click_count=3)
-        campo.fill("")
-        campo.press_sequentially(codigo, delay=80)
+        campo.wait_for(state="visible", timeout=5000)
+        codigo_digitos = re.sub(r"\D+", "", str(codigo or ""))
+
+        # Foco → espera template → posiciona → digita
+        campo.click()
+        time.sleep(0.15)
+        _aguardar_mascara_campo(campo)
+        campo.evaluate(_JS_POSICIONAR_MASCARA)
+        campo.press_sequentially(codigo_digitos, delay=80)
         pagina.keyboard.press("Tab")
         time.sleep(0.8)
         val = campo.input_value().strip()
-        print(f"    Conta de Estoque: '{val}' (digitado: '{codigo}')")
+        print(f"    Conta de Estoque: '{val}' (digitado: '{codigo_digitos}')")
     except Exception as e:
         erros.append(f"Erro ao preencher Conta de Estoque ({codigo}): {e}")
 

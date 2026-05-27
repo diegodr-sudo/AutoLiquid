@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { CheckCircle2, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight } from "lucide-react";
 import { Header } from "@/components/header";
 import { DocumentoPanel } from "@/components/documento-panel";
 import { NotasFiscaisTable } from "@/components/notas-fiscais-table";
@@ -12,14 +12,6 @@ import { StatusOverview } from "@/components/status-overview";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
 import { GlassButton } from "@/components/glass-card";
 import { Input } from "@/components/ui/input";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   abrirUrl,
   MOCK_DOCUMENTO,
@@ -117,12 +109,6 @@ function ConferenciaPageContent() {
   const [salvandoPendencias, setSalvandoPendencias] = useState(false);
   const [pendenciaToggleId, setPendenciaToggleId] = useState<string | null>(null);
   const [pendenciasExpanded, setPendenciasExpanded] = useState(true);
-  const [conclusaoOpen, setConclusaoOpen] = useState(false);
-  const [conclusaoNumeroNp, setConclusaoNumeroNp] = useState("");
-  const [conclusaoDificuldade, setConclusaoDificuldade] = useState(3);
-  const [conclusaoDificuldadeInteragida, setConclusaoDificuldadeInteragida] = useState(false);
-  const [conclusaoSaving, setConclusaoSaving] = useState(false);
-  const [conclusaoErro, setConclusaoErro] = useState("");
   const precisaLF = deducoes.some((deducao) => deducao.siafi === "DOB001");
   const precisaUGR = requiresCentroCusto;
   const _temPendenciaVpd = pendencias.some(
@@ -265,60 +251,9 @@ function ConferenciaPageContent() {
       return;
     }
     setErro("");
-    setConclusaoErro("");
-    setConclusaoOpen(true);
-  };
-
-  const finalizarProcesso = async () => {
-    if (!documentoId || conclusaoSaving) return;
-    const numeroNp = conclusaoNumeroNp.trim();
-    if (!numeroNp) {
-      setConclusaoErro("Informe o número da NP.");
-      return;
-    }
-    if (!conclusaoDificuldadeInteragida) {
-      setConclusaoErro("Informe o nível de dificuldade do processo.");
-      return;
-    }
-
-    setConclusaoErro("");
-    setConclusaoSaving(true);
-    // Marca como finalizado antes da chamada para bloquear qualquer
-    // void registrarLiquidacaoPendente(finalizada=false) ainda em voo.
-    liquidacaoFinalizadaRef.current = true;
-    try {
-      await registrarLiquidacao({
-        documentoId,
-        numeroProcesso: documento.processo && documento.processo !== "—" ? documento.processo : "",
-        finalizada: true,
-        tipoDocumento: "NP",
-        numeroDocumento: numeroNp,
-        dificuldade: conclusaoDificuldade,
-        servidorNome: auth.session?.nome || nomeUsuario || "",
-        servidorUsername: auth.session?.username || "",
-      });
-      if (typeof window !== "undefined") {
-        window.localStorage.removeItem(REGISTRO_LIQUIDACAO_PENDENTE_KEY);
-        window.dispatchEvent(new CustomEvent("autoliquid:liquidacao-registrada", {
-          detail: {
-            documentoId,
-            numeroProcesso: documento.processo,
-            finalizada: true,
-            tipoDocumento: "NP",
-            numeroDocumento: numeroNp,
-            dificuldade: conclusaoDificuldade,
-          },
-        }));
-      }
-      setConclusaoOpen(false);
-      router.push("/");
-    } catch (error) {
-      // Permite nova tentativa se a chamada falhar
-      liquidacaoFinalizadaRef.current = false;
-      setConclusaoErro(error instanceof Error ? error.message : "Não foi possível concluir o processo agora.");
-    } finally {
-      setConclusaoSaving(false);
-    }
+    // O registro pendente já está no localStorage (escrito por registrarLiquidacaoPendente).
+    // Redireciona para a fila — o dialog unificado em page.tsx cuida do resto.
+    router.push("/");
   };
 
   const handleTogglePendenciaResolvida = async (pendencia: PendenciaDocumento, resolvida: boolean) => {
@@ -1277,7 +1212,7 @@ function ConferenciaPageContent() {
             variant="success"
             size="lg"
             onClick={abrirConclusaoProcesso}
-            disabled={isExecutando || conclusaoSaving}
+            disabled={isExecutando}
             className="shrink-0"
           >
             <CheckCircle2 className="h-4 w-4" />
@@ -1312,89 +1247,6 @@ function ConferenciaPageContent() {
           }
         }}
       />
-
-      <Dialog open={conclusaoOpen} onOpenChange={(open) => {
-        if (!conclusaoSaving) {
-          setConclusaoOpen(open);
-          setConclusaoErro("");
-        }
-      }}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Concluir processo</DialogTitle>
-            <DialogDescription>
-              Registre a NP e a dificuldade para fechar a liquidação deste processo.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-5">
-            <label className="space-y-1.5">
-              <span className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                Número da NP
-              </span>
-              <Input
-                value={conclusaoNumeroNp}
-                onChange={(event) => setConclusaoNumeroNp(event.target.value)}
-                placeholder="Ex.: 2026NP000123"
-                disabled={conclusaoSaving}
-              />
-            </label>
-
-            <div className="rounded-2xl border border-glass-border bg-muted/20 px-4 py-4">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                  Dificuldade
-                </span>
-                <span className="rounded-full border border-glass-border bg-background px-3 py-1 text-sm font-semibold text-foreground">
-                  {conclusaoDificuldade}/5
-                </span>
-              </div>
-              <input
-                type="range"
-                min={1}
-                max={5}
-                step={1}
-                value={conclusaoDificuldade}
-                onChange={(event) => {
-                  setConclusaoDificuldade(Number(event.target.value));
-                  setConclusaoDificuldadeInteragida(true);
-                }}
-                disabled={conclusaoSaving}
-                className="h-8 w-full accent-primary"
-                aria-label="Dificuldade do processo"
-              />
-              <div className="mt-1 flex justify-between text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                <span>1</span>
-                <span>5</span>
-              </div>
-            </div>
-          </div>
-
-          {conclusaoErro ? (
-            <div className="rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {conclusaoErro}
-            </div>
-          ) : null}
-
-          <DialogFooter>
-            <GlassButton
-              variant="ghost"
-              onClick={() => setConclusaoOpen(false)}
-              disabled={conclusaoSaving}
-            >
-              Cancelar
-            </GlassButton>
-            <GlassButton
-              variant="success"
-              onClick={() => void finalizarProcesso()}
-              disabled={conclusaoSaving}
-            >
-              {conclusaoSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-              Salvar conclusão
-            </GlassButton>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
     </div>
   );

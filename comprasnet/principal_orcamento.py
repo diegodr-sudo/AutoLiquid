@@ -29,6 +29,38 @@ from comprasnet.principal_helpers import (
     _preencher_campo_com_retry,
 )
 
+# ─────────────────────────────────────────────────────────────────────────────
+# UTILITÁRIO: aguardar recarga do formulário de situação
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _aguardar_formulario_situacao(pagina, timeout_s: float = 6.0) -> bool:
+    """Aguarda o formulário recarregar após seleção da situação via AJAX.
+
+    Estratégia: após o select_option, o servidor devolve campos mascarados
+    (ex: VPD, Conta Estoque, Contas a Pagar) com placeholder '_'.
+    Assim que qualquer input visível do formulário exibir '_' no valor,
+    o template da máscara está pronto para receber digitação.
+
+    Retorna True quando pronto, False se expirou o timeout.
+    """
+    import time as _time
+    inicio = _time.time()
+    while _time.time() - inicio < timeout_s:
+        try:
+            tem_mascara = pagina.evaluate("""() => {
+                const inputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'));
+                return inputs.some(el => {
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0 && (el.value || '').includes('_');
+                });
+            }""")
+            if tem_mascara:
+                return True
+        except Exception:
+            pass
+        _time.sleep(0.15)
+    return False
+
 # Handlers por situação
 from comprasnet.situacoes.dsp001 import _preencher_situacao_DSP001
 from comprasnet.situacoes.dsp101_102 import _preencher_situacao_DSP101_102
@@ -81,7 +113,8 @@ def _selecionar_situacao_dropdown(pagina, cod_completo: str, cod_numerico: str) 
         )
         if valor:
             sel.select_option(value=valor)
-            time.sleep(1.5)
+            if not _aguardar_formulario_situacao(pagina):
+                time.sleep(1.0)   # fallback se a situação não tiver campos mascarados
             print(f"    Situação selecionada: {cod_completo}")
             return True
 
@@ -99,7 +132,8 @@ def _selecionar_situacao_dropdown(pagina, cod_completo: str, cod_numerico: str) 
             )
             if valor:
                 sel.select_option(value=valor)
-                time.sleep(1.5)
+                if not _aguardar_formulario_situacao(pagina):
+                    time.sleep(1.0)   # fallback se a situação não tiver campos mascarados
                 print(f"    Situação selecionada (fallback numérico): {buscar}")
                 return True
 

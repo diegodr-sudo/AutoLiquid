@@ -318,7 +318,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
         # Linha típica: "Banco: 033   Agência: 2102   Conta: 130057029"
         match_banco   = re.search(r"Banco:\s*(\d+)", texto, re.IGNORECASE)
         match_agencia = re.search(r"Ag[eê]ncia:\s*(\d+)", texto, re.IGNORECASE)
-        match_conta   = re.search(r"\bConta:\s*(\d+(?:-\d+)?)", texto, re.IGNORECASE)
+        match_conta   = re.search(r"\bConta:\s*([\d.]+(?:-[\dA-Za-z]+)?)", texto, re.IGNORECASE)
         dados_extraidos['Banco']   = match_banco.group(1).strip()   if match_banco   else ""
         dados_extraidos['Agência'] = match_agencia.group(1).strip() if match_agencia else ""
         dados_extraidos['Conta']   = match_conta.group(1).strip()   if match_conta   else ""

@@ -157,6 +157,34 @@
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Windows: backdrop-filter desativado para fluidez de scroll no WebView2
+   O blur de fundo no WebView2 (Edge) exige um repaint composto a cada frame
+   durante o scroll, causando travamento visível. Substituímos por fundos
+   semi-opacos sólidos que têm aparência semelhante sem custo de GPU.
+   ───────────────────────────────────────────────────────────────────────── */
+.platform-windows {
+  /* Glass tokens mais opacos para compensar a falta de blur */
+  --glass-bg: oklch(1 0 0 / 0.97);
+  --card: oklch(1 0 0 / 0.97);
+  --popover: oklch(1 0 0 / 0.99);
+}
+
+.platform-windows.dark,
+.platform-windows .dark {
+  --glass-bg: oklch(0.18 0.01 260 / 0.96);
+  --card: oklch(0.18 0.01 260 / 0.96);
+  --popover: oklch(0.15 0.01 260 / 0.98);
+}
+
+/* Desativa TODOS os backdrop-filter no Windows */
+.platform-windows *,
+.platform-windows *::before,
+.platform-windows *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
 @layer components {
   /* ── Select nativo padronizado (pílula) ─────────────────────────────────── */
   .select-native {

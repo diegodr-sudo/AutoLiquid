@@ -4045,11 +4045,11 @@ export default function HomePage() {
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <label className="flex items-center gap-2 rounded-lg border border-glass-border bg-background px-3 py-1.5 text-sm text-foreground">
-                      <span className="text-xs text-muted-foreground">Responsável</span>
+                      <span className="shrink-0 text-xs text-muted-foreground">Responsável</span>
                       <select
                         value={responsavelFilter}
                         onChange={(event) => setResponsavelFilter(event.target.value)}
-                        className="select-inline bg-transparent pr-5 text-sm outline-none"
+                        className="select-inline min-w-[5rem] max-w-[9rem] bg-transparent pr-5 text-sm outline-none"
                       >
                         <option value="todos">Todos</option>
                         {responsavelOptions.map((nome) => (

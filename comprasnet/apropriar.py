@@ -649,6 +649,120 @@ def _garantir_na_pagina_apropriar(pagina) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# FILTROS + PESQUISA EM LOTE (otimização de performance)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _aplicar_filtros_e_pesquisa_em_lote(
+    pagina,
+    ano_emissao: str,
+    termo_pesquisa: str,
+) -> bool:
+    """
+    Aplica de uma só vez: filtro de ano, situação Pendente e texto de pesquisa.
+
+    Disparar todos os valores antes de qualquer evento de change evita reloads
+    intermediários da tabela — apenas um ciclo AJAX em vez de dois ou três.
+
+    Retorna True se ao menos o filtro de situação foi aplicado.
+    """
+    log.info(
+        "Aplicando filtros e pesquisa em lote: ano='%s' | pesquisa='%s'",
+        ano_emissao or "-",
+        termo_pesquisa,
+    )
+
+    js = """
+        ({ anoEmissao, termoPesquisa }) => {
+            const normalizar = (v) => (v || '').toString()
+                .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim().toLowerCase();
+
+            const desejadosAno = anoEmissao ? [anoEmissao] : [];
+            const desejadosSit = ['pen', 'pendente'];
+            let situacaoAplicada = false;
+
+            // ── 1. Define valores nos selects SEM disparar change ainda ──
+            const setSelect = (id, desejados) => {
+                const sel = document.getElementById(id);
+                if (!sel) return false;
+                const des = desejados.map(normalizar);
+                for (const opt of Array.from(sel.options || [])) {
+                    if (des.includes(normalizar(opt.value)) || des.includes(normalizar(opt.textContent))) {
+                        sel.value = opt.value;
+                        return true;
+                    }
+                }
+                return false;
+            };
+
+            if (anoEmissao) setSelect('filter_emissao', desejadosAno);
+            situacaoAplicada = setSelect('filter_situacao', desejadosSit);
+
+            // ── 2. Define a pesquisa textual SEM disparar evento ──
+            if (termoPesquisa) {
+                const seletores = [
+                    "input[type='search']",
+                    "input[aria-label*='Search']",
+                    "input[aria-label*='Pesquisar']",
+                    "input.form-control",
+                ];
+                for (const s of seletores) {
+                    const inp = document.querySelector(s);
+                    if (inp) {
+                        const rect = inp.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            inp.value = termoPesquisa;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // ── 3. Dispara change em todos de uma vez ──
+            const dispararChange = (id) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                if (window.jQuery) {
+                    window.jQuery(el).trigger('change');
+                } else {
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            };
+
+            if (anoEmissao) dispararChange('filter_emissao');
+            dispararChange('filter_situacao');
+
+            // Dispara eventos na pesquisa
+            if (termoPesquisa) {
+                const seletores = ["input[type='search']", "input.form-control"];
+                for (const s of seletores) {
+                    const inp = document.querySelector(s);
+                    if (inp) {
+                        const rect = inp.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            inp.dispatchEvent(new Event('input', { bubbles: true }));
+                            inp.dispatchEvent(new Event('change', { bubbles: true }));
+                            inp.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            return situacaoAplicada;
+        }
+    """
+    try:
+        ok = pagina.evaluate(js, {"anoEmissao": ano_emissao, "termoPesquisa": termo_pesquisa})
+        time.sleep(1.5)  # janela inicial para o browser iniciar as requisições
+        _aguardar_tabela_estavel(pagina, timeout_ms=60_000)
+        log.info("Filtros + pesquisa aplicados em lote (situação aplicada: %s).", ok)
+        return bool(ok)
+    except Exception as exc:
+        log.warning("Erro ao aplicar filtros em lote: %s. Usando fluxo sequencial.", exc)
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Ponto de entrada principal
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -689,30 +803,36 @@ def executar(dados: dict, pagina, playwright=None) -> dict:
         # 1. Garantir que estamos na página correta
         _garantir_na_pagina_apropriar(pagina)
 
-        # 2. Primeiro filtro barato: ano da NF (se único) + situação Pendente.
-        _aplicar_filtros_iniciais(pagina, ano_emissao)
-
-        # 3. Filtrar pelo contrato (prioritário) ou CNPJ usando campo Pesquisar
+        # 2+3 combinados: aplica ano, situação Pendente E pesquisa textual de uma vez.
+        #     Evita dois ciclos de reload da tabela (um por filtro + um pela pesquisa).
         filtro_label = ""
         if contrato:
             filtro_label = f"contrato '{contrato}'"
-            _usar_campo_pesquisar(pagina, contrato)
+            termo_pesquisa = contrato
         elif cnpj:
             filtro_label = f"CNPJ '{_formatar_cnpj(cnpj)}'"
-            _usar_campo_pesquisar(pagina, _formatar_cnpj(cnpj))
+            termo_pesquisa = _formatar_cnpj(cnpj)
         else:
             return {
                 "status": "erro",
                 "mensagem": "Não foi possível filtrar: contrato e CNPJ ausentes nos dados extraídos.",
             }
 
-        # 4. Aguardar tabela atualizar
+        lote_ok = _aplicar_filtros_e_pesquisa_em_lote(pagina, ano_emissao, termo_pesquisa)
+
+        if not lote_ok:
+            # Fallback sequencial caso o lote falhe (ex: página ainda carregando os selects)
+            log.info("Fallback sequencial: aplicando filtros e pesquisa separadamente.")
+            _aplicar_filtros_iniciais(pagina, ano_emissao)
+            _usar_campo_pesquisar(pagina, termo_pesquisa)
+
+        # 4. Aguardar tabela (geralmente já estável após _aplicar_filtros_e_pesquisa_em_lote)
         try:
             _aguardar_tabela(pagina, timeout_ms=10_000)
         except Exception:
             log.warning("Tabela pode estar vazia ou não carregada após filtro.")
 
-        time.sleep(1)
+        time.sleep(0.5)
 
         # 5. Selecionar caixas de seleção pelo número do documento
         marcados = _selecionar_documentos(pagina, numeros_docs)

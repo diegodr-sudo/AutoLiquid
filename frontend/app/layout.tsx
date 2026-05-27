@@ -3,6 +3,7 @@ import { Analytics } from '@vercel/analytics/next'
 import { ThemeProvider } from '@/components/theme-provider'
 import { ThemeIconSync } from '@/components/theme-icon-sync'
 import { AppThemeSync } from '@/components/app-theme-sync'
+import { PlatformSync } from '@/components/platform-sync'
 import { Toaster } from '@/components/ui/toaster'
 import { AuthProvider } from '@/lib/auth-context'
 import './globals.css'
@@ -24,6 +25,7 @@ export default function RootLayout({
           <AuthProvider>
             <AppThemeSync />
             <ThemeIconSync />
+            <PlatformSync />
             {children}
             <Toaster />
             {process.env.NODE_ENV === 'production' && <Analytics />}
