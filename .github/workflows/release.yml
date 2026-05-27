@@ -19,13 +19,13 @@ jobs:
         include:
           - platform: macos-14
             target: aarch64-apple-darwin
-            args: "--target aarch64-apple-darwin"
+            args: "--target aarch64-apple-darwin --bundles app"
             python-arch: arm64
             sidecar-bin: api-aarch64-apple-darwin
             signed-asset: AutoLiquid-macos-arm64.zip
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-            args: "--target x86_64-pc-windows-msvc"
+            args: "--target x86_64-pc-windows-msvc --bundles nsis"
             python-arch: x64
             sidecar-bin: api-x86_64-pc-windows-msvc.exe
 
