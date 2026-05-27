@@ -1398,12 +1398,44 @@ export interface AtualizacaoTauriInfo {
   mensagem: string
 }
 
+export type AtualizacaoTauriEtapa =
+  | "verificando"
+  | "disponivel"
+  | "baixando"
+  | "instalando"
+  | "reiniciando"
+  | "atualizado"
+
+export interface AtualizacaoTauriProgresso {
+  etapa: AtualizacaoTauriEtapa
+  percentual?: number
+  baixadoBytes?: number
+  totalBytes?: number
+  versaoAtual?: string
+  versaoNova?: string
+  mensagem: string
+}
+
+export type AtualizacaoTauriProgressoCallback = (
+  progresso: AtualizacaoTauriProgresso
+) => void
+
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
 }
 
 export async function obterVersao(): Promise<{ versao: string }> {
   return apiFetch<{ versao: string }>("/versao")
+}
+
+async function obterVersaoAppInstalado(): Promise<string | undefined> {
+  if (!isTauriRuntime()) return undefined
+  try {
+    const { getVersion } = await import("@tauri-apps/api/app")
+    return await getVersion()
+  } catch {
+    return undefined
+  }
 }
 
 export async function verificarAtualizacao(): Promise<VersaoInfo> {
@@ -1419,16 +1451,27 @@ export async function checarAtualizacaoTauri(): Promise<AtualizacaoTauriInfo> {
     return { suportado: false, temAtualizacao: false, instalada: false, mensagem: "" }
   }
   try {
-    const { check } = await import("@tauri-apps/plugin-updater")
+    const [{ check }, versaoAtual] = await Promise.all([
+      import("@tauri-apps/plugin-updater"),
+      obterVersaoAppInstalado(),
+    ])
     const update = await check({ timeout: 30_000 })
     if (!update) {
-      return { suportado: true, temAtualizacao: false, instalada: false, mensagem: "O aplicativo está atualizado." }
+      return {
+        suportado: true,
+        temAtualizacao: false,
+        instalada: false,
+        versaoAtual,
+        mensagem: versaoAtual
+          ? `Você está usando a versão mais recente (v${versaoAtual}).`
+          : "Você está usando a versão mais recente.",
+      }
     }
     return {
       suportado: true,
       temAtualizacao: true,
       instalada: false,
-      versaoAtual: update.currentVersion,
+      versaoAtual: update.currentVersion || versaoAtual,
       versaoNova: update.version,
       mensagem: `Nova versão disponível: ${update.version}`,
     }
@@ -1441,7 +1484,9 @@ export async function checarAtualizacaoTauri(): Promise<AtualizacaoTauriInfo> {
  * Baixa, instala e relança o app. Usado apenas quando o usuário clica
  * "Verificar e instalar" nas Configurações.
  */
-export async function instalarAtualizacaoTauri(): Promise<AtualizacaoTauriInfo> {
+export async function instalarAtualizacaoTauri(
+  onProgresso?: AtualizacaoTauriProgressoCallback
+): Promise<AtualizacaoTauriInfo> {
   if (!isTauriRuntime()) {
     return {
       suportado: false,
@@ -1451,22 +1496,103 @@ export async function instalarAtualizacaoTauri(): Promise<AtualizacaoTauriInfo> 
     }
   }
 
-  const [{ check }, { relaunch }] = await Promise.all([
+  onProgresso?.({
+    etapa: "verificando",
+    percentual: 8,
+    mensagem: "Verificando se há uma nova versão disponível.",
+  })
+
+  const [{ check }, { relaunch }, versaoApp] = await Promise.all([
     import("@tauri-apps/plugin-updater"),
     import("@tauri-apps/plugin-process"),
+    obterVersaoAppInstalado(),
   ])
 
   const update = await check({ timeout: 30_000 })
   if (!update) {
+    onProgresso?.({
+      etapa: "atualizado",
+      percentual: 100,
+      versaoAtual: versaoApp,
+      mensagem: versaoApp
+        ? `Você está usando a versão mais recente (v${versaoApp}).`
+        : "Você está usando a versão mais recente.",
+    })
     return {
       suportado: true,
       temAtualizacao: false,
       instalada: false,
-      mensagem: "O aplicativo já está na versão mais recente.",
+      versaoAtual: versaoApp,
+      mensagem: versaoApp
+        ? `Você está usando a versão mais recente (v${versaoApp}).`
+        : "Você está usando a versão mais recente.",
     }
   }
 
-  await update.downloadAndInstall()
+  const versaoAtual = update.currentVersion || versaoApp
+  let totalBytes = 0
+  let baixadoBytes = 0
+
+  onProgresso?.({
+    etapa: "disponivel",
+    percentual: 12,
+    versaoAtual,
+    versaoNova: update.version,
+    mensagem: `Nova versão v${update.version} encontrada. Iniciando download.`,
+  })
+
+  await update.downloadAndInstall((evento) => {
+    if (evento.event === "Started") {
+      totalBytes = evento.data.contentLength ?? 0
+      baixadoBytes = 0
+      onProgresso?.({
+        etapa: "baixando",
+        percentual: totalBytes > 0 ? 15 : undefined,
+        totalBytes,
+        baixadoBytes,
+        versaoAtual,
+        versaoNova: update.version,
+        mensagem: "Baixando a atualização.",
+      })
+      return
+    }
+
+    if (evento.event === "Progress") {
+      baixadoBytes += evento.data.chunkLength
+      const percentual =
+        totalBytes > 0
+          ? Math.min(90, 15 + Math.round((baixadoBytes / totalBytes) * 75))
+          : undefined
+      onProgresso?.({
+        etapa: "baixando",
+        percentual,
+        totalBytes,
+        baixadoBytes,
+        versaoAtual,
+        versaoNova: update.version,
+        mensagem: "Baixando a atualização.",
+      })
+      return
+    }
+
+    onProgresso?.({
+      etapa: "instalando",
+      percentual: 94,
+      totalBytes,
+      baixadoBytes,
+      versaoAtual,
+      versaoNova: update.version,
+      mensagem: "Download concluído. Instalando a atualização.",
+    })
+  })
+
+  onProgresso?.({
+    etapa: "reiniciando",
+    percentual: 98,
+    versaoAtual,
+    versaoNova: update.version,
+    mensagem: "Atualização instalada. Reiniciando o AutoLiquid.",
+  })
 
   try {
     await relaunch()
@@ -1479,7 +1605,7 @@ export async function instalarAtualizacaoTauri(): Promise<AtualizacaoTauriInfo> 
     suportado: true,
     temAtualizacao: true,
     instalada: true,
-    versaoAtual: update.currentVersion,
+    versaoAtual,
     versaoNova: update.version,
     mensagem: `Versão ${update.version} instalada. Feche e reabra o AutoLiquid para aplicar.`,
   }

@@ -55,6 +55,7 @@ import {
   deletarServidorConfig,
   type AppSettings,
   type AtualizacaoTauriInfo,
+  type AtualizacaoTauriProgresso,
   type AuthUsuario,
   type ProcessDates,
   type ServidorConfigRemoto,
@@ -95,6 +96,15 @@ const DEFAULT_DATAS_GLOBAIS: ProcessDates = {
   vencimento: "",
 };
 
+type UpdateProgressTone = "info" | "success" | "error";
+
+interface UpdateProgressState {
+  title: string;
+  detail: string;
+  percent?: number;
+  tone: UpdateProgressTone;
+}
+
 /** Converte DD/MM/AAAA → YYYY-MM-DD para uso no <input type="date"> */
 function dateToISO(value: string): string {
   if (!value) return value;
@@ -114,6 +124,61 @@ function canonicalEquipeName(...values: Array<string | undefined>): string {
 
 function firstName(value: string): string {
   return value.trim().split(/\s+/)[0] || value.trim();
+}
+
+function formatUpdateBytes(bytes?: number): string | null {
+  if (!bytes || bytes <= 0) return null;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function progressoAtualizacaoParaEstado(
+  progresso: AtualizacaoTauriProgresso
+): UpdateProgressState {
+  if (progresso.etapa === "baixando") {
+    const baixado = formatUpdateBytes(progresso.baixadoBytes);
+    const total = formatUpdateBytes(progresso.totalBytes);
+    return {
+      title: "Baixando atualização",
+      detail: baixado && total ? `${baixado} de ${total}` : progresso.mensagem,
+      percent: progresso.percentual,
+      tone: "info",
+    };
+  }
+
+  if (progresso.etapa === "instalando") {
+    return {
+      title: "Instalando atualização",
+      detail: progresso.mensagem,
+      percent: progresso.percentual,
+      tone: "info",
+    };
+  }
+
+  if (progresso.etapa === "reiniciando") {
+    return {
+      title: "Reiniciando o AutoLiquid",
+      detail: progresso.mensagem,
+      percent: progresso.percentual,
+      tone: "info",
+    };
+  }
+
+  if (progresso.etapa === "atualizado") {
+    return {
+      title: "Você está na versão mais recente",
+      detail: progresso.mensagem,
+      percent: 100,
+      tone: "success",
+    };
+  }
+
+  return {
+    title: progresso.etapa === "disponivel" ? "Atualização encontrada" : "Verificando atualização",
+    detail: progresso.mensagem,
+    percent: progresso.percentual,
+    tone: "info",
+  };
 }
 
 export function ConfiguracoesModal({
@@ -146,6 +211,7 @@ export function ConfiguracoesModal({
   const [verificandoUpdate, setVerificandoUpdate] = useState(false);
   const [infoUpdate, setInfoUpdate] = useState<VersaoInfo | null>(null);
   const [resultadoUpdate, setResultadoUpdate] = useState<AtualizacaoTauriInfo | null>(null);
+  const [progressoUpdate, setProgressoUpdate] = useState<UpdateProgressState | null>(null);
   const [baixando, setBaixando] = useState(false);
   const [showTursoToken, setShowTursoToken] = useState(false);
   const [showRocketToken, setShowRocketToken] = useState(false);
@@ -177,6 +243,8 @@ export function ConfiguracoesModal({
     }
     setCliquesSistema(0);
     setInfoUpdate(null);
+    setResultadoUpdate(null);
+    setProgressoUpdate(null);
 
     const carregar = async () => {
       setLoading(true);
@@ -379,16 +447,56 @@ export function ConfiguracoesModal({
     setVerificandoUpdate(true);
     setErro("");
     setResultadoUpdate(null);
+    setProgressoUpdate({
+      title: "Verificando atualização",
+      detail: atualizacaoAutomaticaDisponivel
+        ? "Consultando o pacote mais recente para o app instalado."
+        : "Consultando a versão mais recente disponível.",
+      percent: 8,
+      tone: "info",
+    });
     try {
       if (isTauriRuntime()) {
-        const resultado = await instalarAtualizacaoTauri();
+        const resultado = await instalarAtualizacaoTauri((progresso) => {
+          setProgressoUpdate(progressoAtualizacaoParaEstado(progresso));
+        });
         setResultadoUpdate(resultado);
         setInfoUpdate(null);
+        setProgressoUpdate({
+          title: resultado.temAtualizacao
+            ? "Atualização instalada"
+            : "Você está na versão mais recente",
+          detail: resultado.mensagem,
+          percent: 100,
+          tone: "success",
+        });
         return;
       }
       const info = await verificarAtualizacao();
       setInfoUpdate(info);
+      setProgressoUpdate({
+        title: info.erro
+          ? "Não foi possível verificar"
+          : info.tem_atualizacao
+            ? "Atualização encontrada"
+            : "Você está na versão mais recente",
+        detail: info.erro
+          ? info.erro
+          : info.tem_atualizacao
+            ? `A versão v${info.versao_nova} está disponível para download.`
+            : `Versão instalada: v${info.versao_atual}.`,
+        percent: 100,
+        tone: info.erro ? "error" : info.tem_atualizacao ? "info" : "success",
+      });
     } catch (error) {
+      setProgressoUpdate({
+        title: "Não foi possível atualizar",
+        detail: error instanceof Error
+          ? error.message
+          : "Não foi possível verificar atualizações.",
+        percent: 100,
+        tone: "error",
+      });
       setErro(
         error instanceof Error
           ? error.message
@@ -588,6 +696,8 @@ export function ConfiguracoesModal({
       return proximo;
     });
   };
+
+  const versaoAtualUpdate = resultadoUpdate?.versaoAtual ?? infoUpdate?.versao_atual;
 
   if (!isOpen) return null;
 
@@ -843,6 +953,69 @@ export function ConfiguracoesModal({
                             </GlassButton>
                           </div>
 
+                          {versaoAtualUpdate && (
+                            <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+                              <Tag className="h-3.5 w-3.5" />
+                              Versão instalada:{" "}
+                              <span className="font-semibold text-foreground">
+                                v{versaoAtualUpdate}
+                              </span>
+                            </div>
+                          )}
+
+                          {progressoUpdate && (
+                            <div
+                              className={`mt-3 rounded-xl border px-3 py-3 ${
+                                progressoUpdate.tone === "error"
+                                  ? "border-destructive/25 bg-destructive/10"
+                                  : progressoUpdate.tone === "success"
+                                    ? "border-emerald-500/20 bg-emerald-500/10"
+                                    : "border-violet-500/25 bg-background/75"
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p
+                                    className={`text-sm font-medium ${
+                                      progressoUpdate.tone === "error"
+                                        ? "text-destructive"
+                                        : progressoUpdate.tone === "success"
+                                          ? "text-emerald-700"
+                                          : "text-violet-700"
+                                    }`}
+                                  >
+                                    {progressoUpdate.title}
+                                  </p>
+                                  <p className="mt-1 break-words text-xs text-muted-foreground">
+                                    {progressoUpdate.detail}
+                                  </p>
+                                </div>
+                                {verificandoUpdate && (
+                                  <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-violet-700" />
+                                )}
+                              </div>
+                              <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
+                                <div
+                                  className={`h-full rounded-full transition-all duration-300 ${
+                                    progressoUpdate.tone === "error"
+                                      ? "bg-destructive"
+                                      : progressoUpdate.tone === "success"
+                                        ? "bg-emerald-500"
+                                        : "bg-violet-600"
+                                  } ${progressoUpdate.percent === undefined ? "animate-pulse" : ""}`}
+                                  style={{
+                                    width: `${progressoUpdate.percent ?? 36}%`,
+                                  }}
+                                />
+                              </div>
+                              {progressoUpdate.percent !== undefined && (
+                                <p className="mt-1 text-right text-[11px] font-medium text-muted-foreground">
+                                  {Math.round(progressoUpdate.percent)}%
+                                </p>
+                              )}
+                            </div>
+                          )}
+
                           {/* Resultado da verificação */}
                           {resultadoUpdate && (
                             <div
@@ -858,10 +1031,6 @@ export function ConfiguracoesModal({
                           )}
                           {infoUpdate && (
                             <div className="mt-3 space-y-2">
-                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                                <Tag className="h-3.5 w-3.5" />
-                                Versão atual: <span className="font-semibold text-foreground">v{infoUpdate.versao_atual}</span>
-                              </div>
                               {infoUpdate.erro ? (
                                 <div className="rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-3 space-y-2">
                                   <p className="text-sm font-medium text-destructive">
@@ -914,7 +1083,7 @@ export function ConfiguracoesModal({
                               ) : (
                                 <div className="flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
                                   <CheckCircle2 className="h-4 w-4 shrink-0" />
-                                  O aplicativo está atualizado.
+                                  Você está usando a versão mais recente (v{infoUpdate.versao_atual}).
                                 </div>
                               )}
                             </div>

@@ -3464,9 +3464,16 @@ export default function HomePage() {
     const normalizedConfig = normalizeAlertaServicoConfig(alertaServicoConfig);
     const defaultRule = normalizedConfig.regras.find((rule) => rule.id === ALERTA_SERVICO_REGRA_PADRAO_ID) ?? ALERTA_SERVICO_REGRA_PADRAO;
     const customRules = normalizedConfig.regras.filter((rule) => rule.id !== ALERTA_SERVICO_REGRA_PADRAO_ID);
+    const renderRuleField = (title: string, value: string, tone = "text-muted-foreground") => (
+      <span className="grid min-w-0 gap-1">
+        <span className="text-[10px] font-semibold uppercase text-muted-foreground">{title}</span>
+        <span className={`min-w-0 truncate text-sm ${tone}`}>{value}</span>
+      </span>
+    );
+
     const renderRuleContent = (rule: AlertaServicoRule, label: string) => (
-      <div className="grid min-w-0 gap-2 lg:grid-cols-[76px_minmax(190px,1fr)_74px_minmax(120px,0.8fr)_minmax(170px,1fr)_minmax(120px,0.8fr)] lg:items-center">
-        <label className="inline-flex h-7 w-fit items-center gap-2 rounded-full border border-glass-border bg-muted/20 px-2.5 text-xs text-muted-foreground">
+      <div className="grid min-w-0 gap-3 lg:grid-cols-[88px_minmax(260px,1.6fr)_76px_minmax(120px,0.9fr)_minmax(120px,0.9fr)_minmax(120px,0.9fr)] lg:items-center">
+        <label className="inline-flex h-8 w-fit items-center gap-2 rounded-full border border-glass-border bg-muted/20 px-3 text-xs text-muted-foreground">
           <input
             type="checkbox"
             checked={rule.active}
@@ -3476,9 +3483,9 @@ export default function HomePage() {
           {rule.active ? "Ativa" : "Inativa"}
         </label>
         <span className="grid min-w-0 gap-1">
-          <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Vencimento</span>
+          <span className="text-[10px] font-semibold uppercase text-muted-foreground">Regra de vencimento</span>
           <span
-            className={`inline-flex h-7 max-w-full items-center rounded-full border px-2.5 text-xs font-medium ${
+            className={`inline-flex min-h-8 max-w-full items-center rounded-full border px-3 py-1 text-xs font-medium leading-4 ${
               rule.acaoVencimento === "IGNORAR"
                 ? "border-zinc-300 bg-zinc-100 text-zinc-700"
                 : "border-red-500/25 bg-red-500/10 text-red-700"
@@ -3487,38 +3494,32 @@ export default function HomePage() {
             <span className="truncate">{formatAlertaServicoAcao(rule)}</span>
           </span>
         </span>
-        <span className="inline-flex h-6 w-fit items-center rounded-full bg-secondary/70 px-2 text-[10px] font-semibold uppercase text-muted-foreground">
-          {label}
-        </span>
-        {[
-          ["Tipo", rule.tipoDocumento === ALERTA_SERVICO_TIPO_TODOS ? "Todos" : rule.tipoDocumento, "text-foreground"],
-          ["CNPJ", formatRuleScope(rule.cnpj), "text-muted-foreground"],
-          ["Setor", formatRuleScope(rule.setor), "text-muted-foreground"],
-        ].map(([title, value, tone]) => (
-          <span key={title} className="grid min-w-0 grid-cols-[38px_minmax(0,1fr)] items-baseline gap-2 text-sm">
-            <span className="text-xs text-muted-foreground">{title}</span>
-            <span className={`min-w-0 truncate ${tone}`}>{value}</span>
+        <span className="grid min-w-0 gap-1">
+          <span className="text-[10px] font-semibold uppercase text-muted-foreground">Perfil</span>
+          <span className="inline-flex h-7 w-fit items-center rounded-full bg-secondary/70 px-2 text-[10px] font-semibold uppercase text-muted-foreground">
+            {label}
           </span>
-        ))}
+        </span>
+        {renderRuleField("Tipo", rule.tipoDocumento === ALERTA_SERVICO_TIPO_TODOS ? "Todos" : rule.tipoDocumento, "text-foreground")}
+        {renderRuleField("CNPJ", formatRuleScope(rule.cnpj))}
+        {renderRuleField("Setor", formatRuleScope(rule.setor))}
       </div>
     );
 
     return (
-      <div className="rounded-2xl border border-red-500/15 bg-red-500/5 p-3 text-sm text-foreground">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="rounded-2xl border border-red-500/15 bg-red-500/5 p-4 text-sm text-foreground">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
           <div className="min-w-0">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="block font-medium">Alerta de vencimento</span>
-            </div>
-            <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
-              A regra define a data de vencimento. A fila destaca o processo quando faltarem os dias de antecedência configurados.
+            <span className="block font-medium">Alerta de vencimento</span>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
+              Define o vencimento das NFs de serviço e quando elas aparecem destacadas na fila.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-end gap-2">
             {savingAlertaServicoConfig ? (
-              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              <Loader2 className="mb-2 h-4 w-4 animate-spin text-muted-foreground" />
             ) : null}
-            <label className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <label className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-[auto_80px_auto] sm:items-center">
               <span className="font-medium text-foreground">Destacar na fila</span>
               <input
                 type="number"
@@ -3532,7 +3533,7 @@ export default function HomePage() {
                 className="w-20 rounded-xl border border-glass-border bg-background px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary"
                 title="Quantidade de dias úteis antes do vencimento para destacar na fila"
               />
-              <span>dias úteis antes do vencimento</span>
+              <span>dias úteis antes</span>
             </label>
             <GlassButton type="button" size="sm" onClick={openNewAlertaServicoRule}>
               <Plus className="h-4 w-4" />
