@@ -4,11 +4,13 @@ Etapa 0 — Pesquisa e apropriação de instrumentos de cobrança no Contratos.g
 
 Fluxo:
   1. Navega para a página de Apropriação de instrumentos de cobrança.
-  2. Clica em "Todos" no seletor de registros por página (rodapé).
+  2. Aplica filtros rápidos: ano de emissão da NF (quando único) e situação
+     Pendente.
   3. Filtra por número do contrato (preferencial) ou CNPJ (fallback).
   4. Seleciona as caixas de seleção cujo Número do Documento bate com o dado
      extraído do PDF (aceita variações com/sem zeros à esquerda).
-  5. Clica no botão "Apropriar".
+  5. Se não encontrar, remove filtros, seleciona "Todos" e pesquisa de novo.
+  6. Clica no botão "Apropriar".
 """
 
 from __future__ import annotations
@@ -69,6 +71,49 @@ def _extrair_numero_documento(dados: dict) -> str:
         numero = str(nota.get("Número da Nota", "") or "").strip()
         if numero:
             return numero
+    return ""
+
+
+def _extrair_numeros_documentos(dados: dict) -> list[str]:
+    """Retorna todos os números de NF/fatura extraídos, sem duplicar."""
+    numeros: list[str] = []
+
+    def adicionar(valor: object) -> None:
+        texto = str(valor or "").strip()
+        if texto and texto not in numeros:
+            numeros.append(texto)
+
+    for campo in ("Número do Documento de Cobrança", "Número do Documento", "Numero Documento"):
+        adicionar(dados.get(campo))
+    for nota in dados.get("Notas Fiscais", []) or []:
+        if isinstance(nota, dict):
+            adicionar(nota.get("Número da Nota"))
+    return numeros
+
+
+def _extrair_ano_emissao_unico(dados: dict) -> str:
+    """
+    Retorna o ano de emissão das NFs/faturas quando todas apontam para o
+    mesmo exercício. Se houver mais de um ano, retorna vazio para não filtrar.
+    """
+    anos: set[str] = set()
+    for nota in dados.get("Notas Fiscais", []) or []:
+        if not isinstance(nota, dict):
+            continue
+        valor = str(
+            nota.get("Data de Emissão")
+            or nota.get("Data de Emissao")
+            or nota.get("Data de EmissÃ£o")
+            or ""
+        ).strip()
+        match = re.search(r"(20\d{2}|19\d{2})", valor)
+        if match:
+            anos.add(match.group(1))
+
+    if len(anos) == 1:
+        return next(iter(anos))
+    if len(anos) > 1:
+        log.info("Mais de um ano de emissão nas NFs (%s); filtro por ano será ignorado.", ", ".join(sorted(anos)))
     return ""
 
 
@@ -181,8 +226,8 @@ def _aguardar_tabela_estavel(pagina, timeout_ms: int = 60_000) -> None:
     Espera inteligente: polls até a tabela estar completamente carregada.
     Considera estável quando:
       - Não há spinners/overlays de loading visíveis
-      - A primeira linha da tabela tem texto nas células (não está vazia)
-      - Dois polls consecutivos com 1s de intervalo retornam o mesmo número de linhas
+      - A tabela já respondeu com dados ou mensagem de nenhum resultado
+      - Dois polls consecutivos retornam o mesmo número de linhas úteis
     """
     log.info("Aguardando tabela estabilizar...")
 
@@ -205,7 +250,7 @@ def _aguardar_tabela_estavel(pagina, timeout_ms: int = 60_000) -> None:
                 }
             }
 
-            // 2. Verifica se a tabela tem linhas com conteúdo real
+            // 2. Verifica se a tabela tem linhas com conteúdo real ou vazio confirmado
             var linhas = document.querySelectorAll('table tbody tr');
             if (linhas.length === 0) return -1;
 
@@ -214,7 +259,10 @@ def _aguardar_tabela_estavel(pagina, timeout_ms: int = 60_000) -> None:
             for (var j = 0; j < linhas.length; j++) {
                 var txt = (linhas[j].textContent || '').trim();
                 // Linha tem conteúdo útil (mais de 10 chars e não é só mensagem de vazio)
-                if (txt.length > 10 && txt.toLowerCase().indexOf('nenhum') === -1 && txt.toLowerCase().indexOf('no data') === -1) {
+                if (txt.length > 10
+                        && txt.toLowerCase().indexOf('nenhum') === -1
+                        && txt.toLowerCase().indexOf('no data') === -1
+                        && txt.toLowerCase().indexOf('sem registro') === -1) {
                     linhasComDados++;
                 }
             }
@@ -232,8 +280,8 @@ def _aguardar_tabela_estavel(pagina, timeout_ms: int = 60_000) -> None:
         except Exception:
             contagem = -1
 
-        if contagem > 0 and contagem == contagem_anterior:
-            # Dois polls com o mesmo resultado positivo → tabela estável
+        if contagem >= 0 and contagem == contagem_anterior:
+            # Dois polls com o mesmo resultado → tabela estável, inclusive vazia.
             log.info("Tabela estável com %d linha(s) de dados.", contagem)
             return
 
@@ -242,6 +290,124 @@ def _aguardar_tabela_estavel(pagina, timeout_ms: int = 60_000) -> None:
         time.sleep(1.5)
 
     log.warning("Timeout aguardando tabela estabilizar. Prosseguindo mesmo assim.")
+
+
+def _aplicar_select2_por_id(pagina, select_id: str, *, valores: list[str], texto: str) -> bool:
+    """Define filtro Select2/DataTables pelo select escondido e dispara change."""
+    js = """
+        ({ selectId, valores, texto }) => {
+            const select = document.getElementById(selectId);
+            if (!select) return false;
+
+            const normalizar = (value) => (value || '')
+                .toString()
+                .normalize('NFD')
+                .replace(/[\\u0300-\\u036f]/g, '')
+                .trim()
+                .toLowerCase();
+
+            const desejados = valores.map(normalizar);
+            let valorFinal = '';
+
+            for (const opt of Array.from(select.options || [])) {
+                const optValue = normalizar(opt.value);
+                const optText = normalizar(opt.textContent);
+                if (desejados.includes(optValue) || desejados.includes(optText)) {
+                    valorFinal = opt.value;
+                    break;
+                }
+            }
+
+            if (!valorFinal) {
+                valorFinal = valores[0] || texto;
+                const opt = new Option(texto || valorFinal, valorFinal, true, true);
+                select.add(opt);
+            }
+
+            if (window.jQuery) {
+                window.jQuery(select).val(valorFinal).trigger('change');
+            } else {
+                select.value = valorFinal;
+                select.dispatchEvent(new Event('input', { bubbles: true }));
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            return true;
+        }
+    """
+    try:
+        return bool(pagina.evaluate(js, {"selectId": select_id, "valores": valores, "texto": texto}))
+    except Exception as exc:
+        log.warning("Falha ao aplicar filtro '%s': %s", select_id, exc)
+        return False
+
+
+def _aplicar_filtros_iniciais(pagina, ano_emissao: str) -> None:
+    """
+    Aplica filtros baratos antes da busca textual:
+    - Ano Emissão, quando todas as NFs têm o mesmo ano.
+    - Situação = Pendente.
+    """
+    filtros_aplicados = []
+    if ano_emissao:
+        if _aplicar_select2_por_id(
+            pagina,
+            "filter_emissao",
+            valores=[ano_emissao],
+            texto=ano_emissao,
+        ):
+            filtros_aplicados.append(f"Ano Emissão={ano_emissao}")
+
+    if _aplicar_select2_por_id(
+        pagina,
+        "filter_situacao",
+        valores=["PEN", "Pendente"],
+        texto="Pendente",
+    ):
+        filtros_aplicados.append("Situação=Pendente")
+
+    if filtros_aplicados:
+        log.info("Filtros iniciais aplicados: %s", " | ".join(filtros_aplicados))
+        time.sleep(1.2)
+        _aguardar_tabela_estavel(pagina, timeout_ms=30_000)
+    else:
+        log.info("Nenhum filtro inicial foi aplicado.")
+
+
+def _remover_filtros(pagina) -> None:
+    """Remove filtros avançados e limpa a pesquisa global."""
+    log.info("Removendo filtros antes do fallback amplo...")
+    js = """
+        () => {
+            const remover = document.querySelector('#remove_filters_button');
+            if (remover) {
+                remover.click();
+            }
+
+            const search = document.querySelector("input[type='search']");
+            if (search) {
+                search.value = '';
+                search.dispatchEvent(new Event('input', { bubbles: true }));
+                search.dispatchEvent(new Event('change', { bubbles: true }));
+                search.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+            }
+
+            for (const select of document.querySelectorAll('select[id^="filter_"]')) {
+                if (window.jQuery) {
+                    window.jQuery(select).val('').trigger('change');
+                } else {
+                    select.value = '';
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }
+            return true;
+        }
+    """
+    try:
+        pagina.evaluate(js)
+        time.sleep(1.5)
+        _aguardar_tabela_estavel(pagina, timeout_ms=30_000)
+    except Exception as exc:
+        log.warning("Não foi possível remover filtros automaticamente: %s", exc)
 
 
 def _usar_campo_pesquisar(pagina, valor: str) -> None:
@@ -286,22 +452,29 @@ def _usar_campo_pesquisar(pagina, valor: str) -> None:
         log.warning("Erro ao usar campo Pesquisar: %s", exc)
 
 
-def _selecionar_documentos(pagina, numero_documento: str) -> int:
+def _selecionar_documentos(pagina, numero_documento: str | list[str]) -> int:
     """
     Seleciona as caixas de seleção cujo número do documento bate com
     `numero_documento` (tolerando zeros à esquerda).
     Retorna a quantidade de caixas marcadas.
     """
-    if not numero_documento:
+    numeros = numero_documento if isinstance(numero_documento, list) else [numero_documento]
+    numeros_norm = [
+        _normalizar_numero(numero)
+        for numero in numeros
+        if str(numero or "").strip()
+    ]
+
+    if not numeros_norm:
         log.warning("Número do documento não disponível — selecionando todos visíveis.")
         return _selecionar_todos_checkboxes(pagina)
 
-    num_norm = _normalizar_numero(numero_documento)
-    log.info("Selecionando documentos com número: %s (normalizado: %s)", numero_documento, num_norm)
+    log.info("Selecionando documentos com número(s): %s", ", ".join(numeros_norm))
 
     js = """
-        (numNorm) => {
+        (numsNorm) => {
             var count = 0;
+            var alvos = new Set(numsNorm);
             var linhas = document.querySelectorAll('table tbody tr');
             for (var i = 0; i < linhas.length; i++) {
                 var linha = linhas[i];
@@ -309,7 +482,7 @@ def _selecionar_documentos(pagina, numero_documento: str) -> int:
                 var encontrou = false;
                 for (var j = 0; j < celulas.length; j++) {
                     var txt = (celulas[j].textContent || '').trim().replace(/\\D/g, '').replace(/^0+/, '') || '0';
-                    if (txt === numNorm) {
+                    if (alvos.has(txt)) {
                         encontrou = true;
                         break;
                     }
@@ -326,7 +499,7 @@ def _selecionar_documentos(pagina, numero_documento: str) -> int:
         }
     """
     try:
-        marcados = pagina.evaluate(js, num_norm)
+        marcados = pagina.evaluate(js, numeros_norm)
         log.info("Documentos selecionados: %d", marcados)
         return marcados
     except Exception as exc:
@@ -501,20 +674,31 @@ def executar(dados: dict, pagina, playwright=None) -> dict:
         contrato = _extrair_contrato(dados)
         cnpj = _extrair_cnpj(dados)
         numero_doc = _extrair_numero_documento(dados)
+        numeros_docs = _extrair_numeros_documentos(dados) or ([numero_doc] if numero_doc else [])
+        ano_emissao = _extrair_ano_emissao_unico(dados)
 
         log.info("=== Etapa 0: Apropriar ===")
-        log.info("Contrato: %s | CNPJ: %s | Nº Doc: %s", contrato, cnpj, numero_doc)
+        log.info(
+            "Contrato: %s | CNPJ: %s | Nº Doc(s): %s | Ano emissão: %s",
+            contrato,
+            cnpj,
+            ", ".join(numeros_docs) or "-",
+            ano_emissao or "sem filtro",
+        )
 
         # 1. Garantir que estamos na página correta
         _garantir_na_pagina_apropriar(pagina)
 
-        # 2. Clicar em "Todos" registros por página
-        _clicar_todos_registros(pagina)
+        # 2. Primeiro filtro barato: ano da NF (se único) + situação Pendente.
+        _aplicar_filtros_iniciais(pagina, ano_emissao)
 
         # 3. Filtrar pelo contrato (prioritário) ou CNPJ usando campo Pesquisar
+        filtro_label = ""
         if contrato:
+            filtro_label = f"contrato '{contrato}'"
             _usar_campo_pesquisar(pagina, contrato)
         elif cnpj:
+            filtro_label = f"CNPJ '{_formatar_cnpj(cnpj)}'"
             _usar_campo_pesquisar(pagina, _formatar_cnpj(cnpj))
         else:
             return {
@@ -531,16 +715,35 @@ def executar(dados: dict, pagina, playwright=None) -> dict:
         time.sleep(1)
 
         # 5. Selecionar caixas de seleção pelo número do documento
-        marcados = _selecionar_documentos(pagina, numero_doc)
+        marcados = _selecionar_documentos(pagina, numeros_docs)
+
+        if marcados == 0:
+            log.info(
+                "Nenhum documento encontrado com filtros iniciais. "
+                "Removendo filtros e repetindo pesquisa ampla."
+            )
+            _remover_filtros(pagina)
+            _clicar_todos_registros(pagina)
+            if contrato:
+                _usar_campo_pesquisar(pagina, contrato)
+            else:
+                _usar_campo_pesquisar(pagina, _formatar_cnpj(cnpj))
+            try:
+                _aguardar_tabela(pagina, timeout_ms=10_000)
+            except Exception:
+                log.warning("Tabela pode estar vazia ou não carregada após fallback amplo.")
+            time.sleep(1)
+            marcados = _selecionar_documentos(pagina, numeros_docs)
 
         if marcados == 0:
             return {
                 "status": "erro",
                 "mensagem": (
-                    "Nenhum documento encontrado com número '{}' "
-                    "após filtrar por contrato '{}'. "
+                    "Nenhum documento encontrado com número(s) '{}' "
+                    "após filtrar por {}. "
                     "Verifique se o instrumento de cobrança foi lançado no sistema.".format(
-                        numero_doc, contrato
+                        ", ".join(numeros_docs) or numero_doc,
+                        filtro_label,
                     )
                 ),
             }

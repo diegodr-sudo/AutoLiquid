@@ -3,6 +3,7 @@
 import json
 import os
 import platform
+import re
 import socket
 import subprocess
 import time
@@ -10,8 +11,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from core.app_paths import DIR_PERFIL, PORTA_CHROME, URL_INICIAL
+from core.app_paths import DIR_PERFIL, PORTA_CHROME, URL_INICIAL, caminho_recurso
 from core.runtime_config import obter_porta_chrome
+
+AUTOLIQUID_EXTRACTOR_BOOKMARK_NAME = "AutoLiquid Extrair Pagina"
 
 
 def obter_navegador_configurado() -> str:
@@ -80,6 +83,125 @@ def _spawn_detached(cmd: list[str]) -> None:
     subprocess.Popen(cmd, **kwargs)
 
 
+def _chrome_timestamp() -> str:
+    # Chrome armazena datas como microssegundos desde 1601-01-01 UTC.
+    return str(int((time.time() + 11644473600) * 1_000_000))
+
+
+def _compactar_bookmarklet(source: str) -> str:
+    source = source.strip()
+    source = re.sub(r"^\s*//.*$", "", source, flags=re.MULTILINE)
+    return " ".join(line.strip() for line in source.splitlines() if line.strip())
+
+
+def _bookmarklet_extrator_pagina() -> str:
+    caminho = caminho_recurso("scripts/browser_page_extractor_bookmarklet.js")
+    source = caminho.read_text(encoding="utf-8")
+    return "javascript:" + _compactar_bookmarklet(source)
+
+
+def _novo_no_pasta(nome: str) -> dict:
+    agora = _chrome_timestamp()
+    return {
+        "children": [],
+        "date_added": agora,
+        "date_last_used": "0",
+        "date_modified": agora,
+        "guid": "",
+        "id": "1",
+        "name": nome,
+        "type": "folder",
+    }
+
+
+def _proximo_bookmark_id(node: dict) -> int:
+    maior = 0
+    pilha = [node]
+    while pilha:
+        atual = pilha.pop()
+        try:
+            maior = max(maior, int(str(atual.get("id") or "0")))
+        except ValueError:
+            pass
+        pilha.extend(atual.get("children") or [])
+        roots = atual.get("roots")
+        if isinstance(roots, dict):
+            pilha.extend(item for item in roots.values() if isinstance(item, dict))
+    return maior + 1
+
+
+def instalar_bookmarklets_autoliquid() -> bool:
+    """Garante o bookmarklet de extração no perfil dedicado do navegador."""
+    try:
+        bookmarklet_url = _bookmarklet_extrator_pagina()
+    except Exception:
+        return False
+
+    perfil = Path(DIR_PERFIL)
+    default_dir = perfil / "Default"
+    default_dir.mkdir(parents=True, exist_ok=True)
+    bookmarks_path = default_dir / "Bookmarks"
+
+    if bookmarks_path.exists():
+        try:
+            bookmarks = json.loads(bookmarks_path.read_text(encoding="utf-8"))
+        except Exception:
+            bookmarks = {}
+    else:
+        bookmarks = {}
+
+    roots = bookmarks.setdefault("roots", {})
+    bookmark_bar = roots.setdefault("bookmark_bar", _novo_no_pasta("Bookmarks bar"))
+    roots.setdefault("other", _novo_no_pasta("Other bookmarks"))
+    roots.setdefault("synced", _novo_no_pasta("Mobile bookmarks"))
+    bookmark_bar.setdefault("children", [])
+
+    children = bookmark_bar["children"]
+    changed = False
+    for item in list(children):
+        if item.get("name") == AUTOLIQUID_EXTRACTOR_BOOKMARK_NAME:
+            if item.get("url") != bookmarklet_url:
+                item["url"] = bookmarklet_url
+                item["date_modified"] = _chrome_timestamp()
+                changed = True
+            break
+    else:
+        children.append({
+            "date_added": _chrome_timestamp(),
+            "date_last_used": "0",
+            "guid": "",
+            "id": str(_proximo_bookmark_id(bookmarks)),
+            "name": AUTOLIQUID_EXTRACTOR_BOOKMARK_NAME,
+            "type": "url",
+            "url": bookmarklet_url,
+        })
+        changed = True
+
+    bookmarks.setdefault("version", 1)
+    bookmarks.pop("checksum", None)
+    if changed or not bookmarks_path.exists():
+        bookmarks_path.write_text(json.dumps(bookmarks, ensure_ascii=False, indent=2), encoding="utf-8")
+    _garantir_barra_favoritos_visivel()
+    return True
+
+
+def _garantir_barra_favoritos_visivel() -> None:
+    preferences_path = Path(DIR_PERFIL) / "Default" / "Preferences"
+    preferences_path.parent.mkdir(parents=True, exist_ok=True)
+    if preferences_path.exists():
+        try:
+            preferences = json.loads(preferences_path.read_text(encoding="utf-8"))
+        except Exception:
+            preferences = {}
+    else:
+        preferences = {}
+    bookmark_bar = preferences.setdefault("bookmark_bar", {})
+    if bookmark_bar.get("show_on_all_tabs") is True:
+        return
+    bookmark_bar["show_on_all_tabs"] = True
+    preferences_path.write_text(json.dumps(preferences, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _resolver_executavel_chrome(sistema: str) -> str:
     """Retorna o executável do Google Chrome conforme o sistema operacional."""
     if sistema == "Darwin":
@@ -146,6 +268,7 @@ def abrir_chrome(
     porta = resolver_porta_chrome(porta)
     if navegador is None:
         navegador = obter_navegador_configurado()
+    instalar_bookmarklets_autoliquid()
 
     args = [
         f"--remote-debugging-port={porta}",
@@ -153,6 +276,7 @@ def abrir_chrome(
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-extensions",
+        "--show-bookmark-bar",
         url_inicial or URL_INICIAL,
     ]
 
@@ -197,7 +321,14 @@ def abrir_chrome_incognito(url: str) -> None:
 
     sistema = platform.system()
     exe = _resolver_executavel_chrome(sistema)
-    args = ["--incognito", "--new-window", url]
+    instalar_bookmarklets_autoliquid()
+    args = [
+        f"--user-data-dir={DIR_PERFIL}",
+        "--incognito",
+        "--new-window",
+        "--show-bookmark-bar",
+        url,
+    ]
     if sistema == "Darwin":
         cmd = ["open", "-na", exe, "--args", *args]
     else:

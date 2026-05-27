@@ -10,7 +10,6 @@ from typing import Any
 
 from core.datas_impostos import TABELA_GENERICA, _VENCE_DIA_10, obter_regras_datas_impostos
 from core.de_para_contratos import obter_arquivo_contratos, recarregar as recarregar_contratos
-from services import postgres_service
 from services.config_service import (
     carregar_config_app,
     carregar_tabelas_config,
@@ -24,52 +23,16 @@ _CONTRATOS_TURSO_SYNC_AT = 0.0
 WEB_THEME_VALUES = {"light", "dark", "system"}
 WEB_NIVEL_LOG_VALUES = {"desenvolvedor"}
 WEB_NAVEGADOR_VALUES = {"chrome", "edge"}
-DATABASE_MODE_VALUES = {"turso", "supabase"}
-
-DATA_SOURCE_DEFAULTS: dict[str, dict[str, bool]] = {
-    "fila_processos_atual": {"supabase": False, "turso": True},
-    "fila_processos_alertas": {"supabase": False, "turso": True},
-    "fila_processos_edicoes": {"supabase": False, "turso": True},
-    "servidores_config": {"supabase": False, "turso": True},
-    "tabelas_operacionais": {"supabase": False, "turso": True},
-    "datas_globais": {"supabase": False, "turso": True},
-    "processos": {"supabase": False, "turso": True},
-    "execucoes": {"supabase": False, "turso": True},
-    "empenhos": {"supabase": False, "turso": True},
-    "notas_fiscais_execucao": {"supabase": False, "turso": True},
-    "deducoes_execucao": {"supabase": False, "turso": True},
-    "execucao_pendencias": {"supabase": False, "turso": True},
-    "ausencias": {"supabase": False, "turso": True},
-}
-
-
-def normalizar_data_sources(raw: Any) -> dict[str, dict[str, bool]]:
-    data: dict[str, dict[str, bool]] = {}
-    raw_map = raw if isinstance(raw, dict) else {}
-    for table, defaults in DATA_SOURCE_DEFAULTS.items():
-        current = raw_map.get(table)
-        current_map = current if isinstance(current, dict) else {}
-        supabase = bool(current_map.get("supabase", defaults["supabase"]))
-        turso = bool(current_map.get("turso", defaults["turso"]))
-        if supabase == turso:
-            supabase = bool(defaults["supabase"])
-            turso = bool(defaults["turso"])
-        data[table] = {
-            "supabase": supabase,
-            "turso": turso,
-        }
-    return data
 
 
 def fonte_dados_habilitada(tabela: str, provedor: str) -> bool:
-    config = carregar_config_app()
-    sources = normalizar_data_sources(config.get("data_sources"))
-    return bool(sources.get(tabela, {}).get(provedor))
+    """Todos os dados usam Turso exclusivamente após migração completa."""
+    _ = tabela  # mantido para não quebrar chamadas existentes
+    return provedor == "turso"
 
 
 def modo_banco_ativo() -> str:
-    modo = str(carregar_config_app().get("database_mode") or "turso").strip().lower()
-    return modo if modo in DATABASE_MODE_VALUES else "turso"
+    return "turso"
 
 VPD_PADRAO = [["339030.01", "DSP 001", "3.3.2.3.X.04.00"]]
 
@@ -517,9 +480,9 @@ def _salvar_tabela_local(table_key: str, rows: list[dict[str, Any]]) -> None:
         _save_datas_impostos_rows(rows)
 
 
-# Sentinela interno: diferencia "erro de conexão" de "linha não existe no banco".
+# Sentinela interno: diferencia "erro de conexão" de "linha não existe no Turso".
 # Isso evita que um erro temporário de leitura dispare um bootstrap que
-# sobrescreveria dados reais do Supabase com os defaults locais.
+# sobrescreveria dados reais com os defaults locais.
 class _ErroRemoto:
     pass
 
@@ -528,8 +491,8 @@ _ERRO_REMOTO = _ErroRemoto()
 
 def _carregar_tabela_remota(table_key: str) -> list[dict[str, str]] | None | _ErroRemoto:
     """Retorna:
-    - list   → dados carregados do Supabase (pode ser [] se a linha existir vazia)
-    - None   → Postgres desabilitado OU linha ainda não existe (bootstrap seguro)
+    - list   → dados carregados do Turso (pode ser [] se a linha existir vazia)
+    - None   → Turso indisponível OU linha ainda não existe (bootstrap seguro)
     - _ERRO_REMOTO → falha de conexão/leitura (NÃO fazer bootstrap)
     """
     if fonte_dados_habilitada("tabelas_operacionais", "turso"):
@@ -545,18 +508,7 @@ def _carregar_tabela_remota(table_key: str) -> list[dict[str, str]] | None | _Er
             if modo_banco_ativo() == "turso":
                 return _ERRO_REMOTO
 
-    if not fonte_dados_habilitada("tabelas_operacionais", "supabase") or not postgres_service.postgres_habilitado():
-        return None
-    try:
-        rows = postgres_service.obter_tabela_operacional(table_key)
-        if rows is None:
-            # Linha não existe no banco — bootstrap é seguro
-            return None
-        return _normalize_table_rows(table_key, rows)
-    except Exception:
-        log.exception("Falha ao carregar tabela '%s' do PostgreSQL.", table_key)
-        # Erro real: não retornar None para não disparar bootstrap acidental
-        return _ERRO_REMOTO
+    return None
 
 
 def _salvar_tabela_remota(table_key: str, rows: list[dict[str, Any]]) -> bool:
@@ -574,13 +526,6 @@ def _salvar_tabela_remota(table_key: str, rows: list[dict[str, Any]]) -> bool:
         except Exception:
             log.exception("Falha ao salvar tabela '%s' no Turso.", table_key)
 
-    if not fonte_dados_habilitada("tabelas_operacionais", "supabase") or not postgres_service.postgres_habilitado():
-        return saved
-    try:
-        postgres_service.salvar_tabela_operacional(table_key, normalized)
-        saved = True
-    except Exception:
-        log.exception("Falha ao salvar tabela '%s' no PostgreSQL.", table_key)
     return saved
 
 
@@ -610,17 +555,17 @@ def carregar_tabela_web(table_key: str, search: str = "") -> dict[str, Any]:
     remoto = _carregar_tabela_remota(table_key)
 
     if isinstance(remoto, _ErroRemoto):
-        # Erro de conexão: usa local SEM bootstrap para não sobrescrever dados no Supabase
+        # Erro de conexão: usa local SEM bootstrap para não sobrescrever dados remotos
         rows = _carregar_tabela_local(table_key)
         storage = "local"
     elif remoto is None:
-        # Postgres desabilitado ou linha ainda não existe: bootstrap seguro
+        # Turso indisponível ou linha ainda não existe: bootstrap seguro
         rows = _carregar_tabela_local(table_key)
         if _salvar_tabela_remota(table_key, rows):
-            storage = "postgres-bootstrap"
+            storage = "turso-bootstrap"
     else:
         rows = remoto
-        storage = "postgres"
+        storage = "turso"
 
     filtered_rows = _filter_rows(rows, search)
     return {
@@ -649,17 +594,24 @@ def salvar_tabela_web(table_key: str, rows: list[dict[str, Any]]) -> dict[str, A
     return carregar_tabela_web(table_key)
 
 
-def carregar_contratos_ic_de_para() -> dict[str, str]:
-    tabela = carregar_tabela_web("contratos")
+def _mapa_contratos_ic(rows: list[dict[str, Any]]) -> dict[str, str]:
     mapa: dict[str, str] = {}
-    for row in tabela.get("rows") or []:
+    for row in rows or []:
         if not isinstance(row, dict):
             continue
         sarf = str(row.get("sarf") or "").strip().upper()
         ig = str(row.get("ig") or "").strip()
         if sarf and ig:
             mapa[sarf] = ig
+    return mapa
 
+
+def carregar_contratos_ic_de_para(*, somente_local: bool = False) -> dict[str, str]:
+    if somente_local:
+        return _mapa_contratos_ic(_carregar_tabela_local("contratos"))
+
+    tabela = carregar_tabela_web("contratos")
+    mapa = _mapa_contratos_ic(tabela.get("rows") or [])
     if mapa:
         _sincronizar_contratos_turso(tabela.get("rows") or [])
         return mapa
@@ -701,17 +653,14 @@ def carregar_configuracoes_web() -> dict[str, Any]:
         "temaWeb": tema_web,
         "nivelLog": nivel_log,
         "navegador": navegador,
-        "databaseUrl": str(config.get("database_url") or ""),
         "tursoDatabaseUrl": str(config.get("turso_database_url") or ""),
         "tursoAuthToken": str(config.get("turso_auth_token") or ""),
-        "databaseMode": modo_banco_ativo(),
         "nomeUsuario": str(config.get("nome_usuario") or ""),
         "nfServicoAlertaDiasUteis": int(config.get("nf_servico_alerta_dias_uteis", 3) or 0),
         "rocketChatUrl": str(config.get("rocket_chat_url") or "https://chat.ufsc.br"),
         "rocketChatUserId": str(config.get("rocket_chat_user_id") or ""),
         "rocketChatAuthToken": str(config.get("rocket_chat_auth_token") or ""),
         "rocketChatContar": str(config.get("rocket_chat_contar") or "tudo"),
-        "dataSources": normalizar_data_sources(config.get("data_sources")),
     }
 
 
@@ -737,12 +686,8 @@ def salvar_configuracoes_web(dados: dict[str, Any]) -> dict[str, Any]:
     if navegador not in WEB_NAVEGADOR_VALUES:
         navegador = "chrome"
 
-    database_url = str(dados.get("databaseUrl") or "").strip()
     turso_database_url = str(dados.get("tursoDatabaseUrl") or "").strip()
     turso_auth_token = str(dados.get("tursoAuthToken") or "").strip()
-    database_mode = str(dados.get("databaseMode") or "turso").strip().lower()
-    if database_mode not in DATABASE_MODE_VALUES:
-        database_mode = "turso"
     nome_usuario = str(dados.get("nomeUsuario") or "").strip()
     rocket_chat_url = str(dados.get("rocketChatUrl") or "https://chat.ufsc.br").strip().rstrip("/")
     if rocket_chat_url and not rocket_chat_url.startswith(("http://", "https://")):
@@ -758,7 +703,6 @@ def salvar_configuracoes_web(dados: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Dias úteis do alerta de NF Serviço inválidos.") from exc
     if not 0 <= nf_servico_alerta_dias_uteis <= 60:
         raise ValueError("Dias úteis do alerta de NF Serviço devem ficar entre 0 e 60.")
-    data_sources = normalizar_data_sources(dados.get("dataSources"))
 
     salvar_config_app(
         {
@@ -768,33 +712,20 @@ def salvar_configuracoes_web(dados: dict[str, Any]) -> dict[str, Any]:
             "perguntar_limpar_mes": bool(dados.get("perguntarLimparMes", True)),
             "tema_web": tema_web,
             "nivel_log": nivel_log,
-            "database_url": database_url,
             "turso_database_url": turso_database_url,
             "turso_auth_token": turso_auth_token,
-            "database_mode": database_mode,
             "nome_usuario": nome_usuario,
             "nf_servico_alerta_dias_uteis": nf_servico_alerta_dias_uteis,
             "rocket_chat_url": rocket_chat_url,
             "rocket_chat_user_id": rocket_chat_user_id,
             "rocket_chat_auth_token": rocket_chat_auth_token,
             "rocket_chat_contar": rocket_chat_contar,
-            "data_sources": data_sources,
         }
     )
 
     # Aplica imediatamente no ambiente para não precisar reiniciar
-    if database_url:
-        os.environ["DATABASE_URL"] = database_url
-    elif "DATABASE_URL" in os.environ and not database_url:
-        os.environ.pop("DATABASE_URL", None)
-
     if nome_usuario:
         os.environ["AUTO_LIQUID_NOME"] = nome_usuario
-        if fonte_dados_habilitada("servidores_config", "supabase"):
-            try:
-                postgres_service.salvar_servidor_config(nome_usuario, "#6366f1")
-            except Exception:
-                log.warning("Não foi possível registrar '%s' no cadastro único de servidores no Supabase.", nome_usuario, exc_info=True)
         if fonte_dados_habilitada("servidores_config", "turso"):
             try:
                 from services import turso_service

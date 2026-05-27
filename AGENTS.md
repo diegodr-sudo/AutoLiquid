@@ -1,7 +1,19 @@
-# Guia Rápido Para Revisão por IA
+# Guia Obrigatório Para Agentes de IA
+
+## Leitura obrigatória
+Antes de executar comandos, alterar arquivos ou propor refatorações neste repositório, todo agente de IA deve ler este arquivo. Este documento é o contrato de trabalho do AutoLiquid: se uma instrução local conflitar com uma preferência genérica do agente, siga este arquivo e os padrões já existentes no código.
 
 ## Objetivo
 Este projeto automatiza fluxo de liquidação no Comprasnet/Contratos.gov.br, com interface PyQt6 e automações Playwright.
+
+## Regras de UI e UX
+- Priorize consistência visual antes de criar um componente novo. Se dois controles têm a mesma função ou peso visual, eles devem ter altura, raio de borda, espaçamento e estados de foco equivalentes.
+- Campos de formulário em modais e painéis operacionais devem usar formato arredondado/pílula quando estiverem no mesmo grupo visual. Não misture `select` com aparência quadrada e `input` arredondado no mesmo bloco.
+- Use controles nativos de forma previsível: `select` para escolha fechada, `input` numérico para números, switch/checkbox para binários e botões com ícone para ações explícitas.
+- Cards e seções podem manter `rounded-2xl`; botões e campos dentro deles devem seguir um raio coerente entre si, sem alternar entre quadrado, `rounded-md` e pílula no mesmo formulário.
+- Textos de ajuda devem ser curtos, alinhados ao grupo que explicam e não competir com os campos principais.
+- Configurações globais devem exibir o indicador `GlobalScopeIcon`; preferências locais/de máquina, como tema, navegador, porta, colunas visíveis e layout da fila, não devem receber o globo.
+- Antes de finalizar qualquer alteração visual, rode pelo menos `npm --prefix frontend run build`. Quando houver impacto de layout, abra o app em desenvolvimento e confira a tela afetada.
 
 ## Ordem recomendada de leitura
 1. `interface.py`

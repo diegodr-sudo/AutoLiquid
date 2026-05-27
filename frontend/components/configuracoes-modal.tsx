@@ -76,53 +76,19 @@ const DEFAULT_SETTINGS: AppSettings = {
   perguntarLimparMes: true,
   temaWeb: "light",
   nivelLog: "desenvolvedor",
-  databaseUrl: "",
   tursoDatabaseUrl: "",
   tursoAuthToken: "",
-  databaseMode: "turso",
   nomeUsuario: "",
   nfServicoAlertaDiasUteis: 3,
   rocketChatUrl: "https://chat.ufsc.br",
   rocketChatUserId: "",
   rocketChatAuthToken: "",
   rocketChatContar: "tudo",
-  dataSources: {
-    fila_processos_atual: { supabase: false, turso: true },
-    fila_processos_alertas: { supabase: false, turso: true },
-    fila_processos_edicoes: { supabase: false, turso: true },
-    servidores_config: { supabase: false, turso: true },
-    tabelas_operacionais: { supabase: false, turso: true },
-    datas_globais: { supabase: false, turso: true },
-    processos: { supabase: false, turso: true },
-    execucoes: { supabase: false, turso: true },
-    empenhos: { supabase: false, turso: true },
-    notas_fiscais_execucao: { supabase: false, turso: true },
-    deducoes_execucao: { supabase: false, turso: true },
-    execucao_pendencias: { supabase: false, turso: true },
-    ausencias: { supabase: false, turso: true },
-  },
 };
 
-const SUPABASE_PROJECT_URL = "https://supabase.com/dashboard/project/fxffsintfysatyglcmmi";
 const TURSO_DASHBOARD_URL = "https://app.turso.tech";
 
 type Aba = "basico" | "avancado" | "sistema";
-
-const DATA_SOURCE_TABLES = [
-  { key: "fila_processos_atual", label: "Fila atual", group: "Fila" },
-  { key: "fila_processos_alertas", label: "Alertas da fila", group: "Fila" },
-  { key: "fila_processos_edicoes", label: "Edições da fila", group: "Fila" },
-  { key: "servidores_config", label: "Servidores", group: "Equipe" },
-  { key: "tabelas_operacionais", label: "Tabelas operacionais", group: "Config" },
-  { key: "datas_globais", label: "Datas globais", group: "Config" },
-  { key: "processos", label: "Processos", group: "Histórico" },
-  { key: "execucoes", label: "Execuções", group: "Histórico" },
-  { key: "empenhos", label: "Empenhos", group: "Histórico" },
-  { key: "notas_fiscais_execucao", label: "Notas fiscais", group: "Histórico" },
-  { key: "deducoes_execucao", label: "Deduções", group: "Histórico" },
-  { key: "execucao_pendencias", label: "Pendências", group: "Histórico" },
-  { key: "ausencias", label: "Ausências", group: "Gestão" },
-] as const;
 
 const DEFAULT_DATAS_GLOBAIS: ProcessDates = {
   apuracao: "",
@@ -181,12 +147,10 @@ export function ConfiguracoesModal({
   const [infoUpdate, setInfoUpdate] = useState<VersaoInfo | null>(null);
   const [resultadoUpdate, setResultadoUpdate] = useState<AtualizacaoTauriInfo | null>(null);
   const [baixando, setBaixando] = useState(false);
-  const [showDbUrl, setShowDbUrl] = useState(false);
   const [showTursoToken, setShowTursoToken] = useState(false);
   const [showRocketToken, setShowRocketToken] = useState(false);
   const [testandoRocket, setTestandoRocket] = useState(false);
   const [resultadoRocket, setResultadoRocket] = useState("");
-  const [mostrarGuiaTurso, setMostrarGuiaTurso] = useState(false);
   const [servidoresSistema, setServidoresSistema] = useState<ServidorConfigRemoto[]>([]);
   const [usuariosAuth, setUsuariosAuth] = useState<AuthUsuario[]>([]);
   const [datasGlobais, setDatasGlobais] = useState<ProcessDates>(DEFAULT_DATAS_GLOBAIS);
@@ -477,37 +441,6 @@ export function ConfiguracoesModal({
     }
   };
 
-  const dataSourcesForMode = (mode: "turso" | "supabase") =>
-    Object.fromEntries(
-      DATA_SOURCE_TABLES.map((table) => [
-        table.key,
-        { supabase: mode === "supabase", turso: mode === "turso" },
-      ])
-    ) as AppSettings["dataSources"];
-
-  const setDatabaseModeExclusive = (mode: "turso" | "supabase") => {
-    setSettings((current) => ({
-      ...current,
-      databaseMode: mode,
-      dataSources: dataSourcesForMode(mode),
-    }));
-  };
-
-  const toggleDataSource = (table: string, provider: "supabase" | "turso") => {
-    setSettings((current) => {
-      return {
-        ...current,
-        dataSources: {
-          ...(current.dataSources ?? {}),
-          [table]: {
-            supabase: provider === "supabase",
-            turso: provider === "turso",
-          },
-        },
-      };
-    });
-  };
-
   const handleAdicionarServidorSistema = async () => {
     const nome = novoServidorNome.trim();
     if (!nome) return;
@@ -659,19 +592,19 @@ export function ConfiguracoesModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
+    <div className="fixed inset-0 z-[200] overflow-y-auto">
       <div
         className="absolute inset-0 bg-background/70 backdrop-blur-sm"
         onClick={onClose}
       />
 
-      <div className="relative flex min-h-full items-start justify-center p-4 sm:items-center">
+      <div className="relative flex min-h-full items-start justify-center p-2 sm:p-3">
         <GlassCard
           className="relative z-10 pointer-events-auto w-full max-w-3xl overflow-hidden border-white/50 shadow-[0_28px_90px_-40px_rgba(15,23,42,0.35)]"
-          contentClassName="flex max-h-[92vh] min-h-0 flex-col"
+          contentClassName="flex max-h-[calc(100dvh-16px)] min-h-0 flex-col sm:max-h-[calc(100dvh-24px)]"
         >
           {/* Header */}
-          <div className="shrink-0 flex items-center justify-between border-b border-glass-border px-6 py-5">
+          <div className="shrink-0 flex items-center justify-between border-b border-glass-border px-5 py-4">
             <div>
               <button
                 type="button"
@@ -695,7 +628,7 @@ export function ConfiguracoesModal({
           </div>
 
           {/* Abas */}
-          <div className="shrink-0 flex gap-1 border-b border-glass-border px-6 pt-3 pb-0">
+          <div className="shrink-0 flex gap-1 border-b border-glass-border px-5 pt-2 pb-0">
             {(
               [
                 { id: "basico" as Aba, label: "Básico", icon: Settings },
@@ -723,7 +656,7 @@ export function ConfiguracoesModal({
           </div>
 
           {/* Conteúdo */}
-          <div className="min-h-0 flex-1 overflow-y-scroll overscroll-contain px-6 py-5 [touch-action:pan-y]">
+          <div className="min-h-0 flex-1 overflow-y-scroll overscroll-contain px-5 py-4 [touch-action:pan-y]">
             {loading ? (
               <div className="rounded-xl border border-glass-border bg-secondary/40 px-4 py-8 text-center text-sm text-muted-foreground">
                 Carregando configurações...
@@ -1220,15 +1153,6 @@ export function ConfiguracoesModal({
                         <div className="flex flex-wrap gap-2">
                           <button
                             type="button"
-                            onClick={() => abrirUrl(SUPABASE_PROJECT_URL)}
-                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-sky-500/20 bg-background/80 px-3 py-2 text-sm font-medium text-foreground transition hover:border-sky-500/35 hover:bg-background"
-                          >
-                            <Database className="h-4 w-4 text-sky-600" />
-                            Supabase
-                            <ExternalLink className="h-3 w-3 text-muted-foreground" />
-                          </button>
-                          <button
-                            type="button"
                             onClick={() => abrirUrl(TURSO_DASHBOARD_URL)}
                             className="inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-500/20 bg-background/80 px-3 py-2 text-sm font-medium text-foreground transition hover:border-emerald-500/35 hover:bg-background"
                           >
@@ -1236,79 +1160,8 @@ export function ConfiguracoesModal({
                             Turso
                             <ExternalLink className="h-3 w-3 text-muted-foreground" />
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => setMostrarGuiaTurso((v) => !v)}
-                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-glass-border bg-background/80 px-3 py-2 text-sm font-medium text-foreground transition hover:border-primary/35 hover:bg-background"
-                          >
-                            <Tag className="h-4 w-4 text-primary" />
-                            Mapa de migração
-                          </button>
                         </div>
                       </div>
-                      {mostrarGuiaTurso ? (
-                        <div className="mt-4 grid gap-3 md:grid-cols-3">
-                          <div className="rounded-2xl border border-emerald-500/20 bg-background/80 p-3">
-                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">
-                              Turso local-first
-                            </p>
-                            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                              Dados que precisam abrir instantaneamente e podem sincronizar em segundo plano.
-                            </p>
-                            <div className="mt-3 flex flex-wrap gap-1.5">
-                              {[
-                                "fila_processos_atual",
-                                "fila_processos_alertas",
-                                "fila_processos_edicoes",
-                                "servidores_config",
-                                "tabelas_operacionais",
-                                "datas_globais",
-                              ].map((tabela) => (
-                                <span key={tabela} className="rounded-full border border-emerald-500/15 bg-emerald-500/10 px-2 py-1 font-mono text-[10px] text-emerald-800">
-                                  {tabela}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="rounded-2xl border border-sky-500/20 bg-background/80 p-3">
-                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">
-                              Supabase/Postgres
-                            </p>
-                            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                              Mantém o histórico central, colaboração e consultas pesadas enquanto validamos o Turso.
-                            </p>
-                            <div className="mt-3 flex flex-wrap gap-1.5">
-                              {[
-                                "processos",
-                                "execucoes",
-                                "empenhos",
-                                "notas_fiscais_execucao",
-                                "deducoes_execucao",
-                                "execucao_pendencias",
-                                "ausencias",
-                              ].map((tabela) => (
-                                <span key={tabela} className="rounded-full border border-sky-500/15 bg-sky-500/10 px-2 py-1 font-mono text-[10px] text-sky-800">
-                                  {tabela}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="rounded-2xl border border-amber-500/20 bg-background/80 p-3">
-                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">
-                              Fase piloto
-                            </p>
-                            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                              Primeiro cache local da fila. Depois abstraímos o serviço para alternar Supabase/Turso sem quebrar o app.
-                            </p>
-                            <ol className="mt-3 space-y-1.5 text-xs leading-5 text-muted-foreground">
-                              <li>1. Criar cache SQLite/libSQL local.</li>
-                              <li>2. Mostrar fila do cache ao abrir.</li>
-                              <li>3. Sincronizar remoto em segundo plano.</li>
-                              <li>4. Migrar histórico só se o piloto compensar.</li>
-                            </ol>
-                          </div>
-                        </div>
-                      ) : null}
                     </section>
 
                     <section className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-4">
@@ -1540,159 +1393,47 @@ export function ConfiguracoesModal({
                       ) : null}
                     </section>
 
-                    <section className="rounded-2xl border border-glass-border bg-secondary/25 px-4 py-4">
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                        <div>
-                          <p className="text-sm font-semibold text-foreground">Base de dados ativa</p>
-                          <p className="mt-1 text-sm text-muted-foreground">
-                            Escolha para onde o app deve ler e gravar os dados operacionais.
-                          </p>
-                        </div>
-                        <span className="rounded-full border border-glass-border bg-background/70 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                          {settings.databaseMode === "turso" ? "Turso" : "Supabase"}
-                        </span>
-                      </div>
-                      <div className="mt-4 grid gap-3 md:grid-cols-2">
-                        {[
-                          {
-                            value: "turso" as const,
-                            title: "Turso",
-                            description: "Ativa Turso em todas as áreas remotas e desativa Supabase.",
-                            icon: Globe,
-                          },
-                          {
-                            value: "supabase" as const,
-                            title: "Supabase",
-                            description: "Ativa Postgres/Supabase em todas as áreas remotas e desativa Turso.",
-                            icon: Database,
-                          },
-                        ].map((option) => {
-                          const Icon = option.icon;
-                          const active = settings.databaseMode === option.value;
-                          return (
-                            <button
-                              key={option.value}
-                              type="button"
-                              onClick={() => setDatabaseModeExclusive(option.value)}
-                              className={[
-                                "flex items-start gap-3 rounded-2xl border p-4 text-left transition",
-                                active
-                                  ? "border-primary/45 bg-primary/10 text-foreground shadow-sm"
-                                  : "border-glass-border bg-background/70 text-muted-foreground hover:border-primary/25 hover:bg-background",
-                              ].join(" ")}
-                            >
-                              <span className={[
-                                "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border",
-                                active ? "border-primary/30 bg-background text-primary" : "border-glass-border bg-secondary/50",
-                              ].join(" ")}>
-                                <Icon className="h-4 w-4" />
-                              </span>
-                              <span>
-                                <span className="block text-sm font-semibold text-foreground">{option.title}</span>
-                                <span className="mt-1 block text-xs leading-5">{option.description}</span>
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </section>
 
                     <section className="rounded-2xl border border-glass-border bg-secondary/25 px-4 py-4">
-                      <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                      <div className="flex items-start justify-between gap-3">
                         <div>
-                          <p className="text-sm font-semibold text-foreground">
-                            Fontes por tabela
-                          </p>
+                          <p className="text-sm font-semibold text-foreground">Tabelas no Turso</p>
                           <p className="mt-1 text-sm text-muted-foreground">
-                            Escolha uma fonte por área. Ativar uma desativa a outra, sem fallback silencioso.
+                            22 tabelas ativas — migração completa. Todas as leituras e gravações usam o banco remoto Turso.
                           </p>
                         </div>
-                        <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground sm:w-48">
-                          <span className="text-center">Supabase</span>
-                          <span className="text-center">Turso</span>
-                        </div>
+                        <span className="shrink-0 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                          100% Turso
+                        </span>
                       </div>
-                      <div className="mt-4 divide-y divide-glass-border overflow-hidden rounded-2xl border border-glass-border bg-background/70">
-                        {DATA_SOURCE_TABLES.map((table) => {
-                          const row = settings.dataSources?.[table.key] ?? { supabase: false, turso: false };
-                          return (
-                            <div key={table.key} className="grid grid-cols-[minmax(0,1fr)_96px] gap-3 px-3 py-2.5 sm:grid-cols-[72px_minmax(0,1fr)_96px_96px] sm:items-center">
-                              <span className="hidden rounded-full bg-secondary/60 px-2 py-1 text-center text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground sm:inline">
-                                {table.group}
-                              </span>
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-medium text-foreground">{table.label}</p>
-                                <p className="truncate font-mono text-[10px] text-muted-foreground">{table.key}</p>
-                              </div>
-                              {(["supabase", "turso"] as const).map((provider) => {
-                                const enabled = Boolean(row[provider]);
-                                return (
-                                  <button
-                                    key={provider}
-                                    type="button"
-                                    onClick={() => toggleDataSource(table.key, provider)}
-                                    className={[
-                                      "inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs font-semibold transition",
-                                      enabled
-                                        ? provider === "supabase"
-                                          ? "border-sky-500/25 bg-sky-500/10 text-sky-700 hover:bg-sky-500/15"
-                                          : "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15"
-                                        : "border-glass-border bg-secondary/40 text-muted-foreground hover:bg-secondary/60",
-                                    ].join(" ")}
-                                  >
-                                    {enabled ? "On" : "Off"}
-                                  </button>
-                                );
-                              })}
+                      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                        {(
+                          [
+                            { group: "Fila", tables: ["fila_processos_atual", "fila_processos_alertas", "fila_processos_historico"] },
+                            { group: "Equipe / Gestão", tables: ["servidores_config", "servidores", "ausencias"] },
+                            { group: "Config", tables: ["tabelas_operacionais", "regras_operacionais", "datas_globais"] },
+                            { group: "Histórico", tables: ["processos", "execucoes", "execucao_etapas", "execucao_pendencias", "notas_fiscais_execucao", "deducoes_execucao", "empenhos", "liquidacao_registros"] },
+                            { group: "Cache / Interno", tables: ["cache_snapshots", "documentos_processados", "contrato_ic_de_para", "vpd_de_para", "uorg_de_para"] },
+                          ] as const
+                        ).map(({ group, tables }) => (
+                          <div key={group} className="rounded-xl border border-glass-border bg-background/70 p-3">
+                            <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                              {group}
+                              <span className="ml-1.5 rounded-full bg-secondary/80 px-1.5 py-0.5 text-[9px]">{tables.length}</span>
+                            </p>
+                            <div className="flex flex-wrap gap-1">
+                              {tables.map((t) => (
+                                <span key={t} className="rounded-full bg-secondary/70 px-2 py-0.5 font-mono text-[10px] text-foreground/75">{t}</span>
+                              ))}
                             </div>
-                          );
-                        })}
+                          </div>
+                        ))}
                       </div>
                       <p className="mt-3 text-xs leading-5 text-muted-foreground">
-                        Os toggles controlam leitura e gravação remota da fila, tabelas de apoio, datas globais, ausências e histórico.
+                        O schema é criado automaticamente na primeira conexão. As tabelas de cache e de/para são derivadas das tabelas operacionais e não precisam de manutenção manual.
                       </p>
                     </section>
 
-                    {/* URL do banco de dados */}
-                    <section className="rounded-2xl border border-glass-border bg-secondary/25 px-4 py-4">
-                      <div className="flex flex-col gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-foreground">
-                            URL do banco de dados
-                          </p>
-                          <p className="mt-1 text-sm text-muted-foreground">
-                            Connection string do Supabase (
-                            <code className="rounded bg-secondary/60 px-1 py-0.5 text-xs">
-                              DATABASE_URL
-                            </code>
-                            ). Use para migrar ou alternar a fonte ativa para Supabase.
-                          </p>
-                        </div>
-                        <div className="relative">
-                          <input
-                            id="database-url"
-                            type={showDbUrl ? "text" : "password"}
-                            value={settings.databaseUrl}
-                            onChange={(e) =>
-                              setSettings((c) => ({ ...c, databaseUrl: e.target.value }))
-                            }
-                            placeholder="postgresql://postgres:[password]@db.[ref].supabase.co:5432/postgres"
-                            className="w-full rounded-xl border border-glass-border bg-background/80 py-2.5 pl-3 pr-10 text-sm text-foreground font-mono shadow-inner outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowDbUrl((v) => !v)}
-                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                            tabIndex={-1}
-                            aria-label={showDbUrl ? "Ocultar URL" : "Mostrar URL"}
-                          >
-                            {showDbUrl
-                              ? <EyeOff className="h-4 w-4" />
-                              : <Eye className="h-4 w-4" />}
-                          </button>
-                        </div>
-                      </div>
-                    </section>
 
                     {/* Turso */}
                     <section className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-4">
@@ -1911,7 +1652,7 @@ export function ConfiguracoesModal({
           </div>
 
           {/* Footer */}
-          <div className="shrink-0 flex items-center justify-end gap-3 border-t border-glass-border px-6 py-4">
+          <div className="shrink-0 flex items-center justify-end gap-3 border-t border-glass-border px-5 py-3">
             <GlassButton variant="ghost" onClick={onClose} disabled={saving}>
               Cancelar
             </GlassButton>

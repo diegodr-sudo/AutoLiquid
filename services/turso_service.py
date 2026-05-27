@@ -17,6 +17,7 @@ import requests
 from services.config_service import carregar_config_app
 
 _SCHEMA_OK = False
+_FILA_SCHEMA_OK = False
 _QUEUE_SERVERS_CONFIG_KEY = "fila_servidores_sorteio"
 log = logging.getLogger(__name__)
 
@@ -165,8 +166,13 @@ def _json_loads(value: Any, fallback: Any) -> Any:
         return fallback
 
 
+def _schema_name(sql: str) -> str:
+    match = re.search(r"create\s+(?:unique\s+)?(?:table|index)\s+if\s+not\s+exists\s+([^\s(]+)", sql, re.I)
+    return (match.group(1) if match else "").strip().casefold()
+
+
 def garantir_schema_cache(*, timeout: float = 10) -> None:
-    global _SCHEMA_OK
+    global _SCHEMA_OK, _FILA_SCHEMA_OK
     if _SCHEMA_OK:
         return
     statements = [
@@ -204,12 +210,14 @@ def garantir_schema_cache(*, timeout: float = 10) -> None:
             ("""create index if not exists idx_empenhos_numero on empenhos(numero)""", None),
             ("""create table if not exists fila_processos_atual (chave text primary key, numero_processo text, sol_pagamento text, protocolo text, competencia text, dados text not null default '{}', responsavel_manual text, responsavel_manual_por text, responsavel_manual_em text, concluido integer not null default 0, concluido_por text, concluido_em text, presente integer not null default 1, atualizado_em text default current_timestamp)""", None),
             ("""create index if not exists idx_fila_atual_presente on fila_processos_atual(presente, competencia, numero_processo)""", None),
+            ("""create index if not exists idx_fila_atual_presente_ordem on fila_processos_atual(presente, competencia, numero_processo, chave)""", None),
             ("""create table if not exists fila_processos_historico (chave text primary key, numero_processo text, sol_pagamento text, protocolo text, competencia text, dados text not null default '{}', responsavel_manual text, concluido integer not null default 0, presente integer not null default 0, primeiro_visto_em text, ultimo_visto_em text, saiu_da_fila_em text, retornou_em text, atualizado_em text default current_timestamp)""", None),
             ("""create index if not exists idx_fila_historico_numero on fila_processos_historico(numero_processo, ultimo_visto_em)""", None),
             ("""create index if not exists idx_fila_historico_presente on fila_processos_historico(presente, competencia, numero_processo)""", None),
             ("""create table if not exists fila_processos_alertas (id integer primary key autoincrement, chave text not null, numero_processo text, sol_pagamento text, mensagem text not null, autor text, ativo integer not null default 1, criado_em text default current_timestamp)""", None),
             ("""create index if not exists idx_fila_alertas_chave on fila_processos_alertas(chave, ativo, criado_em)""", None),
             ("""create index if not exists idx_fila_alertas_numero on fila_processos_alertas(numero_processo, ativo, criado_em)""", None),
+            ("""create index if not exists idx_fila_alertas_ativo on fila_processos_alertas(ativo, criado_em)""", None),
             ("""create table if not exists ausencias (id text primary key, servidor text not null, tipo text not null, inicio text not null, fim text not null, obs text)""", None),
         ]
     existing_result = executar(
@@ -217,10 +225,6 @@ def garantir_schema_cache(*, timeout: float = 10) -> None:
         timeout=timeout,
     )
     existing = {str(row.get("name") or "").casefold() for row in _rows(existing_result)}
-
-    def _schema_name(sql: str) -> str:
-        match = re.search(r"create\s+(?:unique\s+)?(?:table|index)\s+if\s+not\s+exists\s+([^\s(]+)", sql, re.I)
-        return (match.group(1) if match else "").strip().casefold()
 
     pending = [(sql, args) for sql, args in statements if _schema_name(sql) not in existing]
     for start in range(0, len(pending), 4):
@@ -247,7 +251,33 @@ def garantir_schema_cache(*, timeout: float = 10) -> None:
         timeout=timeout,
     )
     _SCHEMA_OK = True
+    _FILA_SCHEMA_OK = True
     _garantir_usuarios_auth(timeout=timeout)
+
+
+def garantir_schema_fila_cache(*, timeout: float = 5) -> None:
+    global _FILA_SCHEMA_OK
+    if _SCHEMA_OK or _FILA_SCHEMA_OK:
+        return
+    statements = [
+        ("""create table if not exists cache_snapshots (chave text primary key, payload text not null, atualizado_em text)""", None),
+        ("""create table if not exists fila_processos_atual (chave text primary key, numero_processo text, sol_pagamento text, protocolo text, competencia text, dados text not null default '{}', responsavel_manual text, responsavel_manual_por text, responsavel_manual_em text, concluido integer not null default 0, concluido_por text, concluido_em text, presente integer not null default 1, atualizado_em text default current_timestamp)""", None),
+        ("""create index if not exists idx_fila_atual_presente on fila_processos_atual(presente, competencia, numero_processo)""", None),
+        ("""create index if not exists idx_fila_atual_presente_ordem on fila_processos_atual(presente, competencia, numero_processo, chave)""", None),
+        ("""create table if not exists fila_processos_alertas (id integer primary key autoincrement, chave text not null, numero_processo text, sol_pagamento text, mensagem text not null, autor text, ativo integer not null default 1, criado_em text default current_timestamp)""", None),
+        ("""create index if not exists idx_fila_alertas_chave on fila_processos_alertas(chave, ativo, criado_em)""", None),
+        ("""create index if not exists idx_fila_alertas_numero on fila_processos_alertas(numero_processo, ativo, criado_em)""", None),
+        ("""create index if not exists idx_fila_alertas_ativo on fila_processos_alertas(ativo, criado_em)""", None),
+    ]
+    existing_result = executar(
+        "select name from sqlite_master where type in ('table', 'index')",
+        timeout=timeout,
+    )
+    existing = {str(row.get("name") or "").casefold() for row in _rows(existing_result)}
+    pending = [(sql, args) for sql, args in statements if _schema_name(sql) not in existing]
+    for start in range(0, len(pending), 4):
+        executar_pipeline(pending[start:start + 4], timeout=timeout)
+    _FILA_SCHEMA_OK = True
 
 
 def _garantir_colunas(table: str, columns: dict[str, str], *, timeout: float = 10) -> None:
@@ -1522,7 +1552,7 @@ def _mesclar_override_fila(row: dict[str, Any], meta: dict[str, Any], alertas: l
 def obter_snapshot_fila(*, timeout: float = 2.5) -> dict[str, Any]:
     if not turso_configurado():
         return {"rows": [], "updatedAt": None}
-    garantir_schema_cache(timeout=timeout)
+    garantir_schema_fila_cache(timeout=timeout)
     result = executar(
         "select chave, numero_processo, dados, responsavel_manual, responsavel_manual_por, responsavel_manual_em, concluido, concluido_por, concluido_em, atualizado_em from fila_processos_atual where presente = 1 order by competencia asc, numero_processo asc, chave asc",
         timeout=timeout,
@@ -1530,7 +1560,7 @@ def obter_snapshot_fila(*, timeout: float = 2.5) -> dict[str, Any]:
     table_rows = _rows(result)
     if not table_rows:
         estado = _rows(executar(
-            "select count(*) as total, coalesce(max(atualizado_em), '') as updated_at from fila_processos_atual",
+            "select count(*) as total, coalesce(max(atualizado_em), '') as updated_at from fila_processos_atual where presente = 1",
             timeout=timeout,
         ))
         if _to_int((estado[0] if estado else {}).get("total")) > 0:

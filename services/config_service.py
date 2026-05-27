@@ -21,31 +21,14 @@ CONFIG_APP_PADRAO = {
     "perguntar_limpar_mes": True,
     "tema_web": "light",
     "nivel_log": "desenvolvedor",
-    "database_url": "",
     "turso_database_url": "",
     "turso_auth_token": "",
-    "database_mode": "turso",
     "nome_usuario": "",
     "nf_servico_alerta_dias_uteis": 3,
     "rocket_chat_url": "https://chat.ufsc.br",
     "rocket_chat_user_id": "",
     "rocket_chat_auth_token": "",
     "rocket_chat_contar": "tudo",
-    "data_sources": {
-        "fila_processos_atual": {"supabase": False, "turso": True},
-        "fila_processos_alertas": {"supabase": False, "turso": True},
-        "fila_processos_edicoes": {"supabase": False, "turso": True},
-        "servidores_config": {"supabase": False, "turso": True},
-        "tabelas_operacionais": {"supabase": False, "turso": True},
-        "datas_globais": {"supabase": False, "turso": True},
-        "processos": {"supabase": False, "turso": True},
-        "execucoes": {"supabase": False, "turso": True},
-        "empenhos": {"supabase": False, "turso": True},
-        "notas_fiscais_execucao": {"supabase": False, "turso": True},
-        "deducoes_execucao": {"supabase": False, "turso": True},
-        "execucao_pendencias": {"supabase": False, "turso": True},
-        "ausencias": {"supabase": False, "turso": True},
-    },
 }
 
 
@@ -88,14 +71,12 @@ def carregar_config_app():
             campos_release = (
                 "turso_database_url",
                 "turso_auth_token",
-                "database_mode",
             )
             campos_opcionais = (
                 "rocket_chat_url",
                 "rocket_chat_user_id",
                 "rocket_chat_auth_token",
                 "rocket_chat_contar",
-                "data_sources",
             )
             alterado = False
             for campo in campos_release:

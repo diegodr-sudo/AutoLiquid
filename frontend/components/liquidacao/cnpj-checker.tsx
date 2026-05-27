@@ -62,7 +62,10 @@ export function CnpjChecker({ cnpjInicial = "" }: CnpjCheckerProps) {
       const res = await fetch(`${API}/api/simples/gerar-pdf`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cnpj: limpo }),
+        body: JSON.stringify({
+          cnpj: limpo,
+          downloadOnly: estado.tipo === "pdf" && estado.status === "preenchido",
+        }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {

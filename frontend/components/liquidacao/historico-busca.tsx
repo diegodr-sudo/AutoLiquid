@@ -125,6 +125,56 @@ function fmtDataHora(iso: string | null | undefined) {
   });
 }
 
+function timestampExecucao(exec: Execucao) {
+  const parsed = Date.parse(exec.dataExecucao || "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function chaveNotasExecucao(exec: Execucao) {
+  const notas = (exec.notasFiscais || [])
+    .map((nota) => String(nota.numero || "").trim().replace(/\D/g, "") || String(nota.numero || "").trim().toUpperCase())
+    .filter(Boolean)
+    .sort();
+  return notas.length ? `nf:${notas.join("|")}` : `exec:${exec.id}`;
+}
+
+function completarExecucaoMaisRecente(maisRecente: Execucao, duplicada: Execucao): Execucao {
+  return {
+    ...maisRecente,
+    registroTipoDocumento: maisRecente.registroTipoDocumento || duplicada.registroTipoDocumento || "",
+    registroNumeroDocumento: maisRecente.registroNumeroDocumento || duplicada.registroNumeroDocumento || "",
+    dificuldade: maisRecente.dificuldade ?? duplicada.dificuldade ?? null,
+    registroPreenchidoEm: maisRecente.registroPreenchidoEm || duplicada.registroPreenchidoEm || null,
+  };
+}
+
+function normalizarProcessoHistorico(processo: Processo): Processo {
+  const porNota = new Map<string, Execucao>();
+  const ordenadas = [...(processo.execucoes || [])].sort((a, b) => {
+    const byDate = timestampExecucao(b) - timestampExecucao(a);
+    return byDate !== 0 ? byDate : b.id - a.id;
+  });
+
+  for (const exec of ordenadas) {
+    const chave = chaveNotasExecucao(exec);
+    const atual = porNota.get(chave);
+    if (!atual) {
+      porNota.set(chave, exec);
+      continue;
+    }
+    porNota.set(chave, completarExecucaoMaisRecente(atual, exec));
+  }
+
+  return { ...processo, execucoes: Array.from(porNota.values()) };
+}
+
+function normalizarResultadoHistorico(data: { processos?: Processo[]; total?: number }) {
+  const processos = (data.processos || [])
+    .map(normalizarProcessoHistorico)
+    .filter((processo) => processo.execucoes.length > 0);
+  return { processos, total: processos.length };
+}
+
 function mascaraCnpj(v: string) {
   const d = v.replace(/\D/g, "").slice(0, 14);
   return d
@@ -151,8 +201,8 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function RegistroDocumentoBadge({ exec }: { exec: Execucao }) {
-  const tipo = String(exec.registroTipoDocumento || "").trim().toUpperCase();
   const numero = String(exec.registroNumeroDocumento || "").trim();
+  const tipo = String(exec.registroTipoDocumento || (numero ? "NP" : "")).trim().toUpperCase();
   if (!tipo || !numero) return null;
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 ring-1 ring-inset ring-emerald-500/20">
@@ -683,6 +733,10 @@ function ExecucaoCard({
 function ProcessoCard({ processo }: { processo: Processo }) {
   const [expandido, setExpandido] = useState(false);
   const exec = processo.execucoes[0]; // mais recente
+  const registroDocumento = exec
+    ? [exec.registroTipoDocumento || (exec.registroNumeroDocumento ? "NP" : ""), exec.registroNumeroDocumento].map((item) => String(item || "").trim()).filter(Boolean).join(" ")
+    : "";
+  const contratoOuDocumento = registroDocumento || (processo.contrato && processo.contrato !== "—" ? processo.contrato : "");
 
   return (
     <div className="rounded-2xl border border-glass-border/70 bg-background/50 overflow-hidden">
@@ -710,9 +764,9 @@ function ProcessoCard({ processo }: { processo: Processo }) {
             {processo.fornecedor || "Fornecedor não identificado"}
           </p>
           <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
-            {processo.contrato && (
+            {contratoOuDocumento && (
               <span className="flex items-center gap-1">
-                <FileText className="h-3 w-3" /> {processo.contrato}
+                <FileText className="h-3 w-3" /> {contratoOuDocumento}
               </span>
             )}
             {processo.natureza && (
@@ -836,9 +890,7 @@ export function HistoricoBusca({
 
       setResultado((current) => {
         if (!current) return current;
-        return {
-          ...current,
-          processos: current.processos.map((processo) => {
+        const processos = current.processos.map((processo) => {
             if (processo.numeroProcesso !== detail.numeroProcesso) return processo;
             const hasMatchingDocument = Boolean(
               detail.documentoId && processo.execucoes.some((exec) => exec.documentoId === detail.documentoId)
@@ -859,8 +911,8 @@ export function HistoricoBusca({
               };
             });
             return { ...processo, execucoes };
-          }),
-        };
+          }).map(normalizarProcessoHistorico);
+        return { processos, total: processos.length };
       });
     };
 
@@ -912,7 +964,7 @@ export function HistoricoBusca({
             : typeof detail === "string" ? detail : `Erro HTTP ${res.status}`;
           throw new Error(msg);
         }
-        setResultado({ processos: data.processos ?? [], total: data.total ?? 0 });
+        setResultado(normalizarResultadoHistorico(data));
       } catch (e) {
         setErro(e instanceof Error ? e.message : "Erro ao buscar.");
       } finally {
@@ -947,7 +999,7 @@ export function HistoricoBusca({
             : typeof detail === "string" ? detail : `Erro HTTP ${res.status}`;
           throw new Error(msg);
         }
-        setResultado({ processos: data.processos ?? [], total: data.total ?? 0 });
+        setResultado(normalizarResultadoHistorico(data));
       } catch (e) {
         setErro(e instanceof Error ? e.message : "Erro ao buscar.");
       } finally {
@@ -997,7 +1049,7 @@ export function HistoricoBusca({
           : typeof detail === "string" ? detail : `Erro HTTP ${res.status}`;
         throw new Error(msg);
       }
-      setResultado({ processos: data.processos ?? [], total: data.total ?? 0 });
+      setResultado(normalizarResultadoHistorico(data));
     } catch (e) {
       setErro(
         e instanceof TypeError && e.message.includes("fetch")

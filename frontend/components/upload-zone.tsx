@@ -8,6 +8,8 @@ import { cn } from "@/lib/utils";
 interface UploadZoneProps {
   onFileSelect?: (file: File | null, source: "drop" | "input" | "clear") => void;
   acceptedFormats?: string[];
+  title?: string;
+  description?: string;
   disabled?: boolean;
   disabledMessage?: string;
   compact?: boolean;
@@ -16,6 +18,8 @@ interface UploadZoneProps {
 export function UploadZone({
   onFileSelect,
   acceptedFormats = [".pdf"],
+  title = "Arraste o PDF da Liquidação aqui",
+  description = "ou clique para selecionar",
   disabled = false,
   disabledMessage,
   compact = false,
@@ -33,11 +37,13 @@ export function UploadZone({
       return;
     }
 
-    const nomeValido = file.name.toLowerCase().endsWith(".pdf");
-    const tipoValido = file.type === "application/pdf";
+    const normalizedFormats = acceptedFormats.map((format) => format.trim().toLowerCase()).filter(Boolean);
+    const fileName = file.name.toLowerCase();
+    const nomeValido = normalizedFormats.some((format) => fileName.endsWith(format));
+    const tipoValido = normalizedFormats.includes(".pdf") && file.type === "application/pdf";
     if (!nomeValido && !tipoValido) {
       setSelectedFile(null);
-      setErroArquivo("Selecione um arquivo PDF válido.");
+      setErroArquivo(`Selecione um arquivo válido (${acceptedFormats.join(", ")}).`);
       onFileSelect?.(null, "clear");
       return;
     }
@@ -69,8 +75,12 @@ export function UploadZone({
     setIsDragging(false);
     if (disabled) return;
     const arquivos = Array.from(e.dataTransfer.files ?? []);
-    const pdf = arquivos.find((file) => file.name.toLowerCase().endsWith(".pdf")) ?? arquivos[0] ?? null;
-    validarArquivo(pdf, "drop");
+    const normalizedFormats = acceptedFormats.map((format) => format.trim().toLowerCase()).filter(Boolean);
+    const compatível = arquivos.find((file) => {
+      const fileName = file.name.toLowerCase();
+      return normalizedFormats.some((format) => fileName.endsWith(format));
+    }) ?? arquivos[0] ?? null;
+    validarArquivo(compatível, "drop");
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -148,10 +158,10 @@ export function UploadZone({
               <Upload className={cn("text-muted-foreground", compact ? "h-5 w-5" : "h-6 w-6")} />
             </div>
             <p className={cn("text-center text-foreground", compact ? "mb-1 text-sm font-medium" : "mb-1 text-sm")}>
-              Arraste o PDF da Liquidação aqui
+              {title}
             </p>
             <p className={cn("text-center text-muted-foreground", compact ? "mb-3 text-sm" : "mb-4 text-sm")}>
-              ou clique para selecionar
+              {description}
             </p>
             <p className="text-xs text-muted-foreground">
               Formato aceito: {acceptedFormats.join(", ")}

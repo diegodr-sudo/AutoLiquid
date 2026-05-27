@@ -1,9 +1,8 @@
 """
-Consulta de CNPJ e Simples Nacional via BrasilAPI.
+Consulta de CNPJ e Simples Nacional em fontes públicas externas.
 
-Usa exclusivamente a BrasilAPI (brasilapi.com.br) que é a fonte mais
-rápida e confiável para o campo opcao_pelo_simples.
-Resultados bem-sucedidos ficam em cache de memória (TTL 1 h).
+O badge da fila não usa histórico local como fonte de verdade: consulta APIs
+públicas e mantém apenas um cache curto em memória para evitar repetição.
 """
 from __future__ import annotations
 
@@ -15,8 +14,10 @@ import requests
 
 log = logging.getLogger(__name__)
 
-_TIMEOUT = 4   # segundos — BrasilAPI costuma responder em <1 s
-_URL = "https://brasilapi.com.br/api/cnpj/v1/{}"
+_TIMEOUT = 6
+_BRASILAPI_URL = "https://brasilapi.com.br/api/cnpj/v1/{}"
+_OPENCNPJ_URL = "https://kitana.opencnpj.com/cnpj/{}"
+_CNPJA_OPEN_URL = "https://open.cnpja.com/office/{}"
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; AutoLiquid/1.0)",
@@ -44,7 +45,65 @@ def _cache_set(cnpj: str, dados: dict) -> None:
             _CACHE[cnpj] = (dados, time.time())
 
 
-# ── Consulta BrasilAPI ────────────────────────────────────────────────────────
+def _sim_nao_para_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    texto = str(value).strip().casefold()
+    if texto in {"s", "sim", "true", "1", "optante"}:
+        return True
+    if texto in {"n", "nao", "não", "false", "0", "nao optante", "não optante"}:
+        return False
+    return None
+
+
+def _consultar_opencnpj(cnpj: str) -> dict:
+    """
+    Chama o OpenCNPJ e retorna dict com razao_social, optante_simples e nao_encontrado.
+    """
+    try:
+        r = requests.get(_OPENCNPJ_URL.format(cnpj), timeout=_TIMEOUT, headers=_HEADERS)
+        if r.status_code == 404:
+            return {"razao_social": "", "optante_simples": None, "nao_encontrado": True}
+        if r.status_code == 200:
+            payload = r.json()
+            d = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(d, dict):
+                d = payload if isinstance(payload, dict) else {}
+            return {
+                "razao_social": str(d.get("razaoSocial") or d.get("razao_social") or "").strip(),
+                "optante_simples": _sim_nao_para_bool(d.get("opcaoSimples")),
+                "nao_encontrado": False,
+            }
+    except Exception:
+        pass
+    return {"razao_social": "", "optante_simples": None, "nao_encontrado": False}
+
+
+def _consultar_cnpja_open(cnpj: str) -> dict:
+    """
+    Chama a API pública do CNPJá. Boa como fallback, mas tem limite público baixo.
+    """
+    try:
+        r = requests.get(_CNPJA_OPEN_URL.format(cnpj), timeout=_TIMEOUT, headers=_HEADERS)
+        if r.status_code == 404:
+            return {"razao_social": "", "optante_simples": None, "nao_encontrado": True}
+        if r.status_code == 200:
+            d = r.json()
+            company = d.get("company") if isinstance(d, dict) else {}
+            simples = company.get("simples") if isinstance(company, dict) else {}
+            return {
+                "razao_social": str(company.get("name") or "").strip() if isinstance(company, dict) else "",
+                "optante_simples": simples.get("optant") if isinstance(simples, dict) else None,
+                "nao_encontrado": False,
+            }
+    except Exception:
+        pass
+    return {"razao_social": "", "optante_simples": None, "nao_encontrado": False}
+
+
+# ── Consultas externas ───────────────────────────────────────────────────────
 
 def _consultar_brasilapi(cnpj: str) -> dict:
     """
@@ -52,7 +111,7 @@ def _consultar_brasilapi(cnpj: str) -> dict:
     Nunca lança exceção.
     """
     try:
-        r = requests.get(_URL.format(cnpj), timeout=_TIMEOUT, headers=_HEADERS)
+        r = requests.get(_BRASILAPI_URL.format(cnpj), timeout=_TIMEOUT, headers=_HEADERS)
         if r.status_code == 404:
             return {"razao_social": "", "optante_simples": None, "nao_encontrado": True}
         if r.status_code == 200:
@@ -75,8 +134,8 @@ def obter_dados_empresa(cnpj_limpo: str) -> dict:
 
     Fluxo:
       1. Cache em memória (TTL 1 h) → retorno instantâneo
-      2. BrasilAPI → retorna em ~1 s para a maioria das empresas
-         opcao_pelo_simples: True = optante, False = não optante, None = sem info
+      2. OpenCNPJ → limite público maior e campo opcaoSimples
+      3. BrasilAPI/CNPJá Open → fallbacks quando a fonte principal falha
 
     Retorna dict com:
       razao_social     str
@@ -89,11 +148,20 @@ def obter_dados_empresa(cnpj_limpo: str) -> dict:
         log.debug("CNPJ %s: cache hit — Simples=%s", cnpj_limpo, cached["optante_simples"])
         return cached
 
-    # 2. BrasilAPI
-    dados = _consultar_brasilapi(cnpj_limpo)
+    dados = {"razao_social": "", "optante_simples": None, "nao_encontrado": False}
+    fonte_usada = ""
+    for fonte, consultar in (
+        ("OpenCNPJ", _consultar_opencnpj),
+        ("BrasilAPI", _consultar_brasilapi),
+        ("CNPJa Open", _consultar_cnpja_open),
+    ):
+        dados = consultar(cnpj_limpo)
+        fonte_usada = fonte
+        if dados.get("nao_encontrado") or dados.get("optante_simples") is not None:
+            break
 
     if dados.get("nao_encontrado"):
-        log.debug("CNPJ %s: não encontrado na BrasilAPI", cnpj_limpo)
+        log.debug("CNPJ %s: não encontrado em %s", cnpj_limpo, fonte_usada)
         return dados
 
     simples = dados.get("optante_simples")
@@ -101,9 +169,9 @@ def obter_dados_empresa(cnpj_limpo: str) -> dict:
 
     if simples is not None:
         _cache_set(cnpj_limpo, dados)
-        log.debug("CNPJ %s: %s — Simples=%s", cnpj_limpo, razao, simples)
+        log.debug("CNPJ %s: %s — Simples=%s via %s", cnpj_limpo, razao, simples, fonte_usada)
     else:
-        log.debug("CNPJ %s: %s — Simples=indisponível na BrasilAPI", cnpj_limpo, razao)
+        log.debug("CNPJ %s: %s — Simples=indisponível nas fontes externas", cnpj_limpo, razao)
 
     return dados
 

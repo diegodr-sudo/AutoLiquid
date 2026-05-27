@@ -71,10 +71,6 @@ log = logging.getLogger(__name__)
 try:
     from services.config_service import carregar_config_app as _carregar_cfg
     _cfg = _carregar_cfg() or {}
-    if not os.getenv("DATABASE_URL"):
-        _db_url = str(_cfg.get("database_url") or "").strip()
-        if _db_url:
-            os.environ["DATABASE_URL"] = _db_url
     if not os.getenv("TURSO_DATABASE_URL"):
         _turso_url = str(_cfg.get("turso_database_url") or "").strip()
         if _turso_url:
@@ -511,6 +507,7 @@ def _carregar_snapshot_fila_postgres() -> dict[str, Any]:
 def _carregar_snapshot_fila_turso() -> dict[str, Any] | None:
     global FILA_PROCESSOS_CACHE
 
+    started_at = time.monotonic()
     try:
         turso = _turso_service()
         if not _fonte_dados_habilitada("fila_processos_atual", "turso") or not turso.turso_configurado():
@@ -521,6 +518,11 @@ def _carregar_snapshot_fila_turso() -> dict[str, Any] | None:
         return None
 
     rows = _aplicar_sorteio_fila(_aplicar_de_para_contrato_ic(snapshot.get("rows") or[]))
+    log.info(
+        "Snapshot da fila no Turso carregado em %.0fms (%d linhas).",
+        (time.monotonic() - started_at) * 1000,
+        len(rows),
+    )
 
     updated_at = snapshot.get("updatedAt")
     columns = _colunas_fila(rows)
@@ -554,7 +556,7 @@ def _snapshot_fila_future():
     global FILA_SNAPSHOT_FUTURE
     with FILA_SNAPSHOT_FUTURE_LOCK:
         if FILA_SNAPSHOT_FUTURE is None or FILA_SNAPSHOT_FUTURE.done():
-            FILA_SNAPSHOT_FUTURE = FILA_SNAPSHOT_EXECUTOR.submit(_carregar_snapshot_fila_postgres)
+            FILA_SNAPSHOT_FUTURE = FILA_SNAPSHOT_EXECUTOR.submit(_carregar_snapshot_fila_turso)
         return FILA_SNAPSHOT_FUTURE
 
 
@@ -1121,24 +1123,7 @@ def _servidores_sorteio_raw() -> list[dict[str, Any]]:
     cached, _source = _obter_cache_servidores_sorteio()
     if cached:
         return cached
-    if _fonte_dados_habilitada("servidores_config", "turso"):
-        try:
-            turso = _turso_service()
-            if turso.turso_configurado():
-                rows = turso.obter_tabela_operacional("fila_servidores_sorteio") or []
-                if rows:
-                    _cache_servidores_sorteio(rows, "turso")
-                    return [dict(item) for item in rows if isinstance(item, dict)]
-        except Exception:
-            log.debug("Falha ao carregar servidores do sorteio no Turso para aplicar sorteio", exc_info=True)
-    if _fonte_dados_habilitada("servidores_config", "supabase"):
-        try:
-            rows = _postgres_service().obter_tabela_operacional("fila_servidores_sorteio") or []
-            if rows:
-                _cache_servidores_sorteio(rows, "postgres")
-                return [dict(item) for item in rows if isinstance(item, dict)]
-        except Exception:
-            log.debug("Falha ao carregar servidores do sorteio no PostgreSQL para aplicar sorteio", exc_info=True)
+    _refresh_servidores_sorteio_background()
     return []
 
 
@@ -1189,7 +1174,7 @@ def _jwt_secret() -> bytes:
     cfg_secret = ""
     try:
         cfg = _web_config_service().carregar_configuracoes_web()
-        cfg_secret = str(cfg.get("tursoAuthToken") or cfg.get("databaseUrl") or "").strip()
+        cfg_secret = str(cfg.get("tursoAuthToken") or "").strip()
     except Exception:
         cfg_secret = ""
     secret = cfg_secret or os.getenv("TURSO_AUTH_TOKEN") or os.getenv("AUTO_LIQUID_JWT_SECRET") or "autoliquid-local"
@@ -1224,17 +1209,14 @@ class WebConfigPayload(BaseModel):
     perguntarLimparMes: bool
     temaWeb: str = "light"
     nivelLog: str = "desenvolvedor"
-    databaseUrl: str = ""
     tursoDatabaseUrl: str = ""
     tursoAuthToken: str = ""
-    databaseMode: str = "turso"
     nomeUsuario: str = ""
     nfServicoAlertaDiasUteis: int = 3
     rocketChatUrl: str = "https://chat.ufsc.br"
     rocketChatUserId: str = ""
     rocketChatAuthToken: str = ""
     rocketChatContar: str = "tudo"
-    dataSources: dict[str, dict[str, bool]] = {}
 
 
 class ChromeOpenResponse(BaseModel):
@@ -1416,7 +1398,7 @@ def _aplicar_de_para_contrato_ic(rows: list[dict[str, Any]]) -> list[dict[str, A
     if not rows:
         return rows
     try:
-        mapa_ic = _web_config_service().carregar_contratos_ic_de_para()
+        mapa_ic = _web_config_service().carregar_contratos_ic_de_para(somente_local=True)
     except Exception:
         log.debug("Falha ao carregar de/para Contrato → IC da fila", exc_info=True)
         return rows
@@ -2502,7 +2484,6 @@ def diagnostico_auth() -> dict[str, Any]:
         "configEmbutidaPath": str(recurso_config),
         "configLocalExiste": CAMINHO_CONFIG.exists(),
         "configEmbutidaExiste": recurso_config.exists() and recurso_config != CAMINHO_CONFIG,
-        "databaseMode": cfg.get("database_mode"),
         "tursoUrlPresente": bool(turso_url),
         "tursoUrlTipo": turso_url_tipo,
         "tursoHost": host,
@@ -2613,7 +2594,6 @@ async def status_backend() -> dict[str, Any]:
     return {
         "chromeStatus": "pronto" if aberto else "erro",
         "chromePorta": porta,
-        "postgresEnabled": bool(str(os.getenv("DATABASE_URL") or "").strip()),
     }
 
 
@@ -2623,6 +2603,9 @@ def dashboard(
     servidor_nome: str = Query(default=""),
     limite: int = Query(default=5, ge=1, le=100),
 ) -> dict[str, Any]:
+    def _status_concluido(status: Any) -> bool:
+        return "concl" in str(status or "").casefold()
+
     def _mesclar_registros_locais(base: dict[str, Any]) -> dict[str, Any]:
         try:
             local = _local_cache_service().obter_dashboard_registros_liquidacao(periodo, servidor_nome)
@@ -2643,16 +2626,35 @@ def dashboard(
                 seen[num] = item
         ultimos_base = list(seen.values())
         processos_base = set(seen.keys())
+        changed_by_local_status = False
+        local_by_num: dict[str, dict[str, Any]] = {}
+        for item in (local.get("ultimosProcessos") or []):
+            if not isinstance(item, dict):
+                continue
+            num = str(item.get("numeroProcesso") or "").strip()
+            if not num:
+                continue
+            anterior = local_by_num.get(num)
+            if not anterior or str(item.get("dataExecucao") or "") >= str(anterior.get("dataExecucao") or ""):
+                local_by_num[num] = item
+
+        for num, item in seen.items():
+            local_item = local_by_num.get(num)
+            if not local_item:
+                continue
+            if _status_concluido(local_item.get("status")) and not _status_concluido(item.get("status")):
+                item["status"] = "concluido"
+                changed_by_local_status = True
 
         # Adiciona registros locais que ainda não estão no Turso
         extras = [
             item
-            for item in (local.get("ultimosProcessos") or [])
+            for item in local_by_num.values()
             if isinstance(item, dict)
             and str(item.get("numeroProcesso") or "").strip()
             and str(item.get("numeroProcesso") or "").strip() not in processos_base
         ]
-        if not extras and len(ultimos_base) == len(list(base.get("ultimosProcessos") or [])):
+        if not extras and not changed_by_local_status and len(ultimos_base) == len(list(base.get("ultimosProcessos") or [])):
             return base
 
         combinados = sorted(
@@ -3071,7 +3073,6 @@ def salvar_servidores_sorteio(payload: QueueServersPayload) -> dict[str, Any]:
 
 @app.get("/api/fila-processos/stream")
 async def fila_processos_stream(request: Request):
-    _ensure_fila_event_listener()
     _ensure_fila_remote_watcher()
 
     subscriber: Queue[str] = Queue()
@@ -3393,6 +3394,7 @@ def abrir_chrome_endpoint() -> dict[str, Any]:
     chrome_service = _chrome_service()
     porta = obter_porta_chrome()
     try:
+        chrome_service.instalar_bookmarklets_autoliquid()
         if not chrome_service.chrome_esta_pronto(porta):
             chrome_service.abrir_chrome(porta, aguardar=True, timeout_s=15)
         aberto = chrome_service.chrome_esta_pronto(porta)
@@ -3437,9 +3439,16 @@ _SOLAR_CONSULTA_PROCESSO_URL = (
 def _quebrar_processo_solar(numero_processo: str) -> dict[str, str]:
     texto = str(numero_processo or "").strip()
     match = re.search(r"\b(\d{5})\.(\d{5,6})/(\d{4})(?:-(\d{2}))?\b", texto)
-    if not match:
-        return {}
-    orgao, numero, ano, dv = match.groups()
+    if match:
+        orgao, numero, ano, dv = match.groups()
+    else:
+        match_curto = re.search(r"\b(\d{1,6})/(\d{2}|\d{4})(?:-(\d{2}))?\b", texto)
+        if not match_curto:
+            return {}
+        numero, ano, dv = match_curto.groups()
+        orgao = "23080"
+        if len(ano) == 2:
+            ano = f"20{ano}"
     numero = numero.zfill(6)
     return {
         "orgao": orgao,
@@ -3458,6 +3467,48 @@ def _frame_por_nome(pagina: Any, nome: str) -> Any | None:
     return None
 
 
+def _frame_conteudo_solar(pagina: Any) -> Any | None:
+    """Encontra o frame de conteúdo principal do Solar (não menu, não cabeçalho).
+
+    Tenta primeiro pelos nomes comuns do frameset do Solar; se não encontrar,
+    usa a URL de cada frame para identificar o frame de conteúdo.
+    """
+    # Tenta pelos nomes conhecidos no frameset do Solar
+    for nome in ("page", "framePage", "framePrincipal", "principal", "conteudo", "main", "content"):
+        frame = _frame_por_nome(pagina, nome)
+        if frame is not None:
+            return frame
+
+    # Fallback: identifica o frame de conteúdo pela URL
+    url_principal = str(getattr(pagina, "url", "") or "")
+    frames = list(getattr(pagina, "frames", []) or [])
+    candidatos: list[Any] = []
+    for frame in frames:
+        url = str(getattr(frame, "url", "") or "")
+        nome_frame = (str(getattr(frame, "name", "") or "")).lower()
+        if not url or url == url_principal or url == "about:blank":
+            continue
+        if "solar.egestao.ufsc.br" not in url:
+            continue
+        # Exclui frames de menu e cabeçalho pelos padrões conhecidos
+        if any(p in nome_frame for p in ("menu", "header", "top", "topo")):
+            continue
+        if any(p in url.lower() for p in ("menu", "header", "frameset", "topo", "top")):
+            continue
+        candidatos.append(frame)
+
+    if not candidatos:
+        return None
+
+    # Prefere frame cujo URL seja de uma tela de conteúdo conhecida do Solar
+    for frame in candidatos:
+        url = (str(getattr(frame, "url", "") or "")).lower()
+        if any(p in url for p in ("consultarprocessos", "visualizarprocesso", "abrirconsulta", "cpav")):
+            return frame
+
+    return candidatos[0]
+
+
 def _pagina_parece_solar(pagina: Any) -> bool:
     try:
         assinatura = f"{pagina.url or ''} {pagina.title() or ''}".lower()
@@ -3471,16 +3522,136 @@ def _localizar_pagina_solar(contexto: Any) -> Any | None:
     return candidatas[-1] if candidatas else None
 
 
+def _alvos_solar(pagina: Any) -> list[Any]:
+    return [pagina, *list(getattr(pagina, "frames", []) or [])]
+
+
 def _target_consulta_solar(pagina: Any) -> Any | None:
-    seletor = "#procDocCorrespDTO\\.flTipoprocesso"
-    alvos = [pagina, *list(getattr(pagina, "frames", []) or [])]
-    for alvo in alvos:
+    seletores = (
+        "#procDocCorrespDTO\\.flTipoprocesso",
+        "[name='procDocCorrespDTO.flTipoprocesso']",
+        "#procDocCorrespDTO\\.nuProcessooficial",
+        "[name='procDocCorrespDTO.nuProcessooficial']",
+        "input[name='btnConsultar']",
+    )
+    for alvo in _alvos_solar(pagina):
         try:
-            if alvo.locator(seletor).count() > 0:
+            if any(alvo.locator(seletor).count() > 0 for seletor in seletores):
                 return alvo
         except Exception:
             continue
     return None
+
+
+def _selecionar_modulo_spa_solar(pagina: Any) -> bool:
+    script = """
+    () => {
+      const normalizar = (valor) => String(valor || "")
+        .normalize("NFD")
+        .replace(/[\\u0300-\\u036f]/g, "")
+        .toLowerCase();
+      for (const select of document.querySelectorAll("select")) {
+        const contexto = normalizar(`${select.id || ""} ${select.name || ""} ${select.closest("td,div,body")?.textContent || ""}`);
+        const pareceModulo = contexto.includes("modulo") || contexto.includes("sistema") || Array.from(select.options).some((opt) => normalizar(opt.textContent).includes("spa"));
+        if (!pareceModulo) continue;
+        const opcao = Array.from(select.options).find((opt) => normalizar(opt.textContent).trim() === "spa" || normalizar(opt.value).trim() === "spa");
+        if (!opcao) continue;
+        if (select.value !== opcao.value) {
+          select.value = opcao.value;
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        return true;
+      }
+      return false;
+    }
+    """
+    selecionou = False
+    for alvo in _alvos_solar(pagina):
+        try:
+            selecionou = bool(alvo.evaluate(script)) or selecionou
+        except Exception:
+            continue
+    if selecionou:
+        time.sleep(0.8)
+    return selecionou
+
+
+def _clicar_menu_consulta_processo_solar(pagina: Any) -> bool:
+    script = """
+    () => {
+      const normalizar = (valor) => String(valor || "")
+        .normalize("NFD")
+        .replace(/[\\u0300-\\u036f]/g, "")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      const visivel = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width >= 0 && rect.height >= 0;
+      };
+      const links = Array.from(document.querySelectorAll("a, button, input[type='button'], input[type='submit']"));
+      const candidatos = links.map((el) => {
+        const texto = normalizar(el.textContent || el.value || el.title || el.getAttribute("aria-label") || "");
+        const href = normalizar(el.getAttribute("href") || "");
+        const idName = normalizar(`${el.id || ""} ${el.name || ""}`);
+        return { el, texto, href, idName };
+      });
+      const matchers = [
+        (item) => item.texto.includes("consulta de processo digital"),
+        (item) => item.texto.includes("consulta de processo/solicitacoes"),
+        (item) => item.texto.includes("consulta de processos/solicitacoes"),
+        (item) => item.texto.includes("consulta") && item.texto.includes("processo"),
+        (item) => item.href.includes("abrirconsultaprocesso") || item.href.includes("consultaprocesso"),
+        (item) => item.idName.includes("consultaprocesso"),
+      ];
+      for (const matcher of matchers) {
+        const item = candidatos.find((candidato) => matcher(candidato) && visivel(candidato.el));
+        if (item) {
+          item.el.click();
+          return `${item.el.tagName}:${item.texto || item.href || item.idName}`;
+        }
+      }
+      const invisivel = candidatos.find((candidato) => matchers.some((matcher) => matcher(candidato)));
+      if (invisivel) {
+        invisivel.el.click();
+        return `${invisivel.el.tagName}:invisivel`;
+      }
+      return "";
+    }
+    """
+    _selecionar_modulo_spa_solar(pagina)
+    for alvo in _alvos_solar(pagina):
+        try:
+            if alvo.evaluate(script):
+                time.sleep(1.2)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _navegar_consulta_processo_solar(pagina: Any) -> None:
+    # Encontra o frame de conteúdo pelo nome ou pela URL (mais robusto)
+    frame_conteudo = _frame_conteudo_solar(pagina)
+    if frame_conteudo is not None:
+        try:
+            frame_conteudo.evaluate("(url) => { window.location.href = url; }", _SOLAR_CONSULTA_PROCESSO_URL)
+            return
+        except Exception:
+            pass
+        try:
+            frame_conteudo.goto(_SOLAR_CONSULTA_PROCESSO_URL, wait_until="domcontentloaded", timeout=20000)
+            return
+        except Exception:
+            pass
+    try:
+        pagina.evaluate("(url) => { window.location.href = url; }", _SOLAR_CONSULTA_PROCESSO_URL)
+        return
+    except Exception:
+        pass
+    pagina.goto(_SOLAR_CONSULTA_PROCESSO_URL, wait_until="domcontentloaded", timeout=40000)
 
 
 def _selecionar_dados_do_processo_solar(alvo: Any) -> None:
@@ -3525,17 +3696,33 @@ def _abrir_consulta_processos_solar(pagina: Any) -> Any:
     if alvo_imediato is not None:
         return alvo_imediato
 
-    frame_page = _frame_por_nome(pagina, "page")
-    if frame_page is not None:
+    # Tenta navegar o frame de conteúdo diretamente (funciona mesmo com processo já aberto)
+    frame_conteudo = _frame_conteudo_solar(pagina)
+    if frame_conteudo is not None:
         try:
-            frame_page.evaluate("(url) => { window.location.href = url; }", _SOLAR_CONSULTA_PROCESSO_URL)
+            frame_conteudo.evaluate("(url) => { window.location.href = url; }", _SOLAR_CONSULTA_PROCESSO_URL)
+            fim_direto = time.time() + 10
+            while time.time() < fim_direto:
+                alvo = _target_consulta_solar(pagina)
+                if alvo is not None:
+                    return alvo
+                time.sleep(0.25)
         except Exception:
-            pagina.goto(_SOLAR_CONSULTA_PROCESSO_URL, wait_until="domcontentloaded", timeout=40000)
-    else:
-        try:
-            pagina.goto(_SOLAR_CONSULTA_PROCESSO_URL, wait_until="domcontentloaded", timeout=40000)
-        except Exception:
-            pagina.goto(_SOLAR_BASE_URL, wait_until="domcontentloaded", timeout=30000)
+            pass
+
+    _clicar_menu_consulta_processo_solar(pagina)
+    fim_menu = time.time() + 8
+    while time.time() < fim_menu:
+        alvo = _target_consulta_solar(pagina)
+        if alvo is not None:
+            return alvo
+        time.sleep(0.25)
+
+    try:
+        _navegar_consulta_processo_solar(pagina)
+    except Exception:
+        pagina.goto(_SOLAR_BASE_URL, wait_until="domcontentloaded", timeout=30000)
+        _clicar_menu_consulta_processo_solar(pagina)
 
     fim = time.time() + 15
     while time.time() < fim:
@@ -3579,6 +3766,95 @@ def _alvo_contem_dados_processo_solar(alvo: Any, processo: dict[str, str]) -> bo
     return tem_tela_dados and tem_numero
 
 
+def _fill_primeiro_seletor(alvo: Any, seletores: tuple[str, ...], valor: str) -> bool:
+    for seletor in seletores:
+        try:
+            locator = alvo.locator(seletor)
+            if locator.count() > 0:
+                locator.first.fill(valor)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _select_primeiro_seletor(alvo: Any, seletores: tuple[str, ...], valor: str) -> bool:
+    for seletor in seletores:
+        try:
+            locator = alvo.locator(seletor)
+            if locator.count() > 0:
+                locator.first.select_option(valor)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _clicar_botao_consultar_solar(alvo: Any) -> None:
+    seletores = (
+        "input[name='btnConsultar']",
+        "input[value*='Consultar']",
+        "button:has-text('Consultar')",
+        "input[type='submit']",
+    )
+    for seletor in seletores:
+        try:
+            locator = alvo.locator(seletor)
+            if locator.count() > 0:
+                locator.first.click(timeout=5000)
+                return
+        except Exception:
+            continue
+    raise RuntimeError("Botão Consultar não encontrado no Solar.")
+
+
+def _clicar_resultado_processo_solar(alvo: Any, processo: dict[str, str]) -> bool:
+    script = """
+    (processo) => {
+      const normalizar = (valor) => String(valor || "")
+        .normalize("NFD")
+        .replace(/[\\u0300-\\u036f]/g, "")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      const numero = String(processo.numero || "");
+      const numeroSemZero = String(processo.numero_sem_zero || "");
+      const ano = String(processo.ano || "");
+      const formatado = String(processo.formatado || "");
+      const combina = (texto) => {
+        const raw = String(texto || "");
+        const norm = normalizar(raw);
+        return (formatado && raw.includes(formatado))
+          || (ano && numero && raw.includes(numero) && raw.includes(ano))
+          || (ano && numeroSemZero && raw.includes(numeroSemZero) && raw.includes(ano))
+          || (norm.includes("processo digital") && ano && norm.includes(ano));
+      };
+      const clicaveis = Array.from(document.querySelectorAll("a, button, input[type='button'], input[type='submit'], img[onclick], span[onclick]"));
+      for (const el of clicaveis) {
+        const texto = `${el.textContent || ""} ${el.value || ""} ${el.title || ""} ${el.getAttribute("href") || ""} ${el.getAttribute("onclick") || ""}`;
+        if (combina(texto) || /chaveProcesso=/i.test(texto)) {
+          el.click();
+          return true;
+        }
+      }
+      const linhas = Array.from(document.querySelectorAll("tr, li, div"));
+      for (const linha of linhas) {
+        if (!combina(linha.textContent || "")) continue;
+        const link = linha.querySelector("a, button, input[type='button'], input[type='submit'], img[onclick], span[onclick]");
+        if (link) {
+          link.click();
+          return true;
+        }
+      }
+      return false;
+    }
+    """
+    try:
+        return bool(alvo.evaluate(script, processo))
+    except Exception:
+        return False
+
+
 def _abrir_processo_solar_na_pagina(pagina: Any, numero_processo: str) -> dict[str, Any]:
     processo = _quebrar_processo_solar(numero_processo)
     if not processo:
@@ -3590,22 +3866,25 @@ def _abrir_processo_solar_na_pagina(pagina: Any, numero_processo: str) -> dict[s
     processo_formatado = processo["formatado"]
 
     _selecionar_dados_do_processo_solar(alvo)
-    alvo.select_option("#procDocCorrespDTO\\.flTipoprocesso", "P")
-    alvo.fill("#procDocCorrespDTO\\.nuProcessooficial", numero)
-    alvo.fill("#procDocCorrespDTO\\.nuAno", ano)
-    try:
-        alvo.fill("#procDocCorrespDTO\\.nuDigitoVerificador", "")
-    except Exception:
-        pass
-    alvo.locator("input[name='btnConsultar']").click(timeout=5000)
+    _select_primeiro_seletor(alvo, ("#procDocCorrespDTO\\.flTipoprocesso", "[name='procDocCorrespDTO.flTipoprocesso']"), "P")
+    if not _fill_primeiro_seletor(alvo, ("#procDocCorrespDTO\\.nuProcessooficial", "[name='procDocCorrespDTO.nuProcessooficial']"), numero):
+        raise RuntimeError("Campo do número do processo não encontrado no Solar.")
+    if not _fill_primeiro_seletor(alvo, ("#procDocCorrespDTO\\.nuAno", "[name='procDocCorrespDTO.nuAno']"), ano):
+        raise RuntimeError("Campo do ano do processo não encontrado no Solar.")
+    _fill_primeiro_seletor(alvo, ("#procDocCorrespDTO\\.nuDigitoVerificador", "[name='procDocCorrespDTO.nuDigitoVerificador']"), "")
+    _clicar_botao_consultar_solar(alvo)
 
     fim = time.time() + 45
     chave_encontrada = ""
     chave_encontrada_em: float | None = None
+    resultado_clicado = False
     while time.time() < fim:
         for alvo_dados in [pagina, *list(getattr(pagina, "frames", []) or [])]:
             if _alvo_contem_dados_processo_solar(alvo_dados, processo):
                 return {"chaveProcesso": chave_encontrada, "url": pagina.url, "processo": processo_formatado}
+            if not resultado_clicado and _clicar_resultado_processo_solar(alvo_dados, processo):
+                resultado_clicado = True
+                time.sleep(1.0)
 
         frame_pasta = _frame_por_nome(pagina, "frameNPasta")
         if frame_pasta:
@@ -3649,6 +3928,7 @@ def abrir_processo_solar_endpoint(payload: AbrirProcessoSolarPayload) -> dict[st
     porta = obter_porta_chrome()
     playwright = None
     try:
+        chrome_service.instalar_bookmarklets_autoliquid()
         if not chrome_service.chrome_esta_pronto(porta):
             chrome_service.abrir_chrome(
                 porta,
@@ -4960,7 +5240,12 @@ def _nome_pdf_simples_receita(cnpj_limpo: str, texto_receita: str = "") -> str:
     return f"{prefixo} {cnpj_limpo}.pdf"
 
 
-def _pagina_receita_resultado_simples(pagina: Any, cnpj_limpo: str) -> tuple[bool, str]:
+def _pagina_receita_resultado_simples(
+    pagina: Any,
+    cnpj_limpo: str,
+    *,
+    permitir_sem_cnpj: bool = False,
+) -> tuple[bool, str]:
     try:
         texto = pagina.locator("body").inner_text(timeout=3000)
     except Exception:
@@ -4973,10 +5258,23 @@ def _pagina_receita_resultado_simples(pagina: Any, cnpj_limpo: str) -> tuple[boo
         "simples nacional" in texto_norm
         and ("optante" in texto_norm or "consulta optantes" in texto_norm)
     )
-    return bool(tem_cnpj and tem_resultado), texto
+    return bool((tem_cnpj or permitir_sem_cnpj) and tem_resultado), texto
 
 
-def _localizar_pagina_receita(contexto: Any) -> Any | None:
+def _localizar_pagina_receita(contexto: Any, cnpj_limpo: str = "") -> Any | None:
+    paginas_receita = [
+        pagina
+        for pagina in contexto.pages
+        if "consopt.www8.receita.fazenda.gov.br/consultaoptantes" in (pagina.url or "")
+    ]
+    for pagina in reversed(paginas_receita):
+        resultado_ok, _texto = _pagina_receita_resultado_simples(
+            pagina,
+            cnpj_limpo,
+            permitir_sem_cnpj=not bool(cnpj_limpo),
+        )
+        if resultado_ok:
+            return pagina
     for pagina in contexto.pages:
         if "consopt.www8.receita.fazenda.gov.br/consultaoptantes" in (pagina.url or ""):
             return pagina
@@ -5272,6 +5570,7 @@ def gerar_pdf_simples(body: dict[str, Any]) -> dict[str, Any]:
     cnpj_limpo = "".join(c for c in cnpj_raw if c.isdigit())
     if len(cnpj_limpo) != 14:
         raise HTTPException(status_code=422, detail="CNPJ deve ter 14 dígitos.")
+    download_only = bool(body.get("downloadOnly"))
 
     url_consulta = "https://consopt.www8.receita.fazenda.gov.br/consultaoptantes"
     playwright = None
@@ -5283,12 +5582,22 @@ def gerar_pdf_simples(body: dict[str, Any]) -> dict[str, Any]:
 
         playwright, pagina_base = chrome_service.conectar_chrome_cdp(porta, abrir_se_fechado=True)
         contexto = pagina_base.context
-        pagina = _localizar_pagina_receita(contexto)
+        pagina = _localizar_pagina_receita(contexto, cnpj_limpo)
         if pagina is None:
+            if download_only:
+                return {
+                    "success": True,
+                    "status": "preenchido",
+                    "mensagem": "A página de resultado da Receita ainda não foi encontrada para baixar o PDF.",
+                }
             pagina = contexto.new_page()
             pagina.goto(url_consulta, wait_until="domcontentloaded", timeout=30000)
 
-        resultado_ok, texto_receita = _pagina_receita_resultado_simples(pagina, cnpj_limpo)
+        resultado_ok, texto_receita = _pagina_receita_resultado_simples(
+            pagina,
+            cnpj_limpo,
+            permitir_sem_cnpj=download_only,
+        )
         if resultado_ok:
             downloads_dir = Path.home() / "Downloads"
             if not downloads_dir.exists():
@@ -5305,6 +5614,13 @@ def gerar_pdf_simples(body: dict[str, Any]) -> dict[str, Any]:
                 "arquivo": str(destino),
                 "mensagem": mensagem,
                 "abaFechada": aba_fechada,
+            }
+
+        if download_only:
+            return {
+                "success": True,
+                "status": "preenchido",
+                "mensagem": "A página da Receita ainda não exibiu o resultado. Conclua a consulta no site e clique em Gerar PDF novamente.",
             }
 
         if "consopt.www8.receita.fazenda.gov.br/consultaoptantes" not in (pagina.url or ""):
@@ -5356,6 +5672,35 @@ def gerar_pdf_simples(body: dict[str, Any]) -> dict[str, Any]:
                 pass
 
 
+def _bool_opcional(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    texto = str(value).strip().casefold()
+    if texto in {"1", "true", "t", "sim", "s", "yes", "y"}:
+        return True
+    if texto in {"0", "false", "f", "nao", "não", "n", "no"}:
+        return False
+    return None
+
+
+def _salvar_simples_batch_cache_persistido(registros: list[tuple[str, str, bool]]) -> None:
+    if not registros:
+        return
+
+    def _run() -> None:
+        for cnpj, razao_social, optante in registros:
+            try:
+                _turso_service().salvar_simples_cnpj(cnpj, razao_social, optante)
+            except Exception:
+                log.debug("simples-batch: falha ao persistir cache do CNPJ %s.", cnpj, exc_info=True)
+
+    Thread(target=_run, name="simples-cache-save", daemon=True).start()
+
+
 @app.post("/api/cnpj/simples-batch")
 def simples_batch(body: dict[str, Any]) -> dict[str, Any]:
     import core.consulta_cnpj as _cnpj_mod
@@ -5365,35 +5710,38 @@ def simples_batch(body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(cnpjs_raw, list):
         raise HTTPException(status_code=422, detail="'cnpjs' deve ser uma lista de strings.")
 
-    cnpjs_limpos: list[str] = list({
+    cnpjs_limpos = list(dict.fromkeys(
         c for cnpj in cnpjs_raw
         if len(c := "".join(d for d in str(cnpj) if d.isdigit())) == 14
-    })
+    ))
     if not cnpjs_limpos:
         return {"resultado": {}}
 
-    resultado: dict[str, bool | None] = {}
+    resultado: dict[str, bool | None] = {cnpj: None for cnpj in cnpjs_limpos}
 
     pendentes: list[str] =[]
     for cnpj in cnpjs_limpos:
+        if resultado.get(cnpj) is not None:
+            continue
         cached = _cnpj_mod._cache_get(cnpj)
         if cached is not None:
             optante = cached.get("optante_simples")
-            resultado[cnpj] = bool(optante) if optante is not None else None
+            resultado[cnpj] = _bool_opcional(optante)
         else:
             pendentes.append(cnpj)
 
+    persistir: list[tuple[str, str, bool]] = []
     if pendentes:
-        def _consultar_um(cnpj: str) -> tuple[str, bool | None]:
+        def _consultar_um(cnpj: str) -> tuple[str, bool | None, str]:
             try:
                 dados = _cnpj_mod.obter_dados_empresa(cnpj)
                 if dados.get("nao_encontrado"):
-                    return cnpj, None
+                    return cnpj, None, ""
                 optante = dados.get("optante_simples")
-                return cnpj, bool(optante) if optante is not None else None
+                return cnpj, _bool_opcional(optante), str(dados.get("razao_social") or "").strip()
             except Exception:
                 log.debug("simples-batch: falha ao consultar CNPJ %s", cnpj)
-                return cnpj, None
+                return cnpj, None, ""
 
         max_workers = min(5, len(pendentes))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -5401,8 +5749,10 @@ def simples_batch(body: dict[str, Any]) -> dict[str, Any]:
             try:
                 for future in _as_completed(futures, timeout=60):
                     try:
-                        cnpj, optante = future.result(timeout=30)
+                        cnpj, optante, razao_social = future.result(timeout=30)
                         resultado[cnpj] = optante
+                        if optante is not None:
+                            persistir.append((cnpj, razao_social, optante))
                     except Exception:
                         resultado[futures[future]] = None
             except TimeoutError:
@@ -5411,6 +5761,7 @@ def simples_batch(body: dict[str, Any]) -> dict[str, Any]:
                     if cnpj not in resultado:
                         resultado[cnpj] = None
 
+    _salvar_simples_batch_cache_persistido(persistir)
     return {"resultado": resultado}
 
 
@@ -5420,10 +5771,32 @@ def _warmup_turso_schema() -> None:
     Evita que a primeira requisição do usuário (ex: login, datas-globais)
     fique bloqueada pelos ~30-60s de criação das tabelas.
     """
+    started_at = time.monotonic()
     try:
         from services import turso_service as _turso
         if _turso.turso_configurado():
-            _turso.garantir_schema_cache(timeout=60)
+            try:
+                _turso.garantir_schema_fila_cache(
+                    timeout=float(os.getenv("AUTO_LIQUID_TURSO_FILA_WARMUP_TIMEOUT", "5") or "5")
+                )
+                snapshot = _carregar_snapshot_fila_turso()
+                if snapshot:
+                    log.info(
+                        "Warmup da fila Turso concluido em %.0fms (%d linhas).",
+                        (time.monotonic() - started_at) * 1000,
+                        int(snapshot.get("total") or 0),
+                    )
+            except Exception:
+                log.debug("Warmup da fila Turso falhou (não crítico).", exc_info=True)
+
+        delay_seconds = float(os.getenv("AUTO_LIQUID_TURSO_WARMUP_DELAY", "3") or "0")
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+
+        if _turso.turso_configurado():
+            timeout_seconds = int(os.getenv("AUTO_LIQUID_TURSO_WARMUP_TIMEOUT", "25") or "25")
+            _turso.garantir_schema_cache(timeout=timeout_seconds)
+            log.info("Warmup do schema Turso concluido em %.0fms.", (time.monotonic() - started_at) * 1000)
     except Exception:
         log.debug("Warmup do schema Turso falhou (não crítico).", exc_info=True)
 

@@ -1,6 +1,8 @@
 use std::{
+    fs,
     path::{Path, PathBuf},
     process::Command as StdCommand,
+    time::Instant,
 };
 
 use tauri::{Manager, Theme, WebviewWindow};
@@ -47,6 +49,10 @@ fn attach_command_logs(mut rx: tauri::async_runtime::Receiver<CommandEvent>, pro
             }
         }
     });
+}
+
+fn log_elapsed(label: &str, started_at: Instant) {
+    log::info!("{label} concluido em {}ms", started_at.elapsed().as_millis());
 }
 
 fn dev_python_candidates() -> Vec<PathBuf> {
@@ -197,15 +203,13 @@ fn ensure_executable(path: &Path) {
 
 #[cfg(target_os = "macos")]
 fn prepare_macos_sidecar() {
+    let started_at = Instant::now();
+
+    let cleanup_started_at = Instant::now();
     let _ = StdCommand::new("sh")
         .args(["-c", "lsof -ti:8000 | xargs kill -9 2>/dev/null || true"])
         .status();
-
-    let current_exe = std::env::current_exe().ok();
-    let bundle_root = current_exe
-        .as_ref()
-        .and_then(|path| path.ancestors().nth(3))
-        .map(|path| path.to_path_buf());
+    log_elapsed("Limpeza da porta 8000 no macOS", cleanup_started_at);
 
     let sidecars = sidecar_paths();
 
@@ -214,22 +218,25 @@ fn prepare_macos_sidecar() {
             ensure_executable(path);
         }
 
-        let mut quarantine_targets = Vec::new();
-        if let Some(exe) = current_exe.as_ref() {
-            quarantine_targets.push(exe.as_path());
-        }
-        for path in &sidecars {
-            quarantine_targets.push(path.as_path());
-        }
-        if let Some(bundle_root) = bundle_root.as_ref() {
-            quarantine_targets.push(bundle_root.as_path());
+        let marker = macos_sidecar_prepare_marker();
+        if marker.as_ref().is_some_and(|path| path.exists()) {
+            log::info!("Preparacao macOS do sidecar ja registrada para esta versao.");
+            log_elapsed("Preparacao macOS do sidecar", started_at);
+            return;
         }
 
-        for target in quarantine_targets {
+        for target in &sidecars {
             let _ = StdCommand::new("xattr")
                 .args(["-dr", "com.apple.quarantine"])
                 .arg(target)
                 .status();
+        }
+
+        if let Some(marker) = marker {
+            if let Some(parent) = marker.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = fs::write(marker, b"ok");
         }
 
         for path in &sidecars {
@@ -238,6 +245,20 @@ fn prepare_macos_sidecar() {
     } else {
         log::warn!("Nao foi possivel localizar o sidecar para preparar o macOS.");
     }
+
+    log_elapsed("Preparacao macOS do sidecar", started_at);
+}
+
+#[cfg(target_os = "macos")]
+fn macos_sidecar_prepare_marker() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("AutoLiquid")
+            .join(format!("sidecar-prepared-{}", env!("CARGO_PKG_VERSION"))),
+    )
 }
 
 #[cfg(target_os = "windows")]

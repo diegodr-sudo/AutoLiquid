@@ -289,13 +289,13 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
   return (
     <div
       ref={backdropRef}
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 px-4 py-8 backdrop-blur-sm"
+      className="fixed inset-0 z-[200] flex items-center justify-center overflow-hidden bg-black/40 px-2 py-2 backdrop-blur-sm"
       onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}
     >
-      <div className="w-full max-w-2xl rounded-2xl border border-glass-border bg-background shadow-2xl">
+      <div className="flex max-h-[calc(100dvh-16px)] w-full max-w-[580px] flex-col overflow-hidden rounded-2xl border border-glass-border bg-background shadow-2xl">
 
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-glass-border px-6 py-4">
+        <div className="flex shrink-0 items-center justify-between border-b border-glass-border px-5 py-3">
           <div className="flex items-center gap-3">
             <Calendar className="h-5 w-5 text-primary" />
             <h2 className="text-base font-semibold text-foreground">Ausências da Equipe</h2>
@@ -368,18 +368,18 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
 
         {/* Erro inline — aparece/desaparece sem bloquear nada */}
         {erroInline && (
-          <div className="mx-6 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-3 py-2 text-[11px] text-destructive">
+          <div className="mx-5 mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-3 py-2 text-[11px] text-destructive">
             <AlertCircle className="h-3.5 w-3.5 shrink-0" />
             {erroInline}
           </div>
         )}
 
-        <div className="space-y-5 p-6">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
           {tab === "calendario" ? (
             <>
-              <div className="rounded-xl border border-glass-border bg-background/50 p-4">
+              <div className="rounded-xl border border-glass-border bg-background/50 p-3">
                 {/* Navegação */}
-                <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="mb-2 flex items-center justify-between gap-2">
                   <button type="button" onClick={prevMonth} className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary/60">
                     <ChevronLeft className="h-4 w-4" />
                   </button>
@@ -455,7 +455,7 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                 </div>
 
                 {/* Legenda */}
-                <div className="mb-3 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+                <div className="mb-2 flex flex-wrap gap-x-2 gap-y-1 text-[9px] text-muted-foreground">
                   <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-red-500/70" />Feriado</span>
                   {servidores.map((s) => (
                     <span key={s.nome} className="flex items-center gap-1">
@@ -468,12 +468,12 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                 {/* Cabeçalho */}
                 <div className="mb-1 grid grid-cols-7">
                   {DIAS.map((d) => (
-                    <div key={d} className="py-1 text-center text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{d}</div>
+                    <div key={d} className="py-0.5 text-center text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{d}</div>
                   ))}
                 </div>
 
                 {/* Dias */}
-                <div className="grid grid-cols-7 gap-px">
+                <div className="grid grid-cols-7 gap-0.5">
                   {cells.map((day, idx) => {
                     if (day === null) return <div key={`pad-${idx}`} />;
                     const ymd = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
@@ -491,10 +491,10 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                       <div
                         key={ymd}
                         title={tooltip}
-                        className={`relative flex flex-col items-center rounded-lg py-1.5 transition-colors ${isToday ? "bg-primary/15 ring-1 ring-primary/40" : feriado ? "bg-red-500/6" : ""}`}
-                        style={{ minHeight: 52 }}
+                        className={`relative flex flex-col items-center rounded-lg py-1 transition-colors ${isToday ? "bg-primary/15 ring-1 ring-primary/40" : feriado ? "bg-red-500/6" : ""}`}
+                        style={{ minHeight: 40 }}
                       >
-                        <span className={`text-[12px] font-medium leading-none ${
+                        <span className={`text-[11px] font-medium leading-none ${
                           isToday   ? "font-bold text-primary"
                           : feriado ? "text-red-600"
                           : isWeekend ? "text-muted-foreground/60"
@@ -506,14 +506,14 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                         {feriado && <span className="mt-0.5 h-1 w-1 rounded-full bg-red-500" />}
 
                         {ausDia.length > 0 && (
-                          <div className="mt-1 flex flex-wrap justify-center gap-0.5 px-0.5">
+                          <div className="mt-0.5 flex flex-wrap justify-center gap-0.5 px-0.5">
                             {ausDia.slice(0, 4).map((a) => {
                               const cor = corMap[a.servidor] ?? "#94a3b8";
                               return (
                                 <span
                                   key={a.id}
                                   className="flex items-center justify-center rounded-full font-bold text-white"
-                                  style={{ width: 16, height: 16, fontSize: 7, background: cor, opacity: 0.92 }}
+                                  style={{ width: 13, height: 13, fontSize: 6, background: cor, opacity: 0.92 }}
                                   title={`${a.servidor} · ${TIPO_CONFIG[a.tipo].label}`}
                                 >
                                   {initials(a.servidor).slice(0, 1)}
@@ -523,7 +523,7 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                             {ausDia.length > 4 && (
                               <span
                                 className="flex items-center justify-center rounded-full bg-muted font-bold text-muted-foreground"
-                                style={{ width: 16, height: 16, fontSize: 7 }}
+                                style={{ width: 13, height: 13, fontSize: 6 }}
                               >
                                 +{ausDia.length - 4}
                               </span>
@@ -572,7 +572,7 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                         <select
                           value={form.tipo}
                           onChange={(e) => setForm((f) => ({ ...f, tipo: e.target.value as Ausencia["tipo"] }))}
-                          className="w-full rounded-lg border border-glass-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+                          className="select-native h-11 w-full rounded-full border border-glass-border bg-background pl-3 pr-8 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
                         >
                           <option value="ferias">Férias</option>
                           <option value="afastamento">Afastamento</option>
@@ -633,12 +633,12 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                 )}
 
                 {ausencias.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-glass-border py-8 text-center text-sm text-muted-foreground">
-                    <Calendar className="mx-auto mb-2 h-8 w-8 opacity-25" />
+                  <div className="rounded-xl border border-dashed border-glass-border py-5 text-center text-sm text-muted-foreground">
+                    <Calendar className="mx-auto mb-2 h-7 w-7 opacity-25" />
                     Nenhuma ausência cadastrada.
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-1.5">
                     {ausencias.slice().sort((a, b) => a.inicio.localeCompare(b.inicio)).map((a) => {
                       const cfg = TIPO_CONFIG[a.tipo];
                       const cor = corMap[a.servidor] ?? "#94a3b8";
@@ -646,9 +646,9 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                       const fim = new Date(a.fim    + "T00:00:00");
                       const dias = Math.round((fim.getTime() - ini.getTime()) / 86_400_000) + 1;
                       return (
-                        <div key={a.id} className="flex items-center gap-3 rounded-xl border border-glass-border bg-background/50 px-4 py-3"
-                          style={{ borderLeft: `3px solid ${cor}` }}>
-                          <div className="mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white"
+                          <div key={a.id} className="flex items-center gap-3 rounded-xl border border-glass-border bg-background/50 px-3 py-2"
+                            style={{ borderLeft: `3px solid ${cor}` }}>
+                          <div className="mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
                             style={{ background: cor }}>
                             {initials(a.servidor)}
                           </div>
@@ -685,13 +685,13 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
 
               <div className="space-y-2">
                 {servidores.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-glass-border py-8 text-center text-sm text-muted-foreground">
+                  <div className="rounded-xl border border-dashed border-glass-border py-5 text-center text-sm text-muted-foreground">
                     Nenhum servidor cadastrado.
                   </div>
                 ) : null}
                 {servidores.map((s, idx) => (
-                  <div key={s.nome} className="relative flex items-center gap-3 rounded-xl border border-glass-border bg-background/50 px-4 py-3">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white"
+                  <div key={s.nome} className="relative flex items-center gap-3 rounded-xl border border-glass-border bg-background/50 px-3 py-2">
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
                       style={{ background: s.cor }}>
                       {initials(s.nome)}
                     </div>

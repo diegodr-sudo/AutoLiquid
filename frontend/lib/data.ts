@@ -1,7 +1,7 @@
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000"
 const DEFAULT_API_TIMEOUT_MS = 10000
-const SAVE_PREENCHIMENTO_TIMEOUT_MS = 30000  // salvar-preenchimento faz sync com Supabase
+const SAVE_PREENCHIMENTO_TIMEOUT_MS = 30000
 const EXECUTION_API_TIMEOUT_MS = 5 * 60 * 1000
 const PDF_PROCESS_TIMEOUT_MS = 2 * 60 * 1000
 const DEFAULT_API_STARTUP_TIMEOUT_MS = 60000
@@ -135,17 +135,14 @@ export interface AppSettings {
   perguntarLimparMes: boolean
   temaWeb: "light" | "dark" | "system"
   nivelLog: "simples" | "desenvolvedor"
-  databaseUrl: string
   tursoDatabaseUrl: string
   tursoAuthToken: string
-  databaseMode: "turso" | "supabase"
   nomeUsuario: string
   nfServicoAlertaDiasUteis: number
   rocketChatUrl: string
   rocketChatUserId: string
   rocketChatAuthToken: string
   rocketChatContar: "tudo" | "mencoes"
-  dataSources: Record<string, { supabase: boolean; turso: boolean }>
 }
 
 export interface RocketChatNotifications {
@@ -197,7 +194,6 @@ export interface StopExecutionResponse extends DocumentoProcessado {
 export interface BackendStatus {
   chromeStatus: ChromeStatus
   chromePorta: number
-  postgresEnabled?: boolean
 }
 
 export type BackendStartupPhase =
@@ -375,7 +371,6 @@ export interface AuthDiagnostico {
   versao?: string
   configLocalExiste: boolean
   configEmbutidaExiste: boolean
-  databaseMode?: string
   tursoUrlPresente: boolean
   tursoUrlTipo?: string
   tursoHost?: string
@@ -549,7 +544,6 @@ export async function fetchBackendStatus(): Promise<BackendStatus> {
       return {
         chromeStatus: "erro",
         chromePorta: 9222,
-        postgresEnabled: false,
       }
     }
     throw error
@@ -839,8 +833,7 @@ export async function waitForBackendReady(
         status = {
           chromeStatus: "erro",
           chromePorta: 9222,
-          postgresEnabled: false,
-        }
+          }
       }
       onProgress?.({
         phase: "starting-api",

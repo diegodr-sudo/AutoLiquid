@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Save, Search, Trash2, Upload, X } from "lucide-react";
 import { GlassButton, GlassCard } from "./glass-card";
+import { GlobalScopeIcon } from "./global-scope-icon";
 import {
   fetchTabela,
   saveTabela,
@@ -162,6 +163,7 @@ export function TabelasModal({
   if (!isOpen) return null;
 
   const isDatasOnly = tabs.length === 1 && tabs[0] === "datas-impostos";
+  const activeTabLabel = currentDataset?.label ?? TAB_LABELS[activeTab];
 
   const updateDraftRow = (rowIndex: number, key: string, value: string) => {
     setDrafts((current) => ({
@@ -226,23 +228,26 @@ export function TabelasModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
+    <div className="fixed inset-0 z-[200] overflow-hidden">
       <div
         className="absolute inset-0 bg-background/75 backdrop-blur-sm"
         onClick={onClose}
       />
 
-      <div className="relative flex min-h-full items-start justify-center p-4 sm:items-center">
+      <div className="relative flex min-h-full items-center justify-center p-2">
       <GlassCard
-        className="relative z-10 pointer-events-auto w-full max-w-7xl overflow-hidden border-white/50"
-        contentClassName="flex max-h-[92vh] min-h-0 flex-col"
+        className="relative z-10 pointer-events-auto w-full max-w-[min(1120px,calc(100vw-16px))] overflow-hidden border-white/50"
+        contentClassName="flex max-h-[calc(100dvh-16px)] min-h-0 flex-col"
       >
-        <div className="shrink-0 flex items-center justify-between border-b border-glass-border px-6 py-5">
-          <div>
-            <h2 className="text-lg font-semibold text-foreground">
-              {isDatasOnly ? "Regras de Datas" : "Configuracao de Tabelas"}
-            </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
+        <div className="shrink-0 flex items-center justify-between border-b border-glass-border px-4 py-2.5">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-lg font-semibold text-foreground">
+                {isDatasOnly ? "Regras de Datas" : "Configuracao de Tabelas"}
+              </h2>
+              <GlobalScopeIcon label="Global" />
+            </div>
+            <p className="mt-0.5 line-clamp-1 text-sm text-muted-foreground">
               {isDatasOnly
                 ? "Edite as regras de vencimento, apuracao e excecoes que entram no fluxo real da automacao."
                 : "Todas as tabelas operacionais da automacao estao disponiveis na web e gravam no mesmo armazenamento local."}
@@ -257,47 +262,43 @@ export function TabelasModal({
           </button>
         </div>
 
-        <div className="shrink-0 overflow-x-auto border-b border-glass-border px-3 pt-2">
-          <div className="flex min-w-max gap-1">
-            {tabs.map((tab) => {
-              const tabLabel = datasets[tab]?.label ?? TAB_LABELS[tab];
-              return (
-                <button
-                  key={tab}
-                  type="button"
-                  onClick={() => {
-                    setActiveTab(tab);
-                    setSearchQuery("");
-                    setErro("");
-                    setMensagem("");
-                  }}
-                  className={cn(
-                    "rounded-t-2xl px-4 py-3 text-sm font-medium transition-all",
-                    activeTab === tab
-                      ? "border border-b-transparent border-glass-border bg-background/75 text-foreground"
-                      : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground"
-                  )}
-                >
-                  {tabLabel}
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        <div className="shrink-0 grid gap-2 border-b border-glass-border px-4 py-2.5 lg:grid-cols-[minmax(170px,240px)_minmax(0,1fr)_auto_auto] lg:items-end">
+          {tabs.length > 1 ? (
+            <label className="grid gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Tabela</span>
+              <select
+                value={activeTab}
+                onChange={(event) => {
+                  setActiveTab(event.target.value as TableKey);
+                  setSearchQuery("");
+                  setErro("");
+                  setMensagem("");
+                }}
+                className="select-native h-11 w-full rounded-full border border-glass-border bg-background pl-3 pr-8 text-sm font-medium text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+              >
+                {tabs.map((tab) => (
+                  <option key={tab} value={tab}>
+                    {datasets[tab]?.label ?? TAB_LABELS[tab]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <div className="hidden lg:block" />
+          )}
 
-        <div className="shrink-0 flex items-center gap-4 border-b border-glass-border px-6 py-4">
-          <div className="relative flex-1">
+          <div className="relative min-w-0">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               type="text"
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
               placeholder={currentDataset?.searchPlaceholder ?? "Buscar..."}
-              className="w-full rounded-xl border border-glass-border bg-background/85 py-3 pl-10 pr-4 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+              className="h-11 w-full rounded-full border border-glass-border bg-background/85 pl-10 pr-4 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
             />
           </div>
 
-          <div className="min-w-32 text-right text-sm text-muted-foreground">
+          <div className="whitespace-nowrap text-sm text-muted-foreground lg:text-right">
             {visibleRows.length} / {currentRows.length} registros
           </div>
 
@@ -308,22 +309,21 @@ export function TabelasModal({
               title="Sincronizacao via planilha ainda nao foi ligada na versao web"
             >
               <Upload className="h-4 w-4" />
-              Atualizar via Planilha
+              Planilha
             </GlassButton>
           )}
         </div>
 
-        {currentDataset?.description ? (
-          <div className="shrink-0 px-6 py-4">
-            <p className="text-sm text-muted-foreground">
+        {currentDataset?.description && activeTab === "datas-impostos" ? (
+          <div className="shrink-0 border-b border-glass-border/70 px-5 py-2">
+            <p className="line-clamp-2 text-sm text-muted-foreground" title={`${activeTabLabel}: ${currentDataset.description}`}>
               {currentDataset.description}
             </p>
-            {activeTab === "datas-impostos" ? (
-              <div className="mt-4 rounded-2xl border border-sky-500/20 bg-sky-500/10 px-4 py-4">
+              <div className="mt-2 rounded-2xl border border-sky-500/20 bg-sky-500/10 px-4 py-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   Como editar
                 </p>
-                <div className="mt-3 space-y-2 text-sm text-foreground">
+                <div className="mt-2 space-y-1.5 text-sm text-foreground">
                   <p>
                     Ajuste as linhas existentes quando a regra já faz parte do fluxo atual.
                   </p>
@@ -344,13 +344,12 @@ export function TabelasModal({
                   </p>
                 </div>
               </div>
-            ) : null}
           </div>
         ) : (
-          <div className="shrink-0 px-6 pt-4" />
+          null
         )}
 
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-4">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-2.5">
           {!currentDataset && isActiveTabLoading ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               Carregando tabela...
@@ -360,7 +359,7 @@ export function TabelasModal({
               {erro}
             </div>
           ) : currentDataset ? (
-            <div className="relative min-h-0 h-[52vh] flex-1 overflow-hidden rounded-2xl border border-glass-border bg-background/65">
+            <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-glass-border bg-background/65">
               {isActiveTabLoading ? (
                 <div className="pointer-events-none absolute right-3 top-3 z-20 rounded-full border border-glass-border bg-background/90 px-3 py-1 text-xs font-medium text-muted-foreground shadow-sm backdrop-blur">
                   Atualizando...
@@ -370,13 +369,13 @@ export function TabelasModal({
               <table className="min-w-full">
                 <thead className="sticky top-0 z-10 bg-background/95 backdrop-blur">
                   <tr className="border-b border-glass-border">
-                    <th className="w-14 px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                    <th className="w-12 px-3 py-2 text-left text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                       #
                     </th>
                     {currentDataset.columns.map((column) => (
                       <th
                         key={column.key}
-                        className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground"
+                        className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground"
                       >
                         {column.label}
                       </th>
@@ -404,14 +403,14 @@ export function TabelasModal({
                               : "hover:bg-secondary/45"
                           )}
                         >
-                          <td className="px-3 py-2 text-sm text-muted-foreground">
+                          <td className="px-3 py-1.5 text-sm text-muted-foreground">
                             {index + 1}
                           </td>
                           {currentDataset.columns.map((column) => {
                             const editable = column.editable;
                             const value = row[column.key] ?? "";
                             return (
-                              <td key={column.key} className="px-3 py-2 align-top">
+                              <td key={column.key} className="px-3 py-1.5 align-top">
                                 {editable ? (
                                   <input
                                     type="text"
@@ -420,10 +419,10 @@ export function TabelasModal({
                                     onChange={(event) =>
                                       updateDraftRow(index, column.key, event.target.value)
                                     }
-                                    className="w-full rounded-lg border border-transparent bg-transparent px-2 py-2 text-sm text-foreground outline-none transition focus:border-primary focus:bg-background/85 focus:ring-2 focus:ring-primary/15"
+                                    className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1.5 text-sm text-foreground outline-none transition focus:border-primary focus:bg-background/85 focus:ring-2 focus:ring-primary/15"
                                   />
                                 ) : (
-                                  <div className="px-2 py-2 text-sm text-foreground">
+                                  <div className="px-2 py-1.5 text-sm text-foreground">
                                     {value || "—"}
                                   </div>
                                 )}
@@ -454,7 +453,7 @@ export function TabelasModal({
           )}
         </div>
 
-        <div className="shrink-0 flex items-center justify-between gap-4 border-t border-glass-border px-6 py-4">
+        <div className="shrink-0 flex items-center justify-between gap-4 border-t border-glass-border px-4 py-2.5">
           <div className="flex gap-2">
             <GlassButton
               variant="secondary"

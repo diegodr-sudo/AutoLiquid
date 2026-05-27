@@ -170,10 +170,10 @@ export function DashboardModal({ open, onClose, rows }: DashboardModalProps) {
   return (
     <div
       ref={backdropRef}
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 px-4 py-8 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 px-2 py-3 backdrop-blur-sm sm:px-4"
       onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}
     >
-      <div className="w-full max-w-3xl rounded-2xl border border-glass-border bg-background shadow-2xl">
+      <div className="flex max-h-[calc(100dvh-24px)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-glass-border bg-background shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-glass-border px-6 py-4">
           <div className="flex items-center gap-2">
@@ -189,7 +189,7 @@ export function DashboardModal({ open, onClose, rows }: DashboardModalProps) {
           </button>
         </div>
 
-        <div className="space-y-6 p-6">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
           {/* Stat cards */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <StatCard icon={BarChart3} label="Total em fila" value={fmtBRL(c.totalValor)} sub={`${c.total} processos`} color="bg-primary/10 text-primary" />

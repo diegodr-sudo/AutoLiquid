@@ -2,7 +2,7 @@
 
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowDownToLine, ArrowUp, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Chrome, FileUp, Info, Loader2, MessageSquare, Minus, Pencil, Plus, RefreshCw, Settings2, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowDownToLine, ArrowUp, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Chrome, FileUp, Info, Loader2, MessageSquare, Minus, Pencil, Plus, RefreshCw, Settings2, Table, Trash2, X } from "lucide-react";
 import { Header } from "@/components/header";
 import { DateFields } from "@/components/date-fields";
 import { UploadZone } from "@/components/upload-zone";
@@ -142,6 +142,7 @@ const DASHBOARD_LABELS = {
 } as const;
 
 type MainTab = "dashboard" | "painel" | "liquidacao" | "registro";
+type RegistroUploadMode = "comprasnet" | "siafi";
 
 interface QueueDisplayColumn {
   key: keyof QueueDisplayRow;
@@ -244,18 +245,32 @@ const LEGACY_DISTRIBUTION_NAMES = [
   "Ramone", "Gabriel", "Rubens", "Diego", "Karine", "Ramone", "Diego", "Rubens", "Gabriel", "Karine",
 ] as const;
 const QUEUE_DISPLAY_COLUMNS: QueueDisplayColumn[] = [
-  { key: "responsavel", label: "Responsável", defaultWidth: 182 },
+  { key: "responsavel", label: "Responsável", defaultWidth: 242 },
   { key: "competencia", label: "Competência", defaultWidth: 100 },
   { key: "tipo", label: "Tipo", defaultWidth: 140 },
-  { key: "cpfCnpj", label: "CPF/CNPJ", defaultWidth: 132 },
+  { key: "cpfCnpj", label: "CPF/CNPJ", defaultWidth: 209 },
   { key: "credor", label: "Credor", defaultWidth: 280 },
+  { key: "setorOrigem", label: "Setor Origem", defaultWidth: 112 },
+  { key: "numeroProcesso", label: "Nº Processo", defaultWidth: 88 },
+  { key: "solPagamento", label: "Sol. Pag.", defaultWidth: 108 },
   { key: "valor", label: "Valor", defaultWidth: 110 },
   { key: "contrato", label: "Contrato", defaultWidth: 110 },
   { key: "ic", label: "IC", defaultWidth: 110 },
   { key: "dataEnc", label: "Data Enc.", defaultWidth: 102 },
-  { key: "setorOrigem", label: "Setor Origem", defaultWidth: 112 },
-  { key: "numeroProcesso", label: "Nº Processo", defaultWidth: 88 },
-  { key: "solPagamento", label: "Sol. Pag.", defaultWidth: 108 },
+];
+const QUEUE_DEFAULT_VISIBLE_COLUMNS: Array<keyof QueueDisplayRow> = [
+  "responsavel",
+  "competencia",
+  "tipo",
+  "cpfCnpj",
+  "credor",
+  "setorOrigem",
+  "numeroProcesso",
+  "solPagamento",
+  "valor",
+  "contrato",
+  "ic",
+  "dataEnc",
 ];
 
 const QUEUE_COMPACT_COLUMN_CLASSES: Partial<Record<keyof QueueDisplayRow, string>> = {
@@ -403,7 +418,7 @@ function formatAlertaServicoAcao(rule: AlertaServicoRule): string {
   if (rule.acaoVencimento === "DATA_PERSONALIZADA") {
     return rule.valorAcao ? `Vence em ${rule.valorAcao}` : "Data personalizada";
   }
-  return `Dia ${rule.valorAcao || "20"} do mês seguinte`;
+  return `Vence no dia ${rule.valorAcao || "20"} do mês seguinte`;
 }
 
 function normalizeAlertaServicoConfig(config: Partial<AlertaServicoConfig> | null | undefined): AlertaServicoConfig {
@@ -472,9 +487,17 @@ const TIPO_PATTERNS: Array<{ regex: RegExp; label: string; abbr: string; style: 
   { regex: /fatura/i,            label: "Fatura",       abbr: "Fatura",   style: "border-indigo-500/35 bg-indigo-500/10 text-indigo-700" },
   { regex: /boleto/i,            label: "Boleto",       abbr: "Boleto",   style: "border-amber-500/35 bg-amber-500/10 text-amber-700" },
   { regex: /bolsa/i,             label: "Bolsa",        abbr: "Bolsa",    style: "border-teal-500/35 bg-teal-500/10 text-teal-700" },
+  { regex: /(?:aux\.?|aux[ií]lio)\s*funeral/i, label: "Auxílio Funeral", abbr: "Aux. Funeral", style: "border-teal-500/35 bg-teal-500/10 text-teal-700" },
 ];
 
 const TIPO_DEFAULT_STYLE = "border-glass-border bg-muted/40 text-muted-foreground";
+const PILL_FORM_CONTROL_CLASS =
+  "h-11 w-full rounded-full border border-glass-border bg-background pl-3 pr-8 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:bg-muted/40 disabled:text-muted-foreground";
+
+function dispensaIndicadorSimples(tipo: string | null | undefined): boolean {
+  const texto = String(tipo || "");
+  return /bolsa/i.test(texto) || /(?:aux\.?|aux[ií]lio)\s*funeral/i.test(texto);
+}
 
 function _extractTipos(raw: string, out: TipoEntry[]): void {
   let remaining = raw.trim();
@@ -786,21 +809,22 @@ function loadQueueServerConfigs(): QueueServerConfig[] {
 
 function loadVisibleQueueColumns(): Array<keyof QueueDisplayRow> {
   const validKeys = QUEUE_DISPLAY_COLUMNS.map((column) => column.key);
+  const defaultKeys = QUEUE_DEFAULT_VISIBLE_COLUMNS.filter((key) => validKeys.includes(key));
   if (typeof window === "undefined") {
-    return validKeys;
+    return defaultKeys;
   }
 
   try {
     const raw = window.localStorage.getItem(QUEUE_VISIBLE_COLUMNS_STORAGE_KEY);
-    if (!raw) return validKeys;
+    if (!raw) return defaultKeys;
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return validKeys;
+    if (!Array.isArray(parsed)) return defaultKeys;
     const filtered = parsed.filter((key): key is keyof QueueDisplayRow => validKeys.includes(key));
-    const missing = validKeys.filter((key) => !filtered.includes(key));
+    const missing = defaultKeys.filter((key) => !filtered.includes(key));
     const ordered = [...filtered, ...missing];
-    return ordered.length > 0 ? ordered : validKeys;
+    return ordered.length > 0 ? ordered : defaultKeys;
   } catch {
-    return validKeys;
+    return defaultKeys;
   }
 }
 
@@ -1279,6 +1303,7 @@ export default function HomePage() {
   const [chromeStatus, setChromeStatus] = useState<"pronto" | "carregando" | "erro">("carregando");
   const [abrindoChrome, setAbrindoChrome] = useState(false);
   const [abrindoSiafi, setAbrindoSiafi] = useState(false);
+  const [registroUploadMode, setRegistroUploadMode] = useState<RegistroUploadMode>("comprasnet");
   const [bannerUpdate, setBannerUpdate] = useState<VersaoInfo | null>(null);
   const [browserName, setBrowserName] = useState("Chrome");
   const [nomeUsuario, setNomeUsuario] = useState<string | null>(null); // null = ainda carregando
@@ -1319,6 +1344,7 @@ export default function HomePage() {
   const [compactQueueColumns, setCompactQueueColumns] = useState(() => loadCompactQueueColumns());
   const [queueColumnWidths, setQueueColumnWidths] = useState<Partial<Record<keyof QueueDisplayRow, number>>>(() => loadQueueColumnWidths());
   const [queueSettingsOpen, setQueueSettingsOpen] = useState(false);
+  const [registroSettingsOpen, setRegistroSettingsOpen] = useState(false);
   const [mostrarTipoBadges, setMostrarTipoBadges] = useState(() => loadQueueMostrarTipoBadges());
   const [mostrarSimples, setMostrarSimples] = useState(() => loadQueueMostrarSimples());
   const [queueSimplesMap, setQueueSimplesMap] = useState<Record<string, boolean | null>>({});
@@ -1522,6 +1548,7 @@ export default function HomePage() {
     ? JSON.stringify(
         Array.from(new Set(
           filaProcessos.rows
+            .filter((r) => !dispensaIndicadorSimples(String(r["Tipo"] ?? r["tipo"] ?? "")))
             .map((r) => String(r["CPF/CNPJ"] ?? "").replace(/\D/g, ""))
             .filter((c) => c.length === 14)
         )).sort()
@@ -1653,48 +1680,21 @@ export default function HomePage() {
     });
   };
 
-  const prepararAmbienteInicial = async () => {
-    let ultimoStartup: BackendStartupProgress = {
-      phase: "starting-api",
-      title: "Abrindo o AutoLiquid",
-      detail: LOADING_PULSES[0],
-      progress: 14,
-      attempt: 0,
-      elapsedMs: 0,
-    };
+  const logStartupTiming = (label: string, startedAt: number) => {
+    console.info(`[startup] ${label}: ${Date.now() - startedAt}ms`);
+  };
 
-    setStartupError("");
-    setErroInicializacao("");
-    setApiDisponivel(false);
-    setChromeStatus("carregando");
-    setStartupState(ultimoStartup);
-
-    const backendStatus = await waitForBackendReady({
-      timeoutMs: 60000,
-      retryDelayMs: 1000,
-      onProgress: (progress) => {
-        ultimoStartup = {
-          ...progress,
-          title: progress.attempt <= 1 ? "Ligando motores" : "Conectando serviços",
-          detail: LOADING_PULSES[Math.min(progress.attempt, LOADING_PULSES.length - 1)],
-          progress: Math.min(46, Math.max(18, progress.progress)),
-        };
-        setStartupState(ultimoStartup);
-      },
-    });
-
-    setChromeStatus(backendStatus.chromeStatus);
-    setApiDisponivel(true);
-    setErroInicializacao("");
-
-    setStartupState({
-      phase: "restoring-data",
-      title: "Sincronizando contexto",
-      detail: LOADING_PULSES[4],
-      progress: 52,
-      attempt: ultimoStartup.attempt,
-      elapsedMs: ultimoStartup.elapsedMs,
-    });
+  const carregarContextoInicial = async (options: { updateStartup?: boolean } = {}) => {
+    const startedAt = Date.now();
+    if (options.updateStartup) {
+      setStartupState((current) => ({
+        ...current,
+        phase: "restoring-data",
+        title: "Sincronizando contexto",
+        detail: LOADING_PULSES[4],
+        progress: Math.max(current.progress, 52),
+      }));
+    }
 
     const [datesGlobaisResult, settingsResult] = await Promise.allSettled([
       fetchDatasGlobais(),
@@ -1737,16 +1737,84 @@ export default function HomePage() {
       setFecharAbaFila(Boolean(settingsResult.value.fecharAbaFila));
     }
 
-    setStartupState((current) => ({
-      ...current,
-      title: "Ajustando preferências",
-      detail: LOADING_PULSES[5],
-      progress: Math.max(current.progress, 60),
-    }));
-    await delay(450);
+    if (options.updateStartup) {
+      setStartupState((current) => ({
+        ...current,
+        title: "Ajustando preferências",
+        detail: LOADING_PULSES[5],
+        progress: Math.max(current.progress, 60),
+      }));
+    }
+    logStartupTiming("contexto inicial", startedAt);
   };
 
-  const carregarFilaInicial = async () => {
+  const prepararAmbienteInicial = async (options: { carregarContexto?: boolean } = {}) => {
+    const startedAt = Date.now();
+    const deveCarregarContexto = options.carregarContexto ?? true;
+    let ultimoStartup: BackendStartupProgress = {
+      phase: "starting-api",
+      title: "Abrindo o AutoLiquid",
+      detail: LOADING_PULSES[0],
+      progress: 14,
+      attempt: 0,
+      elapsedMs: 0,
+    };
+
+    setStartupError("");
+    setErroInicializacao("");
+    setApiDisponivel(false);
+    setChromeStatus("carregando");
+    setStartupState(ultimoStartup);
+
+    const backendStatus = await waitForBackendReady({
+      timeoutMs: 60000,
+      retryDelayMs: 1000,
+      onProgress: (progress) => {
+        ultimoStartup = {
+          ...progress,
+          title: progress.attempt <= 1 ? "Ligando motores" : "Conectando serviços",
+          detail: LOADING_PULSES[Math.min(progress.attempt, LOADING_PULSES.length - 1)],
+          progress: Math.min(46, Math.max(18, progress.progress)),
+        };
+        setStartupState(ultimoStartup);
+      },
+    });
+    logStartupTiming("API pronta", startedAt);
+
+    setChromeStatus(backendStatus.chromeStatus);
+    setApiDisponivel(true);
+    setErroInicializacao("");
+
+    if (!deveCarregarContexto) {
+      setStartupState({
+        phase: "restoring-data",
+        title: "API pronta",
+        detail: "Validando acesso...",
+        progress: 58,
+        attempt: ultimoStartup.attempt,
+        elapsedMs: ultimoStartup.elapsedMs,
+      });
+      return;
+    }
+
+    await carregarContextoInicial({ updateStartup: true });
+  };
+
+  const carregarFilaInicial = async (options: { background?: boolean } = {}) => {
+    const startedAt = Date.now();
+    const carregar = async () => {
+      const data = await loadFilaProcessosOnce(false);
+      applyFilaProcessos(data, { force: true });
+      logStartupTiming("fila inicial", startedAt);
+    };
+
+    if (options.background) {
+      void carregar().catch((error) => {
+        console.warn("Fila inicial indisponível no carregamento em segundo plano:", error);
+      });
+      return;
+    }
+
     const mensagens = [
       LOADING_PULSES[6],
       "Trazendo a fila de pagamentos para perto...",
@@ -1756,7 +1824,6 @@ export default function HomePage() {
       LOADING_PULSES[9],
     ];
     let index = 0;
-    const startedAt = Date.now();
     setStartupState({
       phase: "restoring-data",
       title: "Preparando sua área",
@@ -1774,31 +1841,19 @@ export default function HomePage() {
       }));
     }, 900);
     try {
-      const data = await loadFilaProcessosOnce(false);
-      applyFilaProcessos(data, { force: true });
-      const elapsed = Date.now() - startedAt;
-      await delay(Math.max(0, 2800 - elapsed));
+      await carregar();
       setStartupState((current) => ({
         ...current,
         detail: "Painel pronto. Abrindo a fila de trabalho...",
         progress: Math.max(current.progress, 96),
       }));
-      await delay(650);
     } finally {
       window.clearInterval(intervalId);
     }
   };
 
-  const concluirEntrada = async (session: AuthSession, ambientePreparado = false) => {
-    setAuthLoading(true);
-    setAuthError("");
-    try {
-      if (!ambientePreparado) {
-        await prepararAmbienteInicial();
-      }
-      await auth.setSession(session);
-      const sessionName = session.nome || session.username;
-      setNomeUsuario(sessionName);
+  const sincronizarNomeUsuarioSessao = (sessionName: string) => {
+    void (async () => {
       try {
         const settings = await fetchAppSettings();
         if (settings.nomeUsuario !== sessionName) {
@@ -1807,7 +1862,20 @@ export default function HomePage() {
       } catch {
         // A identificação visual já vem da sessão; a persistência local é apenas compatibilidade.
       }
-      await carregarFilaInicial();
+    })();
+  };
+
+  const concluirEntrada = async (session: AuthSession, ambientePreparado = false) => {
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      if (!ambientePreparado) {
+        await prepararAmbienteInicial({ carregarContexto: false });
+      }
+      await auth.setSession(session);
+      const sessionName = session.nome || session.username;
+      setNomeUsuario(sessionName);
+      sincronizarNomeUsuarioSessao(sessionName);
       setStartupState({
         phase: "ready",
         title: "Tudo pronto",
@@ -1818,6 +1886,10 @@ export default function HomePage() {
       });
       setActiveMainTab("painel");
       setStartupConcluido(true);
+      void carregarContextoInicial().catch((error) => {
+        console.warn("Contexto inicial indisponível no carregamento em segundo plano:", error);
+      });
+      await carregarFilaInicial({ background: true });
     } catch (error) {
       const mensagem = error instanceof Error ? error.message : "Não foi possível concluir a entrada.";
       setAuthError(mensagem);
@@ -1839,7 +1911,7 @@ export default function HomePage() {
     setAuthLoading(true);
     setAuthError("");
     try {
-      await prepararAmbienteInicial();
+      await prepararAmbienteInicial({ carregarContexto: false });
       const session = await loginAutoLiquid(loginUsername.trim(), loginPassword);
       await concluirEntrada(session, true);
     } catch (error) {
@@ -2553,7 +2625,7 @@ export default function HomePage() {
   };
 
   const resetQueueColumnOrder = () => {
-    setVisibleQueueColumns(QUEUE_DISPLAY_COLUMNS.map((column) => column.key));
+    setVisibleQueueColumns(QUEUE_DEFAULT_VISIBLE_COLUMNS);
   };
 
   const activateQueueColumn = (columnKey: keyof QueueDisplayRow) => {
@@ -2700,17 +2772,25 @@ export default function HomePage() {
       return;
     }
     const cnpjs: string[] = JSON.parse(filaCnpjsKey);
-    if (cnpjs.length === 0) return;
+    if (cnpjs.length === 0) {
+      setQueueSimplesMap({});
+      setIsLoadingSimples(false);
+      return;
+    }
     let ativo = true;
     setIsLoadingSimples(true);
     setQueueSimplesMap({});
+    const fallbackResult = Object.fromEntries(cnpjs.map((cnpj) => [cnpj, null]));
     fetchSimplesBatch(cnpjs).then((result) => {
       if (ativo) {
-        setQueueSimplesMap(result);
+        setQueueSimplesMap({ ...fallbackResult, ...result });
         setIsLoadingSimples(false);
       }
     }).catch(() => {
-      if (ativo) setIsLoadingSimples(false);
+      if (ativo) {
+        setQueueSimplesMap(fallbackResult);
+        setIsLoadingSimples(false);
+      }
     });
     return () => { ativo = false; };
   // filaCnpjsKey muda apenas quando os CNPJs da fila mudam — não quando metadados locais são atualizados.
@@ -2746,14 +2826,7 @@ export default function HomePage() {
         setStoredAuthSession(auth.session);
         setLoginUsername(auth.session.username || "");
         setNomeUsuario(sessionName);
-        try {
-          const settings = await fetchAppSettings();
-          if (settings.nomeUsuario !== sessionName) {
-            await saveAppSettings({ ...settings, nomeUsuario: sessionName });
-          }
-        } catch {
-          // Compatibilidade com APIs antigas; a sessão continua sendo a fonte da verdade.
-        }
+        sincronizarNomeUsuarioSessao(sessionName);
         setApiDisponivel(true);
         setChromeStatus("pronto");
         setAuthGateReady(false);
@@ -2768,6 +2841,9 @@ export default function HomePage() {
           elapsedMs: 0,
         });
         setStartupConcluido(true);
+        void carregarContextoInicial().catch((error) => {
+          console.warn("Contexto inicial indisponível no carregamento em segundo plano:", error);
+        });
         return;
       }
 
@@ -2799,7 +2875,7 @@ export default function HomePage() {
     };
   }, [startupRunId, auth.isAuthenticated, auth.session, authLoading]);
 
-  // Datas vêm do Supabase (datas_globais) e são somente leitura para o servidor.
+  // Datas vêm do Turso (datas_globais) e são pré-preenchidas como padrão.
   // Edições do usuário ficam em memória apenas (não são persistidas).
   // O useEffect de auto-save foi intencionalmente removido.
 
@@ -3007,11 +3083,6 @@ export default function HomePage() {
         const data = await loadFilaProcessosOnce(refresh);
         if (!ativo) return;
         applyFilaProcessos(data);
-        if (!refresh && data.source === "postgres-loading") {
-          window.setTimeout(() => {
-            if (ativo) void carregarFila(false);
-          }, 1800);
-        }
       } catch (error) {
         if (!ativo) return;
         setErroFila(error instanceof Error ? error.message : "Falha ao carregar fila.");
@@ -3171,9 +3242,17 @@ export default function HomePage() {
   const handleFileSelect = (file: File | null, source: "drop" | "input" | "clear") => {
     setErro("");
     setSelectedFile(file);
-    if (file && source !== "clear") {
+    if (registroUploadMode === "comprasnet" && file && source !== "clear") {
       void handleProcessar(file);
     }
+  };
+
+  const handleRegistroUploadModeChange = (mode: RegistroUploadMode) => {
+    if (mode === registroUploadMode) return;
+    setRegistroUploadMode(mode);
+    setSelectedFile(null);
+    setErro("");
+    setUploadResetKey((current) => current + 1);
   };
 
   const handleProcessar = async (fileOverride?: File) => {
@@ -3272,11 +3351,15 @@ export default function HomePage() {
   const handleAbrirSiafi = async () => {
     setAbrindoSiafi(true);
     setErro("");
+    if (registroNoticeTimerRef.current) {
+      clearTimeout(registroNoticeTimerRef.current);
+      registroNoticeTimerRef.current = null;
+    }
+    setRegistroNotice("");
     try {
-      const status = await openSiafiIncognito();
+      await openSiafiIncognito();
       // Não altera chromeStatus — a janela incógnita do SIAFI é independente
       // do Chrome CDP usado para automação do Comprasnet.
-      mostrarRegistroNotice(status.mensagem || "SIAFI aberto.");
     } catch (error) {
       setErro(
         error instanceof Error
@@ -3382,19 +3465,20 @@ export default function HomePage() {
     const defaultRule = normalizedConfig.regras.find((rule) => rule.id === ALERTA_SERVICO_REGRA_PADRAO_ID) ?? ALERTA_SERVICO_REGRA_PADRAO;
     const customRules = normalizedConfig.regras.filter((rule) => rule.id !== ALERTA_SERVICO_REGRA_PADRAO_ID);
     const renderRuleContent = (rule: AlertaServicoRule, label: string) => (
-      <div className="min-w-0">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <label className="inline-flex h-7 items-center gap-2 rounded-full border border-glass-border bg-muted/20 px-2.5 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={rule.active}
-              onChange={(event) => toggleAlertaServicoRule(rule.id, event.target.checked)}
-              className="h-3.5 w-3.5 accent-primary"
-            />
-            {rule.active ? "Ativa" : "Inativa"}
-          </label>
+      <div className="grid min-w-0 gap-2 lg:grid-cols-[76px_minmax(190px,1fr)_74px_minmax(120px,0.8fr)_minmax(170px,1fr)_minmax(120px,0.8fr)] lg:items-center">
+        <label className="inline-flex h-7 w-fit items-center gap-2 rounded-full border border-glass-border bg-muted/20 px-2.5 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={rule.active}
+            onChange={(event) => toggleAlertaServicoRule(rule.id, event.target.checked)}
+            className="h-3.5 w-3.5 accent-primary"
+          />
+          {rule.active ? "Ativa" : "Inativa"}
+        </label>
+        <span className="grid min-w-0 gap-1">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Vencimento</span>
           <span
-            className={`inline-flex max-w-full rounded-full border px-2.5 py-1 text-xs font-medium ${
+            className={`inline-flex h-7 max-w-full items-center rounded-full border px-2.5 text-xs font-medium ${
               rule.acaoVencimento === "IGNORAR"
                 ? "border-zinc-300 bg-zinc-100 text-zinc-700"
                 : "border-red-500/25 bg-red-500/10 text-red-700"
@@ -3402,40 +3486,40 @@ export default function HomePage() {
           >
             <span className="truncate">{formatAlertaServicoAcao(rule)}</span>
           </span>
-          <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-            {label}
+        </span>
+        <span className="inline-flex h-6 w-fit items-center rounded-full bg-secondary/70 px-2 text-[10px] font-semibold uppercase text-muted-foreground">
+          {label}
+        </span>
+        {[
+          ["Tipo", rule.tipoDocumento === ALERTA_SERVICO_TIPO_TODOS ? "Todos" : rule.tipoDocumento, "text-foreground"],
+          ["CNPJ", formatRuleScope(rule.cnpj), "text-muted-foreground"],
+          ["Setor", formatRuleScope(rule.setor), "text-muted-foreground"],
+        ].map(([title, value, tone]) => (
+          <span key={title} className="grid min-w-0 grid-cols-[38px_minmax(0,1fr)] items-baseline gap-2 text-sm">
+            <span className="text-xs text-muted-foreground">{title}</span>
+            <span className={`min-w-0 truncate ${tone}`}>{value}</span>
           </span>
-        </div>
-        <div className="mt-2 grid min-w-0 gap-2 text-sm sm:grid-cols-3">
-          <span className="min-w-0 truncate text-foreground">
-            <span className="mr-1 text-xs text-muted-foreground">Tipo</span>
-            {rule.tipoDocumento === ALERTA_SERVICO_TIPO_TODOS ? "Todos" : rule.tipoDocumento}
-          </span>
-          <span className="min-w-0 truncate text-muted-foreground">
-            <span className="mr-1 text-xs">CNPJ</span>
-            {formatRuleScope(rule.cnpj)}
-          </span>
-          <span className="min-w-0 truncate text-muted-foreground">
-            <span className="mr-1 text-xs">Setor</span>
-            {formatRuleScope(rule.setor)}
-          </span>
-        </div>
+        ))}
       </div>
     );
 
     return (
       <div className="rounded-2xl border border-red-500/15 bg-red-500/5 p-3 text-sm text-foreground">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="block font-medium">Alerta</span>
-            <GlobalScopeIcon message="Alterações neste alerta são globais e valem para todos os usuários." />
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="block font-medium">Alerta de vencimento</span>
+            </div>
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
+              A regra define a data de vencimento. A fila destaca o processo quando faltarem os dias de antecedência configurados.
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {savingAlertaServicoConfig ? (
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
             ) : null}
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              Antecedência
+            <label className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Destacar na fila</span>
               <input
                 type="number"
                 min={0}
@@ -3446,8 +3530,9 @@ export default function HomePage() {
                 }
                 onBlur={() => void persistNfServicoAlertSetting()}
                 className="w-20 rounded-xl border border-glass-border bg-background px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary"
-                title="Dias úteis padrão"
+                title="Quantidade de dias úteis antes do vencimento para destacar na fila"
               />
+              <span>dias úteis antes do vencimento</span>
             </label>
             <GlassButton type="button" size="sm" onClick={openNewAlertaServicoRule}>
               <Plus className="h-4 w-4" />
@@ -3459,7 +3544,7 @@ export default function HomePage() {
         <div className="mt-3 overflow-hidden rounded-2xl border border-glass-border bg-background">
           <div className="divide-y divide-glass-border">
             <div
-              className="grid min-w-0 gap-3 px-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
+              className="grid min-w-0 gap-3 px-3 py-3 lg:grid-cols-[minmax(0,1fr)_72px] lg:items-center"
             >
               {renderRuleContent(defaultRule, "padrão")}
               <div className="flex items-center gap-1 lg:justify-end">
@@ -3471,13 +3556,21 @@ export default function HomePage() {
                 >
                   <Pencil className="h-3.5 w-3.5" />
                 </button>
+                <button
+                  type="button"
+                  disabled
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground/35 opacity-60"
+                  title="O alerta padrão não pode ser excluído"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
               </div>
             </div>
 
             {customRules.map((rule) => (
               <div
                 key={rule.id}
-                className="grid min-w-0 gap-3 px-3 py-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
+                className="grid min-w-0 gap-3 px-3 py-3 lg:grid-cols-[minmax(0,1fr)_72px] lg:items-center"
               >
                 {renderRuleContent(rule, "exceção")}
                 <div className="flex items-center gap-1 lg:justify-end">
@@ -3951,7 +4044,7 @@ export default function HomePage() {
                       <select
                         value={responsavelFilter}
                         onChange={(event) => setResponsavelFilter(event.target.value)}
-                        className="bg-transparent text-sm outline-none"
+                        className="select-inline bg-transparent pr-5 text-sm outline-none"
                       >
                         <option value="todos">Todos</option>
                         {responsavelOptions.map((nome) => (
@@ -4230,6 +4323,7 @@ export default function HomePage() {
                                       </span>
                                     )}
                                     {mostrarSimples && (() => {
+                                      if (dispensaIndicadorSimples(row.tipo)) return null;
                                       const cnpjLimpo = row.cpfCnpj.replace(/\D/g, "");
                                       if (cnpjLimpo.length !== 14) return null;
                                       if (isLoadingSimples && !(cnpjLimpo in queueSimplesMap)) {
@@ -4246,7 +4340,11 @@ export default function HomePage() {
                                           NS
                                         </span>
                                       );
-                                      return null;
+                                      return (
+                                        <span title="Simples Nacional indisponível para este CNPJ" className="inline-flex shrink-0 items-center rounded-full border border-slate-400/35 bg-slate-500/10 px-2 py-0.5 text-[10px] font-semibold leading-none text-slate-600">
+                                          SN?
+                                        </span>
+                                      );
                                     })()}
                                   </div>
                                 ) : column.key === "cpfCnpj" ? (() => {
@@ -4342,44 +4440,65 @@ export default function HomePage() {
           )}
 
           {/* ── Aba: Registro ── */}
-          {activeMainTab === "registro" && (
+          <div className={activeMainTab === "registro" ? "flex min-w-0 flex-col gap-4" : "hidden"}>
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setRegistroSettingsOpen(true)}
+                className="inline-flex items-center gap-2 rounded-lg border border-glass-border bg-background px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-background/80"
+              >
+                <Settings2 className="h-4 w-4" />
+                Ajustes
+              </button>
+            </div>
           <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,360px)] xl:items-start">
             {/* Coluna esquerda: datas + upload (cards separados) */}
             <div className="flex min-w-0 flex-col gap-4">
               <DateFields dates={dates} onDatesChange={setDates} compact />
 
-              <section className="min-w-0 rounded-2xl border border-glass-border bg-background/55 p-4 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.4)]">
-                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+              <div className="min-w-0 rounded-2xl border border-glass-border bg-background/55 p-4 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.4)]">
+                <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div className="min-w-0">
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-                      Preenchimento no Siafi
+                      Preenchimento
                     </p>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      SIAFI Web em aba anônima do Chrome.
+                      {registroUploadMode === "comprasnet"
+                        ? "Extração do PDF de liquidação para conferência e preenchimento no Comprasnet."
+                        : "Área reservada para extrair dados de PDFs e planilhas usados no SIAFI."}
                     </p>
                   </div>
-                  <GlassButton
-                    variant="secondary"
-                    size="lg"
-                    onClick={() => void handleAbrirSiafi()}
-                    disabled={abrindoSiafi || !apiDisponivel}
-                    className="w-full sm:w-auto"
-                    title="Abrir SIAFI em aba anônima do Chrome"
-                  >
-                    {abrindoSiafi ? (
-                      <Loader2 className="h-5 w-5 animate-spin" />
-                    ) : (
-                      <Chrome className="h-5 w-5" />
-                    )}
-                    {abrindoSiafi ? "Abrindo..." : "Abrir SIAFI"}
-                  </GlassButton>
+                  <div className="flex shrink-0 rounded-xl border border-glass-border bg-background/70 p-1 text-xs font-semibold">
+                    {([
+                      ["comprasnet", "Comprasnet"],
+                      ["siafi", "SIAFI"],
+                    ] as const).map(([mode, label]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => handleRegistroUploadModeChange(mode)}
+                        className={`rounded-lg px-3 py-1.5 transition-colors ${
+                          registroUploadMode === mode
+                            ? "bg-primary text-primary-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </section>
 
-              <div className="min-w-0 rounded-2xl border border-glass-border bg-background/55 p-4 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.4)]">
                 <UploadZone
                   key={uploadResetKey}
                   onFileSelect={handleFileSelect}
+                  acceptedFormats={registroUploadMode === "comprasnet" ? [".pdf"] : [".pdf", ".xlsx", ".xls", ".csv"]}
+                  title={
+                    registroUploadMode === "comprasnet"
+                      ? "Arraste o PDF da Liquidação aqui"
+                      : "Arraste o PDF ou planilha para SIAFI aqui"
+                  }
+                  description="ou clique para selecionar"
                   compact
                   disabled={!apiDisponivel}
                   disabledMessage={
@@ -4395,29 +4514,48 @@ export default function HomePage() {
                       <p className="max-w-xl text-sm text-destructive">{erro}</p>
                     ) : (
                       <p className="text-sm text-muted-foreground">
-                        Envie o PDF e siga direto para a conferência.
+                        {registroUploadMode === "comprasnet"
+                          ? "Envie o PDF e siga direto para a conferência."
+                          : "A extração para SIAFI será configurada depois; por enquanto use o atalho para abrir o SIAFI."}
                       </p>
                     )}
                   </div>
 
-                  <GlassButton
-                    variant="secondary"
-                    size="lg"
-                    onClick={() => handleProcessar()}
-                    disabled={!selectedFile || isUploading || !apiDisponivel}
-                    className="w-full md:w-auto"
-                  >
-                    {isUploading ? (
-                      <Loader2 className="h-5 w-5 animate-spin" />
-                    ) : (
-                      <FileUp className="h-5 w-5" />
-                    )}
-                    {isUploading ? "Processando PDF..." : "Processar Documento"}
-                  </GlassButton>
+                  {registroUploadMode === "comprasnet" ? (
+                    <GlassButton
+                      variant="secondary"
+                      size="lg"
+                      onClick={() => handleProcessar()}
+                      disabled={!selectedFile || isUploading || !apiDisponivel}
+                      className="w-full md:w-auto"
+                    >
+                      {isUploading ? (
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                      ) : (
+                        <FileUp className="h-5 w-5" />
+                      )}
+                      {isUploading ? "Processando PDF..." : "Processar Documento"}
+                    </GlassButton>
+                  ) : (
+                    <GlassButton
+                      variant="secondary"
+                      size="lg"
+                      onClick={() => void handleAbrirSiafi()}
+                      disabled={abrindoSiafi || !apiDisponivel}
+                      className="w-full md:w-auto"
+                      title="Abrir SIAFI em aba anônima do Chrome"
+                    >
+                      {abrindoSiafi ? (
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                      ) : (
+                        <Chrome className="h-5 w-5" />
+                      )}
+                      {abrindoSiafi ? "Abrindo..." : "Abrir SIAFI"}
+                    </GlassButton>
+                  )}
                 </div>
               </div>
 
-              {renderDeducoesRuleLauncher()}
             </div>
 
             {/* Coluna direita: dashboard */}
@@ -4456,7 +4594,7 @@ export default function HomePage() {
                     <select
                       value={dashboardProcessLimit}
                       onChange={(event) => setDashboardProcessLimit(Math.max(1, Math.min(100, Number(event.target.value) || 5)))}
-                      className="h-7 rounded-md border border-glass-border bg-background px-2 text-xs font-semibold text-foreground outline-none transition focus:border-primary"
+                      className="select-native h-7 rounded-full border border-glass-border bg-background pl-2 pr-6 text-xs font-semibold text-foreground outline-none transition focus:border-primary"
                     >
                       {DASHBOARD_LIMIT_OPTIONS.map((value) => (
                         <option key={value} value={value}>{value}</option>
@@ -4556,7 +4694,7 @@ export default function HomePage() {
               </div>
             </div>
           </div>
-          )}
+          </div>
         </section>
       </main>
 
@@ -4772,7 +4910,6 @@ export default function HomePage() {
                         <h3 className="text-base font-semibold text-foreground">Servidores no sorteio</h3>
                         <GlobalScopeIcon
                           label="Global"
-                          message="Alterações nos servidores do sorteio são globais e valem para todos os usuários."
                         />
                         <Popover>
                           <PopoverTrigger asChild>
@@ -4790,7 +4927,7 @@ export default function HomePage() {
                                 O sorteio é determinístico: o backend lê do Turso a fila e o status dos servidores, roda em memória a mesma fórmula da planilha e devolve o responsável calculado para cada processo.
                               </p>
                               <p>
-                                A fórmula usa o número do processo como id de cálculo, a lista-base de 100 posições e os pesos de cada slot. Servidor ativo usa todos os slots, 1/2 usa apenas metade das ocorrências, e fora não participa.
+                                A fórmula usa o número do processo como id de cálculo, a lista-base de 100 posições e os pesos de cada slot. Servidor em 100% usa todos os slots, 50% usa apenas metade das ocorrências, e 0% não participa.
                               </p>
                               <p>
                                 O resultado é estável: com o mesmo processo e os mesmos status, o responsável será sempre o mesmo. Alterações manuais continuam tendo prioridade sobre o sorteio.
@@ -4832,15 +4969,110 @@ export default function HomePage() {
                                 modo: event.target.value as QueueServerMode,
                               })
                             }
-                            className="rounded-xl border border-glass-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary"
+                            className="select-native rounded-full border border-glass-border bg-background pl-3 pr-8 py-2 text-sm text-foreground outline-none transition-colors focus:border-primary"
                           >
-                            <option value="ativo">1</option>
-                            <option value="metade">1/2</option>
-                            <option value="fora">Fora</option>
+                            <option value="ativo">100%</option>
+                            <option value="metade">50%</option>
+                            <option value="fora">0%</option>
                           </select>
                         </div>
                       ))}
                     </div>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {registroSettingsOpen ? (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-2 sm:p-4">
+          <button
+            type="button"
+            aria-label="Fechar ajustes do registro"
+            className="absolute inset-0 bg-background/65 backdrop-blur-sm"
+            onClick={() => setRegistroSettingsOpen(false)}
+          />
+          <div className="relative z-10 flex max-h-[calc(100dvh-1rem)] w-full max-w-[min(700px,calc(100vw-1rem))] flex-col overflow-hidden rounded-2xl border border-glass-border bg-background/95 shadow-[0_30px_100px_-45px_rgba(15,23,42,0.45)]">
+            <div className="grid gap-3 border-b border-glass-border px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:px-5">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary/80">
+                  Ajustes do Registro
+                </p>
+                <h2 className="mt-1.5 text-xl font-semibold text-foreground">
+                  Ferramentas e configurações
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Acesse tabelas operacionais e regras globais usadas na etapa de dedução.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRegistroSettingsOpen(false)}
+                className="rounded-full border border-glass-border bg-background p-2 text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
+              <div className="space-y-4">
+                {/* Tabelas */}
+                <section className="min-w-0 rounded-2xl border border-glass-border bg-muted/20 p-4">
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                    <div className="min-w-0">
+                      <h3 className="text-base font-semibold text-foreground">Tabelas operacionais</h3>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Gerencie contratos, regras de liquidação e outras tabelas usadas no processamento.
+                      </p>
+                    </div>
+                    <GlassButton
+                      type="button"
+                      size="sm"
+                      onClick={() => {
+                        setRegistroSettingsOpen(false);
+                        setTabelasInitialTab("contratos");
+                        setTabelasVisibleTabs(undefined);
+                        setIsTabelasOpen(true);
+                      }}
+                    >
+                      <Table className="h-4 w-4" />
+                      Abrir tabelas
+                    </GlassButton>
+                  </div>
+                </section>
+
+                {/* Regras de deduções */}
+                <section className="min-w-0 rounded-2xl border border-glass-border bg-muted/20 p-4">
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-base font-semibold text-foreground">Regras de deduções</h3>
+                      </div>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Regras globais de SIAFI, códigos, vencimento, apuração e LF usadas na etapa de dedução.
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                        <span className="rounded-full border border-glass-border bg-background px-2.5 py-1">
+                          {regrasDatasDeducoes.regras.length || "—"} regras
+                        </span>
+                        <span className="rounded-full border border-glass-border bg-background px-2.5 py-1">
+                          {auth.isModerator ? "Edição liberada" : "Somente leitura"}
+                        </span>
+                      </div>
+                    </div>
+                    <GlassButton
+                      type="button"
+                      size="sm"
+                      onClick={() => {
+                        setRegistroSettingsOpen(false);
+                        openDeducoesRulesDialog();
+                      }}
+                    >
+                      <Settings2 className="h-4 w-4" />
+                      Abrir regras
+                    </GlassButton>
                   </div>
                 </section>
               </div>
@@ -4869,7 +5101,7 @@ export default function HomePage() {
                   <select
                     value={registroTipoDocumento}
                     onChange={(event) => setRegistroTipoDocumento(event.target.value as RegistroLiquidacaoTipoDocumento)}
-                    className="h-11 w-full rounded-2xl border border-glass-border bg-background px-3 text-sm font-medium text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                    className={PILL_FORM_CONTROL_CLASS}
                     disabled={registroSaving}
                   >
                     <option value="NP">NP</option>
@@ -4882,7 +5114,7 @@ export default function HomePage() {
                   <input
                     value={registroNumeroDocumento}
                     onChange={(event) => setRegistroNumeroDocumento(event.target.value)}
-                    className="h-11 w-full rounded-2xl border border-glass-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                    className={PILL_FORM_CONTROL_CLASS}
                     disabled={registroSaving}
                   />
                 </label>
@@ -4960,7 +5192,10 @@ export default function HomePage() {
       <Dialog open={deducoesRulesDialogOpen} onOpenChange={setDeducoesRulesDialogOpen}>
         <DialogContent className="flex max-h-[calc(100vh-2rem)] min-h-0 flex-col overflow-hidden p-0 sm:max-w-5xl">
           <DialogHeader className="shrink-0 border-b border-glass-border px-5 py-4 pr-12">
-            <DialogTitle>Regras de deduções</DialogTitle>
+            <div className="flex flex-wrap items-center gap-2">
+              <DialogTitle>Regras de deduções</DialogTitle>
+              <GlobalScopeIcon label="Global" />
+            </div>
             <DialogDescription>
               Consulte as regras globais usadas para classificar códigos, calcular datas e exigir LF nas deduções.
             </DialogDescription>
@@ -5180,7 +5415,7 @@ export default function HomePage() {
                                     apuracao: event.target.value as RegraDataDeducao["apuracao"],
                                   })
                                 }
-                                className="h-10 w-full rounded-xl border border-glass-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:bg-muted/40 disabled:text-muted-foreground"
+                                className="select-native h-10 w-full rounded-full border border-glass-border bg-background pl-3 pr-8 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:bg-muted/40 disabled:text-muted-foreground"
                               >
                                 <option value="emissao_mais_antiga">Emissão mais antiga das NFs</option>
                                 <option value="usuario">Usuário informa</option>
@@ -5228,7 +5463,7 @@ export default function HomePage() {
                                     diaVencimento: mesVencimento === "usuario" ? null : rule.diaVencimento ?? 20,
                                   });
                                 }}
-                                className="h-10 w-full rounded-xl border border-glass-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:bg-muted/40 disabled:text-muted-foreground"
+                                className="select-native h-10 w-full rounded-full border border-glass-border bg-background pl-3 pr-8 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:bg-muted/40 disabled:text-muted-foreground"
                               >
                                 <option value="seguinte">Mês seguinte</option>
                                 <option value="atual">Mesmo mês</option>
@@ -5249,7 +5484,7 @@ export default function HomePage() {
                                       ajusteDiaNaoUtil: event.target.value as RegraDataDeducao["ajusteDiaNaoUtil"],
                                     })
                                   }
-                                  className="h-10 w-full rounded-xl border border-glass-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:bg-muted/40 disabled:text-muted-foreground"
+                                  className="select-native h-10 w-full rounded-full border border-glass-border bg-background pl-3 pr-8 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:bg-muted/40 disabled:text-muted-foreground"
                                 >
                                   <option value="antecipar">Antecipar para dia útil anterior</option>
                                   <option value="prorrogar">Prorrogar para próximo dia útil</option>
@@ -5365,7 +5600,7 @@ export default function HomePage() {
                         tipoDocumento: event.target.value,
                       }))
                     }
-                    className="h-11 w-full rounded-2xl border border-glass-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                    className={`${PILL_FORM_CONTROL_CLASS} select-native`}
                   >
                     <option value={ALERTA_SERVICO_TIPO_TODOS}>Todos os tipos</option>
                     {alertaServicoTipoOptions.map((tipo) => (
@@ -5385,7 +5620,7 @@ export default function HomePage() {
                       }))
                     }
                     placeholder="Vazio = Todos"
-                    className="h-11 w-full rounded-2xl border border-glass-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                    className={PILL_FORM_CONTROL_CLASS}
                   />
                 </label>
 
@@ -5401,7 +5636,7 @@ export default function HomePage() {
                       }))
                     }
                     placeholder="Vazio = Todos"
-                    className="h-11 w-full rounded-2xl border border-glass-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                    className={PILL_FORM_CONTROL_CLASS}
                   />
                   <datalist id="alerta-servico-setores">
                     {alertaServicoSetorOptions.map((setor) => (
@@ -5426,7 +5661,7 @@ export default function HomePage() {
                         valorAcao: event.target.value === "DIA_FIXO_MES_SEGUINTE" ? "20" : "",
                       }))
                     }
-                    className="h-11 w-full rounded-2xl border border-glass-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                    className={`${PILL_FORM_CONTROL_CLASS} select-native`}
                   >
                     <option value="IGNORAR">Ignorar</option>
                     <option value="DIA_FIXO_MES_SEGUINTE">Dia fixo do mês seguinte</option>
@@ -5448,7 +5683,7 @@ export default function HomePage() {
                           valorAcao: event.target.value,
                         }))
                       }
-                      className="h-11 w-full rounded-2xl border border-glass-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                      className={PILL_FORM_CONTROL_CLASS}
                     />
                   </label>
                 ) : null}
@@ -5465,7 +5700,7 @@ export default function HomePage() {
                           valorAcao: event.target.value,
                         }))
                       }
-                      className="h-11 w-full rounded-2xl border border-glass-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15"
+                      className={PILL_FORM_CONTROL_CLASS}
                     />
                   </label>
                 ) : null}
