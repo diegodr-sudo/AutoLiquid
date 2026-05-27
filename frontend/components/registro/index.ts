@@ -3,3 +3,4 @@
 export { UploadZone } from "@/components/upload-zone";
 export { DateFields } from "@/components/date-fields";
 export { NotasFiscaisTable } from "@/components/notas-fiscais-table";
+export { SiafiPreenchimentoPanel } from "@/components/registro/siafi-preenchimento-panel";

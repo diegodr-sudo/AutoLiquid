@@ -1,13 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { MessageCircle, Table2, Settings, Circle, Palmtree } from "lucide-react";
+import { MessageCircle, Settings, Circle, Palmtree } from "lucide-react";
 import { GlassButton } from "./glass-card";
 
 interface HeaderProps {
   chromeStatus?: "pronto" | "carregando" | "erro";
   browserName?: string;
-  onOpenTabelas?: () => void;
   onOpenConfiguracoes?: () => void;
   onOpenChrome?: () => void;
   chromeActionDisabled?: boolean;
@@ -21,7 +20,6 @@ interface HeaderProps {
 export function Header({
   chromeStatus = "pronto",
   browserName = "Chrome",
-  onOpenTabelas,
   onOpenConfiguracoes,
   onOpenChrome,
   chromeActionDisabled = false,
@@ -89,30 +87,20 @@ export function Header({
               </span>
             ) : null}
           </a>
+
+          <button
+            type="button"
+            onClick={onOpenFerias}
+            disabled={!onOpenFerias}
+            title="Férias, Afastamentos e Licenças"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-glass-border bg-background px-3 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Palmtree className="h-3.5 w-3.5" />
+            Ausências
+          </button>
         </div>
 
         <nav className="flex items-center gap-2">
-          <GlassButton
-            variant="ghost"
-            size="sm"
-            onClick={onOpenFerias}
-            title="Férias, Afastamentos e Licenças"
-          >
-            <Palmtree className="h-4 w-4" />
-            Ausências
-          </GlassButton>
-
-          <GlassButton
-            variant="ghost"
-            size="sm"
-            onClick={onOpenTabelas}
-            disabled={!onOpenTabelas}
-            title={onOpenTabelas ? undefined : "Ação ainda não disponível nesta tela"}
-          >
-            <Table2 className="h-4 w-4" />
-            Tabelas
-          </GlassButton>
-
           <GlassButton
             variant="ghost"
             size="sm"

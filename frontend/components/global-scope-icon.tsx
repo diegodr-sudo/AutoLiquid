@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface GlobalScopeIconProps {
   message?: string;
@@ -10,22 +9,17 @@ interface GlobalScopeIconProps {
 }
 
 export function GlobalScopeIcon({
-  message = "Esta configuração é global e vale para todos os usuários.",
+  message = "Global: esta configuração é compartilhada e vale para todos os usuários.",
   label,
   className = "",
 }: GlobalScopeIconProps) {
-  const [open, setOpen] = useState(false);
-
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
+    <Tooltip>
+      <TooltipTrigger asChild>
         <button
           type="button"
           aria-label={message}
-          onMouseEnter={() => setOpen(true)}
-          onMouseLeave={() => setOpen(false)}
-          onFocus={() => setOpen(true)}
-          onBlur={() => setOpen(false)}
+          title={message}
           className={[
             "inline-flex h-7 items-center justify-center gap-1.5 rounded-full border border-teal-500/25 bg-teal-500/10 px-2 text-xs font-medium text-teal-700 shadow-sm shadow-teal-950/5 transition-colors hover:border-teal-500/40 hover:bg-teal-500/15",
             label ? "min-w-0 pr-2.5" : "w-7 px-0",
@@ -51,15 +45,15 @@ export function GlobalScopeIcon({
           </span>
           {label ? <span className="truncate">{label}</span> : null}
         </button>
-      </PopoverTrigger>
-      <PopoverContent
+      </TooltipTrigger>
+      <TooltipContent
         side="top"
         align="center"
         sideOffset={8}
-        className="z-[140] w-64 rounded-xl p-3 text-xs leading-5 text-muted-foreground shadow-xl"
+        className="z-[200] max-w-72 rounded-xl px-3 py-2 text-xs leading-5"
       >
         {message}
-      </PopoverContent>
-    </Popover>
+      </TooltipContent>
+    </Tooltip>
   );
 }

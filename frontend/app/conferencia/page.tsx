@@ -9,7 +9,6 @@ import { NotasFiscaisTable } from "@/components/notas-fiscais-table";
 import { FilaExecucao } from "@/components/fila-execucao";
 import { LogExecucaoPanel } from "@/components/log-execucao-panel";
 import { StatusOverview } from "@/components/status-overview";
-import { TabelasModal } from "@/components/tabelas-modal";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
 import { GlassButton } from "@/components/glass-card";
 import { Input } from "@/components/ui/input";
@@ -45,7 +44,6 @@ import {
   type EtapaExecucao,
   type ProcessDates,
   type StatusGeralDocumento,
-  type TableKey,
   executarTodas,
   executarEtapa,
   executarDeducao,
@@ -84,9 +82,6 @@ function ConferenciaPageContent() {
   const [dates, setDates] = useState<ProcessDates>(MOCK_PROCESS_DATES);
   const [logs, setLogs] = useState<string[]>([]);
   const [logsSimples, setLogsSimples] = useState<string[]>([]);
-  const [isTabelasOpen, setIsTabelasOpen] = useState(false);
-  const [tabelasInitialTab, setTabelasInitialTab] = useState<TableKey>("contratos");
-  const [tabelasVisibleTabs, setTabelasVisibleTabs] = useState<TableKey[] | undefined>(undefined);
   const [isConfiguracoesOpen, setIsConfiguracoesOpen] = useState(false);
   const [isExecutando, setIsExecutando] = useState(false);
   const [paradaSolicitada, setParadaSolicitada] = useState(false);
@@ -959,11 +954,6 @@ function ConferenciaPageContent() {
       <Header
         chromeStatus={chromeStatus}
         browserName={browserName}
-        onOpenTabelas={() => {
-          setTabelasInitialTab("contratos");
-          setTabelasVisibleTabs(undefined);
-          setIsTabelasOpen(true);
-        }}
         onOpenConfiguracoes={() => setIsConfiguracoesOpen(true)}
         onOpenChrome={handleAbrirChrome}
         chromeActionDisabled={abrindoChrome}
@@ -1295,17 +1285,6 @@ function ConferenciaPageContent() {
           </GlassButton>
         </div>
       </main>
-
-      {/* Tabelas Modal */}
-      <TabelasModal
-        isOpen={isTabelasOpen}
-        onClose={() => {
-          setIsTabelasOpen(false);
-          setTabelasVisibleTabs(undefined);
-        }}
-        initialTab={tabelasInitialTab}
-        visibleTabs={tabelasVisibleTabs}
-      />
 
       <ConfiguracoesModal
         isOpen={isConfiguracoesOpen}

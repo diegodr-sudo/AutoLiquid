@@ -2,10 +2,11 @@
 
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowDownToLine, ArrowUp, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, Chrome, FileUp, Info, Loader2, MessageSquare, Minus, Pencil, Plus, RefreshCw, Settings2, Table, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowDownToLine, ArrowUp, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, FileUp, Info, Loader2, MessageSquare, Minus, Pencil, Plus, RefreshCw, Settings2, Table, Trash2, X } from "lucide-react";
 import { Header } from "@/components/header";
 import { DateFields } from "@/components/date-fields";
 import { UploadZone } from "@/components/upload-zone";
+import { SiafiPreenchimentoPanel } from "@/components/registro";
 import { TabelasModal } from "@/components/tabelas-modal";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
 import { DashboardModal } from "@/components/dashboard-modal";
@@ -51,7 +52,6 @@ import {
   fetchContratosIcLookup,
   deleteFilaAlerta,
   openChromeSession,
-  openSiafiIncognito,
   openSolarProcess,
   registrarLiquidacao,
   saveProcessDates,
@@ -637,10 +637,43 @@ function normalizeDataEnc(value: string | number | null | undefined): string {
 }
 
 function parseCompetenciaToTimestamp(value: string): number {
-  const match = normalizeQueueCell(value).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (!match) return Number.MAX_SAFE_INTEGER;
-  const [, day, month, year] = match;
-  return new Date(Number(year), Number(month) - 1, Number(day)).getTime();
+  const text = normalizeQueueCell(value);
+  if (!text) return Number.MAX_SAFE_INTEGER;
+
+  const brDate = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\D.*)?$/);
+  if (brDate) {
+    const [, day, month, year] = brDate;
+    const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+    if (
+      parsed.getFullYear() === Number(year) &&
+      parsed.getMonth() === Number(month) - 1 &&
+      parsed.getDate() === Number(day)
+    ) {
+      return parsed.getTime();
+    }
+  }
+
+  const isoDate = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\D.*)?$/);
+  if (isoDate) {
+    const [, year, month, day] = isoDate;
+    const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+    if (
+      parsed.getFullYear() === Number(year) &&
+      parsed.getMonth() === Number(month) - 1 &&
+      parsed.getDate() === Number(day)
+    ) {
+      return parsed.getTime();
+    }
+  }
+
+  const serial = Number(text.replace(",", "."));
+  if (Number.isFinite(serial) && serial > 20_000 && serial < 80_000) {
+    const excelEpoch = Date.UTC(1899, 11, 30);
+    const parsed = new Date(excelEpoch + Math.floor(serial) * 86_400_000);
+    return new Date(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()).getTime();
+  }
+
+  return Number.MAX_SAFE_INTEGER;
 }
 
 function parseDateBR(value: string): Date | null {
@@ -1302,7 +1335,6 @@ export default function HomePage() {
   const [apiDisponivel, setApiDisponivel] = useState(true);
   const [chromeStatus, setChromeStatus] = useState<"pronto" | "carregando" | "erro">("carregando");
   const [abrindoChrome, setAbrindoChrome] = useState(false);
-  const [abrindoSiafi, setAbrindoSiafi] = useState(false);
   const [registroUploadMode, setRegistroUploadMode] = useState<RegistroUploadMode>("comprasnet");
   const [bannerUpdate, setBannerUpdate] = useState<VersaoInfo | null>(null);
   const [browserName, setBrowserName] = useState("Chrome");
@@ -3348,29 +3380,6 @@ export default function HomePage() {
     }, 2000);
   };
 
-  const handleAbrirSiafi = async () => {
-    setAbrindoSiafi(true);
-    setErro("");
-    if (registroNoticeTimerRef.current) {
-      clearTimeout(registroNoticeTimerRef.current);
-      registroNoticeTimerRef.current = null;
-    }
-    setRegistroNotice("");
-    try {
-      await openSiafiIncognito();
-      // Não altera chromeStatus — a janela incógnita do SIAFI é independente
-      // do Chrome CDP usado para automação do Comprasnet.
-    } catch (error) {
-      setErro(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível abrir o SIAFI."
-      );
-    } finally {
-      setAbrindoSiafi(false);
-    }
-  };
-
   const temRegistroLiquidacaoPendente = () => {
     if (typeof window === "undefined") return false;
     try {
@@ -3792,11 +3801,6 @@ export default function HomePage() {
         chromeStatus={chromeStatus}
         browserName={browserName}
         onGoHome={() => setActiveMainTab("dashboard")}
-        onOpenTabelas={() => {
-          setTabelasInitialTab("contratos");
-          setTabelasVisibleTabs(undefined);
-          setIsTabelasOpen(true);
-        }}
         onOpenConfiguracoes={() => setIsConfiguracoesOpen(true)}
         onOpenChrome={handleAbrirChrome}
         chromeActionDisabled={abrindoChrome || !apiDisponivel}
@@ -4442,20 +4446,24 @@ export default function HomePage() {
 
           {/* ── Aba: Registro ── */}
           <div className={activeMainTab === "registro" ? "flex min-w-0 flex-col gap-4" : "hidden"}>
-            <div className="flex items-center justify-end">
-              <button
-                type="button"
-                onClick={() => setRegistroSettingsOpen(true)}
-                className="inline-flex items-center gap-2 rounded-lg border border-glass-border bg-background px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-background/80"
-              >
-                <Settings2 className="h-4 w-4" />
-                Ajustes
-              </button>
-            </div>
-          <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,360px)] xl:items-start">
-            {/* Coluna esquerda: datas + upload (cards separados) */}
-            <div className="flex min-w-0 flex-col gap-4">
-              <DateFields dates={dates} onDatesChange={setDates} compact />
+            <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,360px)] xl:items-start">
+              {/* Coluna esquerda: datas + upload (cards separados) */}
+              <div className="flex min-w-0 flex-col gap-4">
+                <DateFields
+                  dates={dates}
+                  onDatesChange={setDates}
+                  compact
+                  action={
+                    <button
+                      type="button"
+                      onClick={() => setRegistroSettingsOpen(true)}
+                      className="inline-flex h-8 items-center gap-2 rounded-lg border border-glass-border bg-background px-3 text-sm text-foreground transition-colors hover:bg-background/80"
+                    >
+                      <Settings2 className="h-4 w-4" />
+                      Ajustes
+                    </button>
+                  }
+                />
 
               <div className="min-w-0 rounded-2xl border border-glass-border bg-background/55 p-4 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.4)]">
                 <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -4478,10 +4486,11 @@ export default function HomePage() {
                         key={mode}
                         type="button"
                         onClick={() => handleRegistroUploadModeChange(mode)}
+                        disabled={isUploading}
                         className={`rounded-lg px-3 py-1.5 transition-colors ${
                           registroUploadMode === mode
                             ? "bg-primary text-primary-foreground shadow-sm"
-                            : "text-muted-foreground hover:text-foreground"
+                            : "text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                         }`}
                       >
                         {label}
@@ -4490,71 +4499,53 @@ export default function HomePage() {
                   </div>
                 </div>
 
-                <UploadZone
-                  key={uploadResetKey}
-                  onFileSelect={handleFileSelect}
-                  acceptedFormats={registroUploadMode === "comprasnet" ? [".pdf"] : [".pdf", ".xlsx", ".xls", ".csv"]}
-                  title={
-                    registroUploadMode === "comprasnet"
-                      ? "Arraste o PDF da Liquidação aqui"
-                      : "Arraste o PDF ou planilha para SIAFI aqui"
-                  }
-                  description="ou clique para selecionar"
-                  compact
-                  disabled={!apiDisponivel}
-                  disabledMessage={
-                    !apiDisponivel
-                      ? "A seleção foi desativada porque a API web não está respondendo."
-                      : undefined
-                  }
-                />
+                {registroUploadMode === "comprasnet" ? (
+                  <>
+                    <UploadZone
+                      key={uploadResetKey}
+                      onFileSelect={handleFileSelect}
+                      acceptedFormats={[".pdf"]}
+                      title="Arraste o PDF da Liquidação aqui"
+                      description="ou clique para selecionar"
+                      compact
+                      disabled={!apiDisponivel}
+                      disabledMessage={
+                        !apiDisponivel
+                          ? "A seleção foi desativada porque a API web não está respondendo."
+                          : undefined
+                      }
+                    />
 
-                <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                  <div className="min-h-5 min-w-0">
-                    {erro ? (
-                      <p className="max-w-xl text-sm text-destructive">{erro}</p>
-                    ) : (
-                      <p className="text-sm text-muted-foreground">
-                        {registroUploadMode === "comprasnet"
-                          ? "Envie o PDF e siga direto para a conferência."
-                          : "A extração para SIAFI será configurada depois; por enquanto use o atalho para abrir o SIAFI."}
-                      </p>
-                    )}
-                  </div>
+                    <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                      <div className="min-h-5 min-w-0">
+                        {erro ? (
+                          <p className="max-w-xl text-sm text-destructive">{erro}</p>
+                        ) : (
+                          <p className="text-sm text-muted-foreground">
+                            Envie o PDF e siga direto para a conferência.
+                          </p>
+                        )}
+                      </div>
 
-                  {registroUploadMode === "comprasnet" ? (
-                    <GlassButton
-                      variant="secondary"
-                      size="lg"
-                      onClick={() => handleProcessar()}
-                      disabled={!selectedFile || isUploading || !apiDisponivel}
-                      className="w-full md:w-auto"
-                    >
-                      {isUploading ? (
-                        <Loader2 className="h-5 w-5 animate-spin" />
-                      ) : (
-                        <FileUp className="h-5 w-5" />
-                      )}
-                      {isUploading ? "Processando PDF..." : "Processar Documento"}
-                    </GlassButton>
-                  ) : (
-                    <GlassButton
-                      variant="secondary"
-                      size="lg"
-                      onClick={() => void handleAbrirSiafi()}
-                      disabled={abrindoSiafi || !apiDisponivel}
-                      className="w-full md:w-auto"
-                      title="Abrir SIAFI em aba anônima do Chrome"
-                    >
-                      {abrindoSiafi ? (
-                        <Loader2 className="h-5 w-5 animate-spin" />
-                      ) : (
-                        <Chrome className="h-5 w-5" />
-                      )}
-                      {abrindoSiafi ? "Abrindo..." : "Abrir SIAFI"}
-                    </GlassButton>
-                  )}
-                </div>
+                      <GlassButton
+                        variant="secondary"
+                        size="lg"
+                        onClick={() => handleProcessar()}
+                        disabled={!selectedFile || isUploading || !apiDisponivel}
+                        className="w-full md:w-auto"
+                      >
+                        {isUploading ? (
+                          <Loader2 className="h-5 w-5 animate-spin" />
+                        ) : (
+                          <FileUp className="h-5 w-5" />
+                        )}
+                        {isUploading ? "Processando PDF..." : "Processar Documento"}
+                      </GlassButton>
+                    </div>
+                  </>
+                ) : (
+                  <SiafiPreenchimentoPanel apiDisponivel={apiDisponivel} />
+                )}
               </div>
 
             </div>
@@ -4694,7 +4685,7 @@ export default function HomePage() {
                 )}
               </div>
             </div>
-          </div>
+            </div>
           </div>
         </section>
       </main>
