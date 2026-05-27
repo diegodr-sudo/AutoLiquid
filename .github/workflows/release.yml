@@ -56,8 +56,10 @@ jobs:
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
+        continue-on-error: true
         with:
           workspaces: "./src-tauri -> target"
+          save-if: ${{ runner.os != 'Windows' }}
 
       # ── Python ──────────────────────────────────────────────────────────────
       - name: Setup Python
