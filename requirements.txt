@@ -15,3 +15,4 @@ psycopg[binary]>=3.1.0
 nfelib>=2.0.0
 xsdata>=24.0
 cryptography>=42.0
+py3270>=0.3.0

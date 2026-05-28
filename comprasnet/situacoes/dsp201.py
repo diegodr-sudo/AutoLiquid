@@ -6,12 +6,12 @@ Fluxo após seleção da situação:
     1. Expande barra do empenho
     2. Preenche VPD (lookup por natureza de despesa)
     3. Clica em Conta de Bens Móveis para disparar auto-preenchimento
-    4. Preenche Contas a Pagar = "1104" → 2.1.3.1.1.04.00
+    4. Preenche Contas a Pagar = "104" → 2.1.3.1.1.04.00 (máscara já tem o "1" fixo)
 
 Telas do SIAFI que podem exigir preenchimento manual caso a automação falhe:
     - IMB050: Conta de Bens Móveis (campo auto-preenchido pelo portal)
     - IMB050: VPD conforme natureza de despesa
-    - IMB050: Contas a Pagar = 2.1.3.1.1.04.00
+    - IMB050: Contas a Pagar = 2.1.3.1.1.04.00 (digitar apenas "104" — máscara já tem o "1")
 """
 import time
 

@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "AutoLiquid",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "identifier": "com.autoliquid.app",
   "build": {
     "frontendDist": "../frontend/out",

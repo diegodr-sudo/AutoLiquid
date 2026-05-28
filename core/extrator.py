@@ -53,11 +53,14 @@ def _ungarble(s: str) -> str:
 
 
 def _parse_date(s: str):
-    """Converte DD-MM-YYYY para datetime; retorna datetime.min em falha."""
-    try:
-        return datetime.strptime(s.strip(), '%d-%m-%Y')
-    except Exception:
-        return datetime.min
+    """Converte datas comuns do PDF para datetime; retorna datetime.min em falha."""
+    texto = str(s or "").strip()
+    for formato in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(texto, formato)
+        except Exception:
+            pass
+    return datetime.min
 
 
 def _valor_brl_para_float(valor: str) -> float:

@@ -2860,7 +2860,37 @@ def _preencher_deducao_darf_total(
         return False
     print(f"    did={did}")
 
-    _select(pagina, f"sfdeducaocodsit{did}", siafi, erros, "SituaÃ§Ã£o")
+    # Espera o formulário estabilizar ANTES de selecionar — sem isso, quando
+    # DDF055 é o único tipo de dedução, o AJAX ainda não carregou as opções
+    # do select e o _select falha silenciosamente (igual ao padrão DDR001).
+    try:
+        _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=15000)
+    except Exception:
+        pass
+
+    # Seleciona Situação com retry — AJAX pode resetar o select (igual DDR001)
+    _situacao_ok = False
+    for _tent_sit in range(3):
+        _select(pagina, f"sfdeducaocodsit{did}", siafi, erros, f"Situação ({siafi})")
+        time.sleep(0.8)
+        try:
+            _texto_sit = pagina.evaluate(
+                f"() => {{ const el = document.getElementById('sfdeducaocodsit{did}'); "
+                f"if (!el) return ''; "
+                f"const op = el.options[el.selectedIndex]; "
+                f"return op ? op.text.trim() : ''; }}"
+            )
+            if siafi.upper() in str(_texto_sit or "").upper():
+                _situacao_ok = True
+                break
+            print(f"    [{siafi}] Situação ainda '{_texto_sit}' — retry {_tent_sit+1}/3")
+        except Exception:
+            _situacao_ok = True  # não conseguiu verificar, assume ok
+            break
+    if not _situacao_ok:
+        erros.append(f"{siafi}: portal não aceitou situação {siafi} após 3 tentativas.")
+        return False
+
     try:
         _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=15000)
     except Exception:

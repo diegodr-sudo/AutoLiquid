@@ -3,6 +3,7 @@ comprasnet_dados_basicos.py
 Preenche e valida a aba Dados Básicos.
 """
 from collections import Counter
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import re
 import time
@@ -32,6 +33,42 @@ def _decimal_normalizado(valor: str) -> Decimal:
         return Decimal(texto)
     except (InvalidOperation, ValueError):
         return Decimal("0")
+
+
+def _parse_data_ordenavel(valor: str) -> datetime | None:
+    texto = normalizar_data(str(valor or "").strip())
+    if not texto:
+        return None
+    for formato in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(texto, formato)
+        except ValueError:
+            continue
+    return None
+
+
+def _data_ateste_mais_recente(dados_extraidos: dict) -> str:
+    candidatos: list[str] = []
+    agregado = str(dados_extraidos.get("Data de Ateste", "") or "").strip()
+    if agregado:
+        candidatos.append(agregado)
+
+    for nota in dados_extraidos.get("Notas Fiscais", []) or []:
+        if not isinstance(nota, dict):
+            continue
+        ateste = str(nota.get("Data de Ateste", "") or "").strip()
+        if ateste:
+            candidatos.append(ateste)
+
+    datas_validas: list[tuple[datetime, str]] = []
+    for candidato in candidatos:
+        data = _parse_data_ordenavel(candidato)
+        if data is not None:
+            datas_validas.append((data, normalizar_data(candidato)))
+
+    if datas_validas:
+        return max(datas_validas, key=lambda item: item[0])[1]
+    return normalizar_data(candidatos[0]) if candidatos else ""
 
 
 def _comparar_documentos_origem(
@@ -753,9 +790,9 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
 
         # 4. Ateste
         notas = dados_extraidos.get('Notas Fiscais', [])
-        ateste_pdf = normalizar_data(notas[0].get('Data de Ateste', '')) if notas else ""
+        ateste_pdf = _data_ateste_mais_recente(dados_extraidos)
         if ateste_pdf:
-            print(f"[4] Ateste: {ateste_pdf}")
+            print(f"[4] Ateste mais recente: {ateste_pdf}")
             try:
                 preencher_data(pagina, "Ateste:", ateste_pdf)
             except Exception as exc:

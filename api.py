@@ -4211,8 +4211,6 @@ async def processar_pdf(
                 empresa = _consulta_cnpj().obter_dados_empresa(cnpj_limpo)
                 optante = empresa.get("optante_simples")
                 simples = bool(optante) if optante is not None else False
-                if simples:
-                    alertas.append("Empresa optante pelo Simples Nacional — verifique retenções.")
                 nome_pdf = str(dados_extraidos.get("Nome do Credor", "") or "").strip()
                 if not nome_pdf:
                     razao = empresa.get("razao_social", "")
@@ -4561,11 +4559,12 @@ def registrar_liquidacao(payload: RegistroLiquidacaoPayload) -> dict[str, Any]:
             log.warning("Registro de liquidação salvo localmente; sincronização com Turso falhou.", exc_info=True)
             return False
 
-    sincronizado = _sincronizar_registro()
-    if not sincronizado:
-        Thread(target=_sincronizar_registro, name="liquidacao-registro-sync", daemon=True).start()
+    # Turso sempre em background — o dado já está salvo no cache local acima,
+    # então não há risco de perda. Retornar imediatamente elimina os ~15-30s
+    # de espera que vinham da chamada síncrona à rede.
+    Thread(target=_sincronizar_registro, name="liquidacao-registro-sync", daemon=True).start()
 
-    return {"success": True, "local": not sincronizado, "sincronizado": sincronizado}
+    return {"success": True, "local": True, "sincronizado": False}
 
 
 @app.get("/api/registros-liquidacao/pendente")
@@ -5912,6 +5911,141 @@ def simples_batch(body: dict[str, Any]) -> dict[str, Any]:
 
     _salvar_simples_batch_cache_persistido(persistir)
     return {"resultado": resultado}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SIAFI ATULC — endpoints de execução e streaming
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Fila de eventos por execução: execution_id → Queue[str | None]
+# None sinaliza fim de stream.
+_SIAFI_ATULC_SESSIONS: dict[str, "Queue[str | None]"] = {}
+_SIAFI_ATULC_SESSIONS_LOCK = Lock()
+
+
+def _siafi_broadcast(execution_id: str, payload: dict) -> None:
+    """Envia um evento JSON para a fila do execution_id."""
+    import json as _json
+    with _SIAFI_ATULC_SESSIONS_LOCK:
+        q = _SIAFI_ATULC_SESSIONS.get(execution_id)
+    if q:
+        q.put(_json.dumps(payload, ensure_ascii=False))
+
+
+def _siafi_close(execution_id: str) -> None:
+    """Sinaliza fim de stream (None) e remove a fila."""
+    with _SIAFI_ATULC_SESSIONS_LOCK:
+        q = _SIAFI_ATULC_SESSIONS.pop(execution_id, None)
+    if q:
+        q.put(None)
+
+
+@app.post("/api/siafi/atulc/executar")
+def siafi_atulc_executar(body: dict[str, Any]) -> dict[str, Any]:
+    """
+    Dispara a execução do ATULC em background e retorna um execution_id
+    para acompanhar o progresso via SSE em /api/siafi/atulc/stream/{execution_id}.
+
+    Body esperado:
+      {
+        "credores": [{"cpf": "...", "banco": "...", "agencia": "...", "conta": "...", "valor": "..."}],
+        "codigo_acesso": "20222425322",   <- código gerado pelo SIAFI Web (HOD)
+        "numero_lista": "2026LC001",
+        "ug_emitente": "153163",
+        "gestao_emitente": "15237",
+        "suprimento_fundos": "N",
+        "tipo_pagamento": "1",
+        "cpf_usuario": null,
+        "senha": null
+      }
+    """
+    from scripts.siafi_atulc import executar_atulc
+
+    execution_id = str(uuid4())
+    q: Queue[str | None] = Queue()
+    with _SIAFI_ATULC_SESSIONS_LOCK:
+        _SIAFI_ATULC_SESSIONS[execution_id] = q
+
+    def _callback(acao: str, tela: list, estado: str) -> None:
+        _siafi_broadcast(execution_id, {
+            "type": "update",
+            "acao": acao,
+            "tela": tela,
+            "estado": estado,
+        })
+
+    def _run() -> None:
+        try:
+            resultado = executar_atulc(
+                credores=body.get("credores", []),
+                codigo_acesso=body.get("codigo_acesso", ""),
+                ug_emitente=body.get("ug_emitente", "153163"),
+                gestao_emitente=body.get("gestao_emitente", "15237"),
+                numero_lista=body.get("numero_lista", ""),
+                sequencial=body.get("sequencial", ""),
+                suprimento_fundos=body.get("suprimento_fundos", "N"),
+                tipo_pagamento=body.get("tipo_pagamento", "1"),
+                cpf_usuario=body.get("cpf_usuario"),
+                senha=body.get("senha"),
+                on_update=_callback,
+            )
+            _siafi_broadcast(execution_id, {"type": "resultado", **resultado})
+        except Exception as exc:
+            _siafi_broadcast(execution_id, {
+                "type": "resultado",
+                "ok": False,
+                "mensagem": str(exc),
+                "estado": "excecao",
+                "tela": "",
+            })
+        finally:
+            _siafi_close(execution_id)
+
+    Thread(target=_run, name=f"siafi-atulc-{execution_id[:8]}", daemon=True).start()
+    return {"execution_id": execution_id}
+
+
+@app.get("/api/siafi/atulc/stream/{execution_id}")
+async def siafi_atulc_stream(execution_id: str, request: Request):
+    """
+    SSE stream do progresso de uma execução ATULC.
+    Emite eventos do tipo 'update' (progresso) e 'resultado' (finalização).
+    """
+    with _SIAFI_ATULC_SESSIONS_LOCK:
+        q = _SIAFI_ATULC_SESSIONS.get(execution_id)
+    if q is None:
+        raise HTTPException(status_code=404, detail="execution_id não encontrado")
+
+    async def event_generator():
+        ultimo_keepalive = time.monotonic()
+        try:
+            yield "event: ready\ndata: {\"type\":\"ready\"}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    mensagem = q.get_nowait()
+                    if mensagem is None:
+                        yield "event: done\ndata: {\"type\":\"done\"}\n\n"
+                        break
+                    yield f"event: siafi\ndata: {mensagem}\n\n"
+                except Empty:
+                    if time.monotonic() - ultimo_keepalive >= 15:
+                        ultimo_keepalive = time.monotonic()
+                        yield ": keepalive\n\n"
+                    await asyncio.sleep(0.3)
+        finally:
+            _siafi_close(execution_id)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _warmup_turso_schema() -> None:

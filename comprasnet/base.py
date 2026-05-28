@@ -71,7 +71,7 @@ SITUACOES = {
     },
     "DSP201": {
         "descricao":         "Material Permanente — Bens Móveis (DSP)",
-        "contas_a_pagar":    "1104",         # → 2.1.3.1.1.04.00 (DSP usa 1104, não 104)
+        "contas_a_pagar":    "104",          # → 2.1.3.1.1.04.00 (máscara já tem o "1" fixo)
         "usa_deducao":       False,
         "usa_centro_custo":  False,
         # Campos para preencher manualmente no SIAFI caso a automação não consiga:
