@@ -103,6 +103,23 @@ def _float_para_valor_brl(valor: float) -> str:
     return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _normalizar_data_br(valor: str) -> str:
+    texto = str(valor or "").strip()
+    if not texto:
+        return ""
+    for formato in ("%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(texto, formato).strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    return texto
+
+
+def _texto_pdf(caminho_pdf: str | Path) -> str:
+    with pdfplumber.open(caminho_pdf) as pdf:
+        return "\n".join((pagina.extract_text() or "") for pagina in pdf.pages)
+
+
 def _extrair_identificadores_documento(texto: str) -> tuple[str, str]:
     sol = ""
     processo = ""
@@ -397,6 +414,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
         dados_extraidos['Solicitação de Pagamento'] = match_sol.group(1) if match_sol else "Não encontrado"
 
         lista_notas = []
+        lista_bolsas = []
         bloco_documentos = ""
         match_docs = re.search(
             r"Documentos\s+Fiscais:(.*?)(?:Dados\s+Orçamentários:|Detalhamento\s+de\s+Fonte:|RESUMO:)",
@@ -418,6 +436,22 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
                 'Data de Emissão': emissao,
                 'Data de Ateste':  ateste,
                 'Valor':           _float_para_valor_brl(max(0.0, valor_final)),
+            })
+
+        def adicionar_bolsa(numero: str, emissao: str, ateste: str, valor: str) -> None:
+            valor_final = _valor_brl_para_float(valor)
+            lista_bolsas.append({
+                'Número da Remessa': str(numero).strip(),
+                'Data de Emissão': _normalizar_data_br(emissao),
+                'Data de Ateste': _normalizar_data_br(ateste),
+                'Valor': _float_para_valor_brl(max(0.0, valor_final)),
+            })
+            lista_notas.append({
+                'Tipo': 'Bolsa',
+                'Número da Nota': str(numero).strip(),
+                'Data de Emissão': emissao,
+                'Data de Ateste': ateste,
+                'Valor': _float_para_valor_brl(max(0.0, valor_final)),
             })
 
         if bloco_documentos:
@@ -446,6 +480,16 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
                     adicionar_documento(f"NF {tipo_nf.capitalize()}", numero_nf, emissao_nf, ateste_nf, valor_nf)
                     continue
 
+                m_bolsa = re.match(
+                    r"Bolsa\s+(\d+)\s+([\d-]+)\s+([\d-]+)\s+([\d,.]+)$",
+                    linha,
+                    re.IGNORECASE,
+                )
+                if m_bolsa:
+                    numero_remessa, emissao_bolsa, ateste_bolsa, valor_bolsa = m_bolsa.groups()
+                    adicionar_bolsa(numero_remessa, emissao_bolsa, ateste_bolsa, valor_bolsa)
+                    continue
+
                 m_fatura = re.match(
                     r"Fatura\s+([\d.]+)\s+([\d-]+)\s+([\d-]+)\s+([\d,.]+)$",
                     linha,
@@ -470,6 +514,17 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
                     'Valor':           nota[4],
                 })
 
+            bolsas_encontradas = re.findall(
+                r"Bolsa\s+(\d+)\s+([\d-]+)\s+([\d-]+)\s+([\d,\.]+)",
+                texto,
+                re.IGNORECASE,
+            )
+            for bolsa in bolsas_encontradas:
+                numero_remessa = str(bolsa[0]).strip()
+                if any(str(item.get('Número da Remessa', '')).strip() == numero_remessa for item in lista_bolsas):
+                    continue
+                adicionar_bolsa(numero_remessa, bolsa[1], bolsa[2], bolsa[3])
+
             faturas_encontradas = re.findall(
                 r"Fatura\s+([\d.]+)\s+([\d-]+)\s+([\d-]+)\s+([\d,\.]+)",
                 texto,
@@ -493,6 +548,8 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
             ultima_nota['Valor'] = _float_para_valor_brl(max(0.0, valor_atual + pendente_desconto))
 
         dados_extraidos['Notas Fiscais'] = lista_notas
+        dados_extraidos['Bolsas'] = lista_bolsas
+        dados_extraidos['Tipo Operacional'] = 'bolsa' if lista_bolsas else 'comprasnet'
 
         # Data de ateste mais recente entre todas as NFs
         datas_ateste = [n['Data de Ateste'] for n in lista_notas if n['Data de Ateste']]
@@ -635,6 +692,123 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
     dados_extraidos['Processo'] = _limpar_campo_documento(dados_extraidos.get('Processo', ''), "—")
     dados_extraidos['Natureza'] = _limpar_campo_documento(dados_extraidos.get('Natureza', ''), "—")
     return dados_extraidos
+
+
+def extrair_remessa_bolsa_pdf(caminho_pdf, nome_arquivo: str | None = None):
+    texto = _texto_pdf(caminho_pdf)
+    if not texto.strip():
+        return None
+
+    match_remessa = re.search(r"\bREMESSA\s+(\d+)", texto, re.IGNORECASE)
+    numero_remessa = match_remessa.group(1).strip() if match_remessa else ""
+
+    match_bolsa = re.search(
+        r"Bolsa:\s*(.+?)\s+Mes\s*/\s*Ano:\s*([0-9]{1,2}/[0-9]{4})",
+        texto,
+        re.IGNORECASE,
+    )
+    bolsa_descricao = ""
+    bolsa_codigo = ""
+    mes_ano = ""
+    if match_bolsa:
+        bolsa_descricao = " ".join(match_bolsa.group(1).split())
+        mes_ano = match_bolsa.group(2).strip()
+        codigo_match = re.search(r"\((\d+)\)\s*$", bolsa_descricao)
+        if codigo_match:
+            bolsa_codigo = codigo_match.group(1)
+            bolsa_descricao = bolsa_descricao[:codigo_match.start()].strip()
+
+    match_data = re.search(r"\bData:\s*(\d{2}[-/]\d{2}[-/]\d{4})", texto, re.IGNORECASE)
+    data_remessa = _normalizar_data_br(match_data.group(1)) if match_data else ""
+
+    match_sol = re.search(r"Solicita[çc][aã]o\s+Pagamento:\s*(\d+)", texto, re.IGNORECASE)
+    solicitacao_pagamento = match_sol.group(1).strip() if match_sol else ""
+
+    match_processo = re.search(r"Processo:\s*([\d./-]+)", texto, re.IGNORECASE)
+    processo = match_processo.group(1).strip() if match_processo else ""
+
+    bolsistas = []
+    linhas = texto.splitlines()
+    lendo_tabela = False
+    for linha in linhas:
+        linha_limpa = " ".join(str(linha or "").split()).strip()
+        if not linha_limpa:
+            continue
+        if re.search(r"\bNome\s+CPF\s+Banco\s+Ag[eê]ncia\s+Conta\s+Valor\b", linha_limpa, re.IGNORECASE):
+            lendo_tabela = True
+            continue
+        if lendo_tabela and re.match(r"N[úu]mero\s+de\s+Bolsas:", linha_limpa, re.IGNORECASE):
+            break
+        if not lendo_tabela:
+            continue
+
+        match_linha = re.match(
+            r"(.+?)\s+(\d{9}-\d{2})\s+(\d{3})\s+(\d{4})\s+([0-9A-Za-z.\-]+)\s+([\d.]+,\d{2})\s+(\d+)(?:\s+([A-Z]))?$",
+            linha_limpa,
+        )
+        if not match_linha:
+            continue
+
+        nome, cpf, banco, agencia, conta, valor, situacao_lc, lc = match_linha.groups()
+        bolsistas.append({
+            "nome": nome.strip(),
+            "cpf": cpf.strip(),
+            "banco": banco.strip(),
+            "agencia": agencia.strip(),
+            "conta": conta.strip(),
+            "valor": _float_para_valor_brl(_valor_brl_para_float(valor)),
+            "valorNumerico": round(_valor_brl_para_float(valor), 2),
+            "situacaoLc": situacao_lc.strip(),
+            "lc": (lc or "").strip(),
+        })
+
+    totais = {
+        "quantidade": len(bolsistas),
+        "valor": _float_para_valor_brl(sum(item["valorNumerico"] for item in bolsistas)),
+        "valorNumerico": round(sum(item["valorNumerico"] for item in bolsistas), 2),
+        "aceitosQuantidade": 0,
+        "aceitosValor": "0,00",
+        "rejeitadosQuantidade": 0,
+        "rejeitadosValor": "0,00",
+        "canceladosQuantidade": 0,
+        "canceladosValor": "0,00",
+        "pendentesQuantidade": 0,
+        "pendentesValor": "0,00",
+    }
+
+    def _capturar_total(label: str) -> tuple[int, str, float] | None:
+        m = re.search(rf"{label}:\s*(\d+)\s+([\d.]+,\d{{2}})", texto, re.IGNORECASE)
+        if not m:
+            return None
+        valor = _float_para_valor_brl(_valor_brl_para_float(m.group(2)))
+        return int(m.group(1)), valor, round(_valor_brl_para_float(valor), 2)
+
+    total_doc = _capturar_total(r"N[úu]mero\s+de\s+Bolsas")
+    if total_doc:
+        totais["quantidade"], totais["valor"], totais["valorNumerico"] = total_doc
+
+    for chave, label in (
+        ("aceitos", "Aceitos"),
+        ("rejeitados", "Rejeitados"),
+        ("cancelados", "Cancelados"),
+        ("pendentes", "Pendentes"),
+    ):
+        total = _capturar_total(label)
+        if total:
+            totais[f"{chave}Quantidade"], totais[f"{chave}Valor"], _ = total
+
+    return {
+        "numeroRemessa": numero_remessa,
+        "bolsa": bolsa_descricao,
+        "codigoBolsa": bolsa_codigo,
+        "mesAno": mes_ano,
+        "data": data_remessa,
+        "solicitacaoPagamento": solicitacao_pagamento,
+        "processo": processo,
+        "nomeArquivo": Path(nome_arquivo or caminho_pdf).name,
+        "bolsistas": bolsistas,
+        "totais": totais,
+    }
 
 
 # ── TESTE ──────────────────────────────────────────────────────────────────────

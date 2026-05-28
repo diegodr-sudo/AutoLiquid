@@ -28,11 +28,60 @@ export interface Documento {
   contrato: string
   codigoIG: string
   tipoLiquidacao: string
+  tipoOperacional?: "comprasnet" | "bolsa" | string
+  bolsas?: BolsaLiquidacao[]
   optanteSimples?: boolean
   alertas?: string[]
   bancoPdf?: string
   agenciaPdf?: string
   contaPdf?: string
+}
+
+export interface BolsaLiquidacao {
+  numeroRemessa: string
+  emissao: string
+  ateste: string
+  valor: number
+}
+
+export interface BolsistaRemessa {
+  nome: string
+  cpf: string
+  banco: string
+  agencia: string
+  conta: string
+  valor: string
+  valorNumerico: number
+  situacaoLc: string
+  lc: string
+}
+
+export interface RemessaBolsaTotais {
+  quantidade: number
+  valor: string
+  valorNumerico: number
+  aceitosQuantidade: number
+  aceitosValor: string
+  rejeitadosQuantidade: number
+  rejeitadosValor: string
+  canceladosQuantidade: number
+  canceladosValor: string
+  pendentesQuantidade: number
+  pendentesValor: string
+}
+
+export interface RemessaBolsa {
+  numeroRemessa: string
+  bolsa: string
+  codigoBolsa: string
+  mesAno: string
+  data: string
+  solicitacaoPagamento: string
+  processo: string
+  nomeArquivo: string
+  bolsistas: BolsistaRemessa[]
+  totais: RemessaBolsaTotais
+  alertas?: string[]
 }
 
 export interface ResumoFinanceiro {
@@ -180,6 +229,7 @@ export interface DocumentoProcessado {
   etapas: EtapaExecucao[]
   pendencias: PendenciaDocumento[]
   statusGeral: StatusGeralDocumento
+  remessasBolsa?: RemessaBolsa[]
   logs: string[]
   logsSimples: string[]
   isRunning: boolean
@@ -218,6 +268,8 @@ export interface OpenChromeResponse {
   chromePorta: number
   url: string
   mensagem: string
+  /** Status específico do SIAFI retornado pelo endpoint /api/siafi/abrir */
+  siafiStatus?: "pronto" | "login_required" | "abrindo" | "tela_preta_clicado"
 }
 
 export interface OpenSolarProcessResponse {
@@ -526,7 +578,9 @@ async function apiFetch<T>(
       throw new Error("A API respondeu sem um JSON válido.")
     }
   } catch (error) {
-    throw new Error(getNetworkErrorMessage(path, error, abortedByCaller))
+    throw new Error(getNetworkErrorMessage(path, error, abortedByCaller), {
+      cause: error,
+    })
   } finally {
     if (timeoutId !== undefined) {
       clearTimeout(timeoutId)
@@ -623,7 +677,8 @@ export async function fetchFilaProcessos(
     const message = error instanceof Error ? error.message : ""
     if (message.includes("404") || message.toLowerCase().includes("not found")) {
       throw new Error(
-        "O backend em execução ainda não possui o endpoint da fila. Reinicie a API para carregar a nova rota /api/fila-processos."
+        "O backend em execução ainda não possui o endpoint da fila. Reinicie a API para carregar a nova rota /api/fila-processos.",
+        { cause: error }
       )
     }
     throw error
@@ -1150,6 +1205,25 @@ export async function uploadPDF(
   )
 }
 
+export async function uploadRemessaBolsa(
+  documentoId: string,
+  file: File
+): Promise<DocumentoProcessado> {
+  const formData = new FormData()
+  formData.append("file", file)
+
+  return apiFetch<DocumentoProcessado>(
+    `/api/documentos/${encodeURIComponent(documentoId)}/remessas-bolsa`,
+    {
+      method: "POST",
+      body: formData,
+    },
+    {
+      timeoutMs: PDF_PROCESS_TIMEOUT_MS,
+    }
+  )
+}
+
 export async function executarTodas(
   documentoId: string,
   options: {
@@ -1422,6 +1496,10 @@ export type AtualizacaoTauriProgressoCallback = (
 
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+}
+
+export function isDevRuntime(): boolean {
+  return typeof process !== "undefined" && process.env.NODE_ENV !== "production"
 }
 
 export async function obterVersao(): Promise<{ versao: string }> {

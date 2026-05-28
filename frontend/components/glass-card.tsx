@@ -19,7 +19,7 @@ export function GlassCard({
   return (
     <div
       className={cn(
-        "relative rounded-2xl border border-glass-border bg-glass-bg shadow-[0_28px_80px_-48px_rgba(15,23,42,0.4)] backdrop-blur-xl",
+        "relative rounded-2xl border border-glass-border bg-glass-bg shadow-[0_28px_80px_-48px_rgba(15,23,42,0.4)]",
         "before:absolute before:inset-0 before:rounded-2xl before:bg-gradient-to-br before:from-glass-highlight before:to-transparent before:pointer-events-none",
         hover && "transition-all duration-300 hover:border-primary/30 hover:shadow-[0_30px_90px_-50px_rgba(79,70,229,0.45)]",
         className
@@ -39,7 +39,7 @@ export function GlassPanel({ children, className }: GlassPanelProps) {
   return (
     <div
       className={cn(
-        "rounded-xl border border-glass-border/50 bg-secondary/30 backdrop-blur-sm p-4",
+        "rounded-xl border border-glass-border/50 bg-secondary/30 p-4",
         className
       )}
     >
@@ -105,7 +105,7 @@ export function GlassButton({
     <button
       className={cn(
         "inline-flex items-center justify-center gap-2 rounded-lg border font-medium",
-        "transition-all duration-200 backdrop-blur-sm",
+        "transition-all duration-200",
         "focus:outline-none focus:ring-2 focus:ring-ring/50",
         "disabled:opacity-50 disabled:pointer-events-none",
         variants[variant],

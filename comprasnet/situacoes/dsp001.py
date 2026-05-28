@@ -17,6 +17,7 @@ from comprasnet.principal_helpers import (
     _verificar_empenho,
     _verificar_interrupcao,
     _preencher_campo_com_retry,
+    _preencher_campo_mascarado_com_retry,
     _preencher_contas_a_pagar,
     _preencher_vpd,
 )
@@ -49,13 +50,13 @@ def _preencher_situacao_DSP001(
     # 2. Conta de Contrato e Favorecido do Contrato (só se SIM)
     if tem_contrato == "Sim":
         _verificar_interrupcao(deve_parar)
-        conta_contrato = cfg.get("conta_contrato", "02")
+        conta_contrato = "02"
         try:
             campo_cc = pagina.locator(
                 "xpath=//*[normalize-space(text())='Conta de Contrato']"
                 "/following::input[1]"
             ).first
-            _preencher_campo_com_retry(
+            _preencher_campo_mascarado_com_retry(
                 pagina, campo_cc, conta_contrato, erros,
                 descricao="Conta de Contrato",
                 tentativas=3,

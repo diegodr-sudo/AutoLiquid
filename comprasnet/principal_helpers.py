@@ -541,6 +541,54 @@ def _preencher_campo_com_retry(
     return ""
 
 
+def _preencher_campo_mascarado_com_retry(
+    pagina,
+    locator,
+    valor: str,
+    erros: list,
+    descricao: str = "campo",
+    tentativas: int = 2,
+    delay_entre: float = 1.0,
+):
+    """
+    Preenche campos com máscara fixa preservando zeros à esquerda.
+
+    A máscara do Comprasnet pode reposicionar os dígitos quando usamos fill("")
+    ou seleção tripla. Para campos curtos como Conta de Contrato, o fluxo mais
+    confiável é o mesmo usado no VPD: focar, esperar o template da máscara,
+    posicionar no primeiro '_' e digitar somente os dígitos editáveis.
+    """
+    valor_str = str(valor or "").strip()
+    valor_digitos = re.sub(r"\D+", "", valor_str)
+    esperado = valor_digitos or valor_str
+
+    for t in range(1, tentativas + 1):
+        try:
+            locator.click()
+            time.sleep(0.15)
+            _aguardar_mascara_campo(locator)
+            locator.evaluate(_JS_POSICIONAR_MASCARA)
+            locator.press_sequentially(esperado, delay=80)
+            pagina.keyboard.press("Tab")
+            time.sleep(delay_entre)
+
+            val_atual = locator.input_value().strip()
+            val_digitos = re.sub(r"\D+", "", val_atual)
+            if val_atual and (not esperado or val_digitos.endswith(esperado)):
+                print(f"    {descricao} → '{val_atual}' (tentativa {t})")
+                return val_atual
+
+            print(
+                f"    {descricao}: valor ficou '{val_atual or 'vazio'}' "
+                f"(esperado final '{esperado}', tentativa {t})."
+            )
+        except Exception as e:
+            if t == tentativas:
+                erros.append(f"Erro ao preencher {descricao}: {e}")
+
+    return ""
+
+
 def _preencher_vpd(pagina, vpd_codigo: str, erros: list):
     """Preenche 'Conta Variação Patrimonial Diminutiva' com o código VPD.
 

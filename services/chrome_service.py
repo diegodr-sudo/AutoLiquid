@@ -14,7 +14,12 @@ from pathlib import Path
 from core.app_paths import DIR_PERFIL, PORTA_CHROME, URL_INICIAL, caminho_recurso
 from core.runtime_config import obter_porta_chrome
 
-AUTOLIQUID_EXTRACTOR_BOOKMARK_NAME = "AutoLiquid Extrair Pagina"
+AUTOLIQUID_EXTRACTOR_BOOKMARK_NAME = "Captar informacoes da pagina"
+AUTOLIQUID_EXTRACTOR_BOOKMARK_ALIASES = {
+    AUTOLIQUID_EXTRACTOR_BOOKMARK_NAME,
+    "AutoLiquid Extrair Pagina",
+}
+AUTOLIQUID_EXTRACTOR_BOOKMARK_VERSION = "captar-informacoes-v2"
 
 
 def obter_navegador_configurado() -> str:
@@ -130,12 +135,16 @@ def _proximo_bookmark_id(node: dict) -> int:
     return maior + 1
 
 
-def instalar_bookmarklets_autoliquid() -> bool:
-    """Garante o bookmarklet de extração no perfil dedicado do navegador."""
+def garantir_bookmarklets_autoliquid() -> tuple[bool, bool]:
+    """Garante o bookmarklet de extração no perfil dedicado do navegador.
+
+    Retorna (sucesso, alterado). Quando o perfil já está aberto, alterações no
+    arquivo Bookmarks só aparecem depois que o Chrome recarrega o perfil.
+    """
     try:
         bookmarklet_url = _bookmarklet_extrator_pagina()
     except Exception:
-        return False
+        return False, False
 
     perfil = Path(DIR_PERFIL)
     default_dir = perfil / "Default"
@@ -158,14 +167,23 @@ def instalar_bookmarklets_autoliquid() -> bool:
 
     children = bookmark_bar["children"]
     changed = False
+    bookmark_item = None
     for item in list(children):
-        if item.get("name") == AUTOLIQUID_EXTRACTOR_BOOKMARK_NAME:
+        if item.get("name") in AUTOLIQUID_EXTRACTOR_BOOKMARK_ALIASES:
+            if bookmark_item is not None:
+                children.remove(item)
+                changed = True
+                continue
+            bookmark_item = item
+            if item.get("name") != AUTOLIQUID_EXTRACTOR_BOOKMARK_NAME:
+                item["name"] = AUTOLIQUID_EXTRACTOR_BOOKMARK_NAME
+                item["date_modified"] = _chrome_timestamp()
+                changed = True
             if item.get("url") != bookmarklet_url:
                 item["url"] = bookmarklet_url
                 item["date_modified"] = _chrome_timestamp()
                 changed = True
-            break
-    else:
+    if bookmark_item is None:
         children.append({
             "date_added": _chrome_timestamp(),
             "date_last_used": "0",
@@ -181,11 +199,48 @@ def instalar_bookmarklets_autoliquid() -> bool:
     bookmarks.pop("checksum", None)
     if changed or not bookmarks_path.exists():
         bookmarks_path.write_text(json.dumps(bookmarks, ensure_ascii=False, indent=2), encoding="utf-8")
-    _garantir_barra_favoritos_visivel()
-    return True
+    changed = _garantir_barra_favoritos_visivel() or changed
+    return True, changed
 
 
-def _garantir_barra_favoritos_visivel() -> None:
+def instalar_bookmarklets_autoliquid() -> bool:
+    """Compatibilidade: retorna apenas sucesso da garantia do bookmarklet."""
+    sucesso, _changed = garantir_bookmarklets_autoliquid()
+    return sucesso
+
+
+def fechar_navegador_automacao(porta=None, timeout_s: float = 5.0) -> bool:
+    """Fecha o navegador dedicado da automação via CDP."""
+    porta = resolver_porta_chrome(porta)
+    if not chrome_esta_pronto(porta):
+        return True
+
+    playwright = None
+    navegador_cdp = None
+    try:
+        from playwright.sync_api import sync_playwright
+
+        playwright = sync_playwright().start()
+        navegador_cdp = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{porta}")
+        navegador_cdp.close()
+    except Exception:
+        return False
+    finally:
+        try:
+            if playwright is not None:
+                playwright.stop()
+        except Exception:
+            pass
+
+    limite = time.time() + max(timeout_s, 0.5)
+    while time.time() < limite:
+        if not chrome_esta_aberto(porta):
+            return True
+        time.sleep(0.2)
+    return not chrome_esta_aberto(porta)
+
+
+def _garantir_barra_favoritos_visivel() -> bool:
     preferences_path = Path(DIR_PERFIL) / "Default" / "Preferences"
     preferences_path.parent.mkdir(parents=True, exist_ok=True)
     if preferences_path.exists():
@@ -196,10 +251,17 @@ def _garantir_barra_favoritos_visivel() -> None:
     else:
         preferences = {}
     bookmark_bar = preferences.setdefault("bookmark_bar", {})
-    if bookmark_bar.get("show_on_all_tabs") is True:
-        return
-    bookmark_bar["show_on_all_tabs"] = True
-    preferences_path.write_text(json.dumps(preferences, ensure_ascii=False, indent=2), encoding="utf-8")
+    autoliquid = preferences.setdefault("autoliquid", {})
+    changed = False
+    if bookmark_bar.get("show_on_all_tabs") is not True:
+        bookmark_bar["show_on_all_tabs"] = True
+        changed = True
+    if autoliquid.get("extractor_bookmark_version") != AUTOLIQUID_EXTRACTOR_BOOKMARK_VERSION:
+        autoliquid["extractor_bookmark_version"] = AUTOLIQUID_EXTRACTOR_BOOKMARK_VERSION
+        changed = True
+    if changed:
+        preferences_path.write_text(json.dumps(preferences, ensure_ascii=False, indent=2), encoding="utf-8")
+    return changed
 
 
 def _resolver_executavel_chrome(sistema: str) -> str:
@@ -313,17 +375,23 @@ def abrir_chrome(
     return porta
 
 
-def abrir_chrome_incognito(url: str) -> None:
-    """Abre uma nova janela anônima do Google Chrome na URL informada."""
+def abrir_chrome_incognito(url: str, porta=None, aguardar: bool = False, timeout_s: float = 10.0) -> bool:
+    """Abre uma nova janela anônima do Google Chrome na URL informada.
+
+    Quando ``porta`` é informada, a janela também sobe com CDP ativo. Isso é
+    necessário para fluxos que precisam reencontrar/focar a aba depois.
+    """
     url = str(url or "").strip()
     if not url:
         raise ValueError("URL inicial não informada.")
+    porta_resolvida = resolver_porta_chrome(porta) if porta is not None else None
 
     sistema = platform.system()
     exe = _resolver_executavel_chrome(sistema)
     instalar_bookmarklets_autoliquid()
     args = [
         f"--user-data-dir={DIR_PERFIL}",
+        *([f"--remote-debugging-port={porta_resolvida}"] if porta_resolvida is not None else []),
         "--incognito",
         "--new-window",
         "--show-bookmark-bar",
@@ -335,6 +403,164 @@ def abrir_chrome_incognito(url: str) -> None:
         cmd = [exe, *args]
 
     _spawn_detached(cmd)
+    if not aguardar or porta_resolvida is None:
+        return True
+
+    limite = time.time() + max(timeout_s, 1.0)
+    while time.time() < limite:
+        if chrome_esta_pronto(porta_resolvida):
+            return True
+        time.sleep(0.5)
+    return chrome_esta_pronto(porta_resolvida)
+
+
+_SIAFI_DOMINIO = "siafi.tesouro.gov.br"
+_SIAFI_LOGIN_PATH = "login.jsf"
+
+
+def _listar_targets_cdp(porta: int) -> list[dict]:
+    """Lista todas as abas abertas via endpoint HTTP do CDP.
+
+    Inclui contextos incógnito que Playwright pode não expor via contexts[].
+    """
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{porta}/json/list", timeout=2
+        ) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        return []
+
+
+def _ativar_target_cdp(porta: int, target_id: str) -> None:
+    """Traz uma aba para frente via endpoint HTTP do CDP."""
+    try:
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{porta}/json/activate/{target_id}", timeout=2
+        )
+    except Exception:
+        pass
+
+
+def _ativar_janela_chrome() -> None:
+    """Tenta trazer a janela do Chrome para frente no sistema operacional."""
+    sistema = platform.system()
+    try:
+        if sistema == "Darwin":
+            subprocess.run(
+                ["osascript", "-e", 'tell application "Google Chrome" to activate'],
+                capture_output=True,
+            )
+        elif sistema == "Windows":
+            subprocess.run(
+                ["powershell", "-Command",
+                 "(New-Object -ComObject WScript.Shell).AppActivate('Google Chrome')"],
+                capture_output=True,
+            )
+    except Exception:
+        pass
+
+
+def abrir_ou_focar_siafi(url: str) -> dict:
+    """Verifica se já existe uma aba do SIAFI Web.
+
+    Comportamentos:
+    - Aba encontrada e logada  → foca, clica 'Siafi Operacional', retorna action='tela_preta_clicado'
+    - Aba encontrada no login  → foca, retorna action='login_required'
+    - Aba não encontrada       → abre nova janela anônima, retorna action='opened'
+
+    A detecção usa o endpoint HTTP /json/list do CDP para garantir que abas
+    incógnito criadas externamente também sejam encontradas.
+    """
+    porta = obter_porta_chrome()
+
+    if not chrome_esta_pronto(porta):
+        pronto = abrir_chrome_incognito(url, porta=porta, aguardar=True, timeout_s=15)
+        return {"action": "opened", "cdpReady": pronto}
+
+    try:
+        import asyncio
+        try:
+            asyncio.set_event_loop(None)
+        except Exception:
+            pass
+        from playwright.sync_api import sync_playwright
+
+        playwright = sync_playwright().start()
+        try:
+            nav_cdp = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{porta}")
+
+            # Busca aba SIAFI em todos os contextos existentes
+            pagina_siafi = None
+            siafi_url = ""
+            for ctx in nav_cdp.contexts:
+                for pg in ctx.pages:
+                    if _SIAFI_DOMINIO in (pg.url or ""):
+                        pagina_siafi = pg
+                        siafi_url = pg.url
+                        break
+                if pagina_siafi:
+                    break
+
+            # Fallback: verifica via HTTP /json/list (captura abas de
+            # processos externos que Playwright pode não enxergar)
+            if pagina_siafi is None:
+                targets = _listar_targets_cdp(porta)
+                siafi_target = next(
+                    (t for t in targets
+                     if t.get("type") == "page" and _SIAFI_DOMINIO in (t.get("url") or "")),
+                    None,
+                )
+                if siafi_target:
+                    siafi_url = siafi_target.get("url", "")
+                    _ativar_target_cdp(porta, siafi_target.get("id", ""))
+                    _ativar_janela_chrome()
+                    if _SIAFI_LOGIN_PATH in siafi_url:
+                        return {"action": "login_required", "url": siafi_url}
+                    return {"action": "focused", "url": siafi_url}
+
+            if pagina_siafi is not None:
+                # Aba encontrada via Playwright — traz para frente
+                try:
+                    pagina_siafi.bring_to_front()
+                except Exception:
+                    pass
+                _ativar_janela_chrome()
+
+                if _SIAFI_LOGIN_PATH in siafi_url:
+                    return {"action": "login_required", "url": siafi_url}
+
+                # Logado — clica em "Siafi Operacional"
+                try:
+                    link = pagina_siafi.locator(
+                        "#frmMenu\\:lnkArvoreMenu, a:text('Siafi Operacional')"
+                    ).first
+                    link.wait_for(state="visible", timeout=3000)
+                    link.click(timeout=5000)
+                    return {"action": "tela_preta_clicado", "url": siafi_url}
+                except Exception:
+                    return {"action": "focused", "url": siafi_url}
+
+            # Nenhuma aba SIAFI — cria contexto incógnito via CDP para que
+            # fique acessível em chamadas futuras (sem processo separado).
+            ctx_incognito = nav_cdp.new_context()
+            nova_pagina = ctx_incognito.new_page()
+            nova_pagina.goto(url, timeout=15000, wait_until="domcontentloaded")
+            try:
+                nova_pagina.bring_to_front()
+            except Exception:
+                pass
+            _ativar_janela_chrome()
+            return {"action": "opened"}
+        finally:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
+    except Exception:
+        # Se Playwright falhar por qualquer motivo, abre normalmente
+        pronto = abrir_chrome_incognito(url, porta=porta, aguardar=True, timeout_s=15)
+        return {"action": "opened", "cdpReady": pronto}
 
 
 def conectar_chrome_cdp(porta=None, abrir_se_fechado=True):

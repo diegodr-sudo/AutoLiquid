@@ -7,6 +7,8 @@ import type { Documento, ResumoFinanceiro } from "@/lib/data";
 interface DocumentoPanelProps {
   documento: Documento;
   resumo: ResumoFinanceiro;
+  /** Suprime o badge "Optante/Não optante" quando não é relevante (bolsa, entidade federal). */
+  hideOptanteSimples?: boolean;
 }
 
 function formatCnpj(cnpj: string): string {
@@ -27,7 +29,7 @@ function InfoRow({ label, value, highlight = false }: { label: string; value: st
   );
 }
 
-export function DocumentoPanel({ documento, resumo: _resumo }: DocumentoPanelProps) {
+export function DocumentoPanel({ documento, resumo: _resumo, hideOptanteSimples = false }: DocumentoPanelProps) {
   const alertasExibidos = (documento.alertas ?? []).filter(
     (alerta) => !String(alerta).toLowerCase().includes("simples nacional")
   );
@@ -47,20 +49,22 @@ export function DocumentoPanel({ documento, resumo: _resumo }: DocumentoPanelPro
         <div className="min-w-0 space-y-0.5">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs uppercase tracking-wider text-muted-foreground">CNPJ</span>
-            <span
-              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
-                documento.optanteSimples
-                  ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700"
-                  : "border-amber-500/25 bg-amber-500/10 text-amber-700"
-              }`}
-            >
-              {documento.optanteSimples ? (
-                <BadgeCheck className="h-3 w-3" />
-              ) : (
-                <ShieldAlert className="h-3 w-3" />
-              )}
-              {documento.optanteSimples ? "Optante" : "Não optante"}
-            </span>
+            {!hideOptanteSimples && (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+                  documento.optanteSimples
+                    ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700"
+                    : "border-amber-500/25 bg-amber-500/10 text-amber-700"
+                }`}
+              >
+                {documento.optanteSimples ? (
+                  <BadgeCheck className="h-3 w-3" />
+                ) : (
+                  <ShieldAlert className="h-3 w-3" />
+                )}
+                {documento.optanteSimples ? "Optante" : "Não optante"}
+              </span>
+            )}
           </div>
           <p className="mt-1 break-all text-sm leading-6 text-foreground">{cnpj}</p>
           {documento.nomeCredor ? (

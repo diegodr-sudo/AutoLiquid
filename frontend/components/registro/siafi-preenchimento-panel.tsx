@@ -1,16 +1,21 @@
 "use client";
 
 import { useState } from "react";
-import { Chrome, Loader2 } from "lucide-react";
+import { Chrome, FileUp, Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { GlassButton } from "@/components/glass-card";
 import { UploadZone } from "@/components/upload-zone";
-import { openSiafiIncognito } from "@/lib/data";
+import { openSiafiIncognito, uploadPDF, type ProcessDates } from "@/lib/data";
 
 interface SiafiPreenchimentoPanelProps {
   apiDisponivel: boolean;
+  dates: ProcessDates;
 }
 
-export function SiafiPreenchimentoPanel({ apiDisponivel }: SiafiPreenchimentoPanelProps) {
+export function SiafiPreenchimentoPanel({ apiDisponivel, dates }: SiafiPreenchimentoPanelProps) {
+  const router = useRouter();
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [processando, setProcessando] = useState(false);
   const [abrindoSiafi, setAbrindoSiafi] = useState(false);
   const [erro, setErro] = useState("");
 
@@ -26,15 +31,41 @@ export function SiafiPreenchimentoPanel({ apiDisponivel }: SiafiPreenchimentoPan
     }
   };
 
+  const handleProcessar = async (fileOverride?: File | null) => {
+    const arquivo = fileOverride ?? selectedFile;
+    if (!arquivo || processando) return;
+
+    setProcessando(true);
+    setErro("");
+    try {
+      const result = await uploadPDF(arquivo, dates);
+      if (result.success && result.documentoId) {
+        router.push(`/conferencia?id=${encodeURIComponent(result.documentoId)}`);
+        return;
+      }
+      setErro(result.mensagem || "Não foi possível processar o documento.");
+    } catch (error) {
+      setErro(error instanceof Error ? error.message : "Erro ao processar o documento.");
+    } finally {
+      setProcessando(false);
+    }
+  };
+
   return (
     <>
       <UploadZone
-        onFileSelect={() => setErro("")}
-        acceptedFormats={[".pdf", ".xlsx", ".xls", ".csv"]}
-        title="Arraste o PDF ou planilha para SIAFI aqui"
-        description="ou clique para selecionar"
+        onFileSelect={(file, source) => {
+          setErro("");
+          setSelectedFile(file);
+          if (file && source !== "clear") {
+            void handleProcessar(file);
+          }
+        }}
+        acceptedFormats={[".pdf"]}
+        title="Arraste o PDF da liquidação SIAFI aqui"
+        description="para bolsa, a próxima tela recebe as remessas"
         compact
-        disabled={!apiDisponivel}
+        disabled={!apiDisponivel || processando}
         disabledMessage={
           !apiDisponivel
             ? "A seleção foi desativada porque a API web não está respondendo."
@@ -48,26 +79,42 @@ export function SiafiPreenchimentoPanel({ apiDisponivel }: SiafiPreenchimentoPan
             <p className="max-w-xl text-sm text-destructive">{erro}</p>
           ) : (
             <p className="text-sm text-muted-foreground">
-              A extração para SIAFI será configurada depois; por enquanto use o atalho para abrir o SIAFI.
+              Envie a liquidação; se for bolsa, confira as remessas e bolsistas na próxima tela.
             </p>
           )}
         </div>
 
-        <GlassButton
-          variant="secondary"
-          size="lg"
-          onClick={() => void handleAbrirSiafi()}
-          disabled={abrindoSiafi || !apiDisponivel}
-          className="w-full md:w-auto"
-          title="Abrir SIAFI em aba anônima do Chrome"
-        >
-          {abrindoSiafi ? (
-            <Loader2 className="h-5 w-5 animate-spin" />
-          ) : (
-            <Chrome className="h-5 w-5" />
-          )}
-          {abrindoSiafi ? "Abrindo..." : "Abrir SIAFI"}
-        </GlassButton>
+        <div className="flex flex-col gap-2 sm:flex-row md:justify-end">
+          <GlassButton
+            variant="secondary"
+            size="lg"
+            onClick={() => void handleProcessar()}
+            disabled={!selectedFile || processando || !apiDisponivel}
+            className="w-full md:w-auto"
+          >
+            {processando ? (
+              <Loader2 className="h-5 w-5 animate-spin" />
+            ) : (
+              <FileUp className="h-5 w-5" />
+            )}
+            {processando ? "Processando..." : "Processar"}
+          </GlassButton>
+          <GlassButton
+            variant="secondary"
+            size="lg"
+            onClick={() => void handleAbrirSiafi()}
+            disabled={abrindoSiafi || !apiDisponivel}
+            className="w-full md:w-auto"
+            title="Abrir SIAFI em aba anônima do Chrome"
+          >
+            {abrindoSiafi ? (
+              <Loader2 className="h-5 w-5 animate-spin" />
+            ) : (
+              <Chrome className="h-5 w-5" />
+            )}
+            {abrindoSiafi ? "Abrindo..." : "Abrir SIAFI"}
+          </GlassButton>
+        </div>
       </div>
     </>
   );

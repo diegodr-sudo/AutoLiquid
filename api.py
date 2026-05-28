@@ -1620,6 +1620,7 @@ def _montar_pendencias_documento(
     dados_extraidos: dict,
     deducoes: list[dict[str, Any]],
     etapas: list[dict[str, Any]],
+    tipo_operacional: str = "",
 ) -> list[dict[str, Any]]:
     pendencias: list[dict[str, Any]] =[]
     vistos: set[tuple[str, str]] = set()
@@ -1794,6 +1795,21 @@ def _montar_pendencias_documento(
                 alerta_txt,
                 "pdf",
             )
+
+    # Verificação de Simples Nacional / DDF055 não se aplica a bolsas nem a
+    # entidades federais (universidades, institutos, autarquias), que são isentas
+    # de retenção federal independentemente de optante.
+    _nome_credor = str(dados_extraidos.get("Nome do Credor", "") or dados.get("nome_credor", "") or "").strip()
+    _is_bolsa = tipo_operacional == "bolsa"
+    _is_federal = bool(
+        __import__("re").search(
+            r"federal|universidade|instituto\s+fed|autarquia",
+            _nome_credor,
+            __import__("re").IGNORECASE,
+        )
+    )
+    if _is_bolsa or _is_federal:
+        return pendencias
 
     _optante = bool(dados.get("optante_simples", False))
     try:
@@ -2009,8 +2025,24 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
         base = _comprasnet_base()
         tipo_liquidacao = base.extrair_siafi_completo(sit_raw) or base.extrair_codigo_situacao(sit_raw)
 
+    bolsas_liquidacao = [
+        {
+            "numeroRemessa": str(item.get("Número da Remessa", "") or "").strip(),
+            "emissao": str(item.get("Data de Emissão", "") or "").strip(),
+            "ateste": str(item.get("Data de Ateste", "") or "").strip(),
+            "valor": _brl_para_float(item.get("Valor", "0")),
+        }
+        for item in d.get("Bolsas", [])
+    ]
+    remessas_bolsa = dados.get("remessas_bolsa", [])
+    if not isinstance(remessas_bolsa, list):
+        remessas_bolsa = []
+    tipo_operacional = str(d.get("Tipo Operacional") or "").strip().lower()
+    if not tipo_operacional:
+        tipo_operacional = "bolsa" if bolsas_liquidacao else "comprasnet"
+
     etapas = deepcopy(dados.get("etapas", ETAPAS_BASE))
-    pendencias = _montar_pendencias_documento(dados, d, deducoes, etapas)
+    pendencias = _montar_pendencias_documento(dados, d, deducoes, etapas, tipo_operacional)
     status_geral = _montar_status_geral(dados, pendencias)
 
     return {
@@ -2036,6 +2068,8 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
             "contrato": _valor_ou_traco(d.get("Número do Contrato", "")),
             "codigoIG": _valor_ou_traco(d.get("IG", "")),
             "tipoLiquidacao": tipo_liquidacao,
+            "tipoOperacional": tipo_operacional,
+            "bolsas": bolsas_liquidacao,
             "optanteSimples": bool(dados.get("optante_simples", False)),
             "alertas": dados.get("alertas",[]),
             "bancoPdf": d.get("Banco", ""),
@@ -2053,6 +2087,7 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
         "etapas": etapas,
         "pendencias": pendencias,
         "statusGeral": status_geral,
+        "remessasBolsa": remessas_bolsa,
         "logs": dados.get("logs",[]),
         "logsSimples": dados.get("logs_simples",[]),
         "isRunning": dados.get("is_running", False),
@@ -3394,7 +3429,10 @@ def abrir_chrome_endpoint() -> dict[str, Any]:
     chrome_service = _chrome_service()
     porta = obter_porta_chrome()
     try:
-        chrome_service.instalar_bookmarklets_autoliquid()
+        bookmark_ok, bookmark_changed = chrome_service.garantir_bookmarklets_autoliquid()
+        estava_aberto = chrome_service.chrome_esta_pronto(porta)
+        if bookmark_ok and bookmark_changed and estava_aberto:
+            chrome_service.fechar_navegador_automacao(porta, timeout_s=5)
         if not chrome_service.chrome_esta_pronto(porta):
             chrome_service.abrir_chrome(porta, aguardar=True, timeout_s=15)
         aberto = chrome_service.chrome_esta_pronto(porta)
@@ -3417,13 +3455,49 @@ def abrir_siafi_endpoint() -> dict[str, Any]:
     chrome_service = _chrome_service()
     porta = obter_porta_chrome()
     try:
-        chrome_service.abrir_chrome_incognito(_SIAFI_WEB_URL)
+        resultado = chrome_service.abrir_ou_focar_siafi(_SIAFI_WEB_URL)
+        action = resultado.get("action", "opened")
+
+        if action == "login_required":
+            return {
+                "success": True,
+                "chromeStatus": "pronto",
+                "chromePorta": porta,
+                "url": resultado.get("url", _SIAFI_WEB_URL),
+                "siafiStatus": "login_required",
+                "mensagem": "O SIAFI está aberto mas aguardando login. Faça login na janela do SIAFI e clique em Executar novamente.",
+            }
+        if action == "tela_preta_clicado":
+            return {
+                "success": True,
+                "chromeStatus": "pronto",
+                "chromePorta": porta,
+                "url": resultado.get("url", _SIAFI_WEB_URL),
+                "siafiStatus": "tela_preta_clicado",
+                "mensagem": "Clicado em Siafi Operacional — aguarde o download do aplicativo iniciar.",
+            }
+        if action == "focused":
+            return {
+                "success": True,
+                "chromeStatus": "pronto",
+                "chromePorta": porta,
+                "url": resultado.get("url", _SIAFI_WEB_URL),
+                "siafiStatus": "pronto",
+                "mensagem": "Aba do SIAFI já estava aberta — janela trazida para frente.",
+            }
+        # action == "opened"
+        cdp_ready = bool(resultado.get("cdpReady", True))
         return {
-            "success": True,
-            "chromeStatus": "pronto",
+            "success": cdp_ready,
+            "chromeStatus": "pronto" if cdp_ready else "erro",
             "chromePorta": porta,
             "url": _SIAFI_WEB_URL,
-            "mensagem": "SIAFI aberto em aba anônima do Chrome.",
+            "siafiStatus": "abrindo",
+            "mensagem": (
+                "SIAFI aberto em nova aba anônima do Chrome."
+                if cdp_ready
+                else "SIAFI foi solicitado, mas o Chrome não ficou pronto para automação na porta esperada."
+            ),
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -4191,6 +4265,81 @@ def obter_documento(doc_id: str) -> dict[str, Any]:
     if not doc:
         raise HTTPException(status_code=404, detail="Documento não encontrado.")
     return _montar_documento_processado(doc_id, doc)
+
+
+@app.post("/api/documentos/{doc_id}/remessas-bolsa")
+async def processar_remessa_bolsa(
+    doc_id: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    doc = _obter_documento_cache_ou_turso(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento não encontrado.")
+
+    tmp_path = None
+    try:
+        sufixo = os.path.splitext(file.filename or ".pdf")[1] or ".pdf"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=sufixo) as tmp:
+            tmp_path = tmp.name
+            conteudo = await file.read()
+            tmp.write(conteudo)
+
+        remessa = _extrator().extrair_remessa_bolsa_pdf(tmp_path, nome_arquivo=file.filename)
+        if not remessa or not remessa.get("numeroRemessa") or not remessa.get("bolsistas"):
+            raise HTTPException(
+                status_code=422,
+                detail="Não foi possível extrair a remessa de bolsa. Verifique se é um PDF de remessa válido.",
+            )
+
+        dados_extraidos = doc.get("dados_extraidos", {}) if isinstance(doc.get("dados_extraidos"), dict) else {}
+        alertas: list[str] = []
+        processo_doc = str(dados_extraidos.get("Processo", "") or "").strip()
+        sol_doc = str(dados_extraidos.get("Solicitação de Pagamento", "") or "").strip()
+        remessas_esperadas = {
+            str(item.get("Número da Remessa", "") or "").strip()
+            for item in dados_extraidos.get("Bolsas", [])
+            if isinstance(item, dict)
+        }
+
+        if processo_doc and remessa.get("processo") and remessa["processo"] != processo_doc:
+            alertas.append(f"Processo da remessa ({remessa['processo']}) difere da liquidação ({processo_doc}).")
+        if sol_doc and remessa.get("solicitacaoPagamento") and remessa["solicitacaoPagamento"] != sol_doc:
+            alertas.append(f"Solicitação da remessa ({remessa['solicitacaoPagamento']}) difere da liquidação ({sol_doc}).")
+        if remessas_esperadas and remessa["numeroRemessa"] not in remessas_esperadas:
+            alertas.append(f"Remessa {remessa['numeroRemessa']} não aparece na lista de bolsas da liquidação.")
+        remessa["alertas"] = alertas
+
+        remessas_existentes = doc.get("remessas_bolsa", [])
+        if not isinstance(remessas_existentes, list):
+            remessas_existentes = []
+        remessas_filtradas = [
+            item for item in remessas_existentes
+            if str(item.get("numeroRemessa", "") or "") != str(remessa["numeroRemessa"])
+        ]
+        remessas_filtradas.append(remessa)
+        remessas_filtradas.sort(key=lambda item: str(item.get("numeroRemessa", "")))
+        doc["remessas_bolsa"] = remessas_filtradas
+
+        _local_cache_service().salvar_documento(doc_id, doc)
+        background_tasks.add_task(_sincronizar_documento_remoto, doc_id, doc)
+
+        return _montar_documento_processado(doc_id, doc)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("Erro ao processar remessa de bolsa")
+        raise HTTPException(
+            status_code=500,
+            detail=_detalhar_erro_execucao("Processamento da remessa", exc),
+        ) from exc
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 @app.post("/api/documentos/{doc_id}/salvar-preenchimento")

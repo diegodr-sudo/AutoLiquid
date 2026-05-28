@@ -170,7 +170,7 @@ export function DashboardModal({ open, onClose, rows }: DashboardModalProps) {
   return (
     <div
       ref={backdropRef}
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 px-2 py-3 backdrop-blur-sm sm:px-4"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/45 px-2 py-3 sm:px-4"
       onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}
     >
       <div className="flex max-h-[calc(100dvh-24px)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-glass-border bg-background shadow-2xl">

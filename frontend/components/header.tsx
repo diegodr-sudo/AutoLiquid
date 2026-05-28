@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { MessageCircle, Settings, Circle, Palmtree } from "lucide-react";
+import { MessageCircle, Table2, Settings, Circle, Palmtree } from "lucide-react";
 import { GlassButton } from "./glass-card";
 
 interface HeaderProps {
   chromeStatus?: "pronto" | "carregando" | "erro";
   browserName?: string;
+  onOpenTabelas?: () => void;
   onOpenConfiguracoes?: () => void;
   onOpenChrome?: () => void;
   chromeActionDisabled?: boolean;
@@ -20,6 +21,7 @@ interface HeaderProps {
 export function Header({
   chromeStatus = "pronto",
   browserName = "Chrome",
+  onOpenTabelas,
   onOpenConfiguracoes,
   onOpenChrome,
   chromeActionDisabled = false,
@@ -48,7 +50,7 @@ export function Header({
       : "";
 
   return (
-    <header className="sticky top-0 z-[60] border-b border-glass-border bg-background/80 backdrop-blur-xl">
+    <header className="sticky top-0 z-[60] border-b border-glass-border bg-background/95">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
         <div className="flex items-center gap-2">
           <Link
@@ -101,6 +103,17 @@ export function Header({
         </div>
 
         <nav className="flex items-center gap-2">
+          <GlassButton
+            variant="ghost"
+            size="sm"
+            onClick={onOpenTabelas}
+            disabled={!onOpenTabelas}
+            title={onOpenTabelas ? "Abrir tabelas operacionais" : "Acao indisponivel nesta tela"}
+          >
+            <Table2 className="h-4 w-4" />
+            Tabelas
+          </GlassButton>
+
           <GlassButton
             variant="ghost"
             size="sm"

@@ -658,12 +658,13 @@ def _aplicar_filtros_e_pesquisa_em_lote(
     termo_pesquisa: str,
 ) -> bool:
     """
-    Aplica de uma só vez: filtro de ano, situação Pendente e texto de pesquisa.
+    Aplica de uma só vez: Todos por página, filtro de ano, situação Pendente
+    e texto de pesquisa.
 
     Disparar todos os valores antes de qualquer evento de change evita reloads
     intermediários da tabela — apenas um ciclo AJAX em vez de dois ou três.
 
-    Retorna True se ao menos o filtro de situação foi aplicado.
+    Retorna True se conseguiu acionar a tabela sem precisar do fluxo sequencial.
     """
     log.info(
         "Aplicando filtros e pesquisa em lote: ano='%s' | pesquisa='%s'",
@@ -679,8 +680,31 @@ def _aplicar_filtros_e_pesquisa_em_lote(
             const desejadosAno = anoEmissao ? [anoEmissao] : [];
             const desejadosSit = ['pen', 'pendente'];
             let situacaoAplicada = false;
+            let paginacaoAplicada = false;
+            let pesquisaAplicada = false;
 
-            // ── 1. Define valores nos selects SEM disparar change ainda ──
+            // ── 1. Define paginação e filtros SEM disparar change ainda ──
+            const setTodosRegistros = () => {
+                const selects = [
+                    document.querySelector('select[name="crudTable_length"]'),
+                    document.querySelector('select[name$="_length"]'),
+                    document.querySelector('.dataTables_length select'),
+                    ...Array.from(document.querySelectorAll('select')),
+                ].filter(Boolean);
+
+                for (const sel of selects) {
+                    const opt = Array.from(sel.options || []).find((option) => {
+                        const texto = normalizar(option.textContent);
+                        return option.value === '-1' || texto === 'todos' || texto.includes('todos');
+                    });
+                    if (opt) {
+                        sel.value = opt.value;
+                        return sel;
+                    }
+                }
+                return null;
+            };
+
             const setSelect = (id, desejados) => {
                 const sel = document.getElementById(id);
                 if (!sel) return false;
@@ -694,6 +718,8 @@ def _aplicar_filtros_e_pesquisa_em_lote(
                 return false;
             };
 
+            const selectTodos = setTodosRegistros();
+            paginacaoAplicada = !!selectTodos;
             if (anoEmissao) setSelect('filter_emissao', desejadosAno);
             situacaoAplicada = setSelect('filter_situacao', desejadosSit);
 
@@ -704,58 +730,76 @@ def _aplicar_filtros_e_pesquisa_em_lote(
                     "input[aria-label*='Search']",
                     "input[aria-label*='Pesquisar']",
                     "input.form-control",
+                    "input[type='text']",
                 ];
                 for (const s of seletores) {
-                    const inp = document.querySelector(s);
-                    if (inp) {
+                    const campos = Array.from(document.querySelectorAll(s));
+                    for (const inp of campos) {
                         const rect = inp.getBoundingClientRect();
                         if (rect.width > 0 && rect.height > 0) {
                             inp.value = termoPesquisa;
+                            pesquisaAplicada = true;
                             break;
                         }
                     }
+                    if (pesquisaAplicada) break;
                 }
             }
 
-            // ── 3. Dispara change em todos de uma vez ──
-            const dispararChange = (id) => {
-                const el = document.getElementById(id);
+            // ── 3. Dispara change/eventos em todos de uma vez ──
+            const dispararElemento = (el) => {
                 if (!el) return;
                 if (window.jQuery) {
                     window.jQuery(el).trigger('change');
                 } else {
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
                     el.dispatchEvent(new Event('change', { bubbles: true }));
                 }
             };
 
+            const dispararChange = (id) => {
+                const el = document.getElementById(id);
+                dispararElemento(el);
+            };
+
+            dispararElemento(selectTodos);
             if (anoEmissao) dispararChange('filter_emissao');
             dispararChange('filter_situacao');
 
             // Dispara eventos na pesquisa
             if (termoPesquisa) {
-                const seletores = ["input[type='search']", "input.form-control"];
+                let pesquisaDisparada = false;
+                const seletores = [
+                    "input[type='search']",
+                    "input[aria-label*='Search']",
+                    "input[aria-label*='Pesquisar']",
+                    "input.form-control",
+                    "input[type='text']",
+                ];
                 for (const s of seletores) {
-                    const inp = document.querySelector(s);
-                    if (inp) {
+                    const campos = Array.from(document.querySelectorAll(s));
+                    for (const inp of campos) {
                         const rect = inp.getBoundingClientRect();
                         if (rect.width > 0 && rect.height > 0) {
                             inp.dispatchEvent(new Event('input', { bubbles: true }));
                             inp.dispatchEvent(new Event('change', { bubbles: true }));
                             inp.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+                            pesquisaDisparada = true;
                             break;
                         }
                     }
+                    if (pesquisaDisparada) break;
                 }
             }
 
-            return situacaoAplicada;
+            return paginacaoAplicada || situacaoAplicada || pesquisaAplicada;
         }
     """
     try:
         ok = pagina.evaluate(js, {"anoEmissao": ano_emissao, "termoPesquisa": termo_pesquisa})
         time.sleep(1.5)  # janela inicial para o browser iniciar as requisições
         _aguardar_tabela_estavel(pagina, timeout_ms=60_000)
-        log.info("Filtros + pesquisa aplicados em lote (situação aplicada: %s).", ok)
+        log.info("Todos + filtros + pesquisa aplicados em lote (ok: %s).", ok)
         return bool(ok)
     except Exception as exc:
         log.warning("Erro ao aplicar filtros em lote: %s. Usando fluxo sequencial.", exc)

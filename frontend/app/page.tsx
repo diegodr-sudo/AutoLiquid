@@ -63,6 +63,7 @@ import {
   saveQueueServersConfig,
   checarAtualizacaoTauri,
   instalarAtualizacaoTauri,
+  isDevRuntime,
   isTauriRuntime,
   waitForBackendReady,
   verificarAtualizacao,
@@ -144,6 +145,10 @@ const DASHBOARD_LABELS = {
 type MainTab = "dashboard" | "painel" | "liquidacao" | "registro";
 type RegistroUploadMode = "comprasnet" | "siafi";
 
+type BannerUpdateInfo = VersaoInfo & {
+  origem?: "tauri" | "web";
+};
+
 interface QueueDisplayColumn {
   key: keyof QueueDisplayRow;
   label: string;
@@ -188,6 +193,7 @@ const QUEUE_COMPACT_COLUMNS_STORAGE_KEY = "painel_queue_compact_columns_v1";
 const QUEUE_COLUMN_WIDTHS_STORAGE_KEY = "painel_queue_column_widths_v1";
 const QUEUE_MOSTRAR_TIPO_BADGES_KEY = "painel_mostrar_tipo_badges_v1";
 const QUEUE_MOSTRAR_SIMPLES_KEY = "painel_mostrar_simples_v1";
+const QUEUE_VIEWED_ROWS_STORAGE_KEY = "painel_queue_viewed_rows_v1";
 const MIN_QUEUE_COLUMN_WIDTH = 44;
 const DEFAULT_QUEUE_SERVERS: QueueServerConfig[] = [
   { id: "diego", nome: "Diego", modo: "ativo" },
@@ -529,7 +535,7 @@ function parseTipos(tipo: string): TipoEntry[] {
   if (!tipo) return [];
   // Try hard-delimiter split first (/, +, ;, |, comma); space is intentionally NOT here
   // because known types like "NF Serviço" or "NF Material" contain spaces.
-  const parts = tipo.split(/[\/+;|,]/).map((p) => p.trim()).filter(Boolean);
+  const parts = tipo.split(/[/+;|,]/).map((p) => p.trim()).filter(Boolean);
   const entries: TipoEntry[] = [];
   if (parts.length > 1) {
     // Delimiter-separated — but still run pattern extraction on each part
@@ -561,6 +567,22 @@ function loadQueueMostrarSimples(): boolean {
     const v = window.localStorage.getItem(QUEUE_MOSTRAR_SIMPLES_KEY);
     return v === null ? true : v === "1";
   } catch { return true; }
+}
+
+function loadQueueViewedRows(): Record<string, boolean> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(QUEUE_VIEWED_ROWS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([key, value]) => typeof key === "string" && value === true)
+    ) as Record<string, boolean>;
+  } catch {
+    return {};
+  }
 }
 
 function firstNameOf(value: string): string {
@@ -1336,7 +1358,8 @@ export default function HomePage() {
   const [chromeStatus, setChromeStatus] = useState<"pronto" | "carregando" | "erro">("carregando");
   const [abrindoChrome, setAbrindoChrome] = useState(false);
   const [registroUploadMode, setRegistroUploadMode] = useState<RegistroUploadMode>("comprasnet");
-  const [bannerUpdate, setBannerUpdate] = useState<VersaoInfo | null>(null);
+  const [bannerUpdate, setBannerUpdate] = useState<BannerUpdateInfo | null>(null);
+  const [bannerUpdateInstalling, setBannerUpdateInstalling] = useState(false);
   const [browserName, setBrowserName] = useState("Chrome");
   const [nomeUsuario, setNomeUsuario] = useState<string | null>(null); // null = ainda carregando
   const [startupState, setStartupState] =
@@ -1379,6 +1402,7 @@ export default function HomePage() {
   const [registroSettingsOpen, setRegistroSettingsOpen] = useState(false);
   const [mostrarTipoBadges, setMostrarTipoBadges] = useState(() => loadQueueMostrarTipoBadges());
   const [mostrarSimples, setMostrarSimples] = useState(() => loadQueueMostrarSimples());
+  const [queueViewedRows, setQueueViewedRows] = useState<Record<string, boolean>>(() => loadQueueViewedRows());
   const [queueSimplesMap, setQueueSimplesMap] = useState<Record<string, boolean | null>>({});
   const [isLoadingSimples, setIsLoadingSimples] = useState(false);
   // IC lookup: contrato (SARF) → IC (IG) da tabela de contratos; null = não cadastrado
@@ -1532,9 +1556,36 @@ export default function HomePage() {
       )
     : "";
 
+  const markQueueRowViewed = (row: QueueDisplayRow) => {
+    setQueueViewedRows((current) => (
+      current[row.rowKey] ? current : { ...current, [row.rowKey]: true }
+    ));
+  };
+
+  const queueRowMatchesProcesso = (row: QueueDisplayRow, numeroProcesso: string) => {
+    const alvo = normalizeQueueCell(numeroProcesso);
+    if (!alvo) return false;
+    const alvoDigits = alvo.replace(/\D/g, "");
+    const candidatos = [row.numeroProcesso, row.processoSolar]
+      .map(normalizeQueueCell)
+      .filter(Boolean);
+    return candidatos.some((candidato) => {
+      if (candidato === alvo) return true;
+      const candidatoDigits = candidato.replace(/\D/g, "");
+      return Boolean(
+        alvoDigits &&
+        candidatoDigits &&
+        (candidatoDigits === alvoDigits ||
+          (alvoDigits.length >= 8 && candidatoDigits.includes(alvoDigits)) ||
+          (candidatoDigits.length >= 8 && alvoDigits.includes(candidatoDigits)))
+      );
+    });
+  };
+
   const abrirHistoricoDaFila = (row: QueueDisplayRow) => {
     const cnpj = row.cpfCnpj.replace(/\D/g, "");
     if (cnpj.length !== 14) return;
+    markQueueRowViewed(row);
 
     const contratos = Array.from(new Set([
       row.contrato,
@@ -1555,6 +1606,7 @@ export default function HomePage() {
     const numeroProcesso = normalizeQueueCell(row.processoSolar || row.numeroProcesso);
     if (!numeroProcesso) return;
 
+    markQueueRowViewed(row);
     setOpeningSolarProcessKey(row.rowKey);
     setErroFila("");
     setChromeStatus("carregando");
@@ -2664,8 +2716,41 @@ export default function HomePage() {
     setVisibleQueueColumns((current) => current.includes(columnKey) ? current : [...current, columnKey]);
   };
 
+  const handleBannerUpdate = async () => {
+    if (!bannerUpdate || bannerUpdateInstalling) return;
+    if (isDevRuntime()) {
+      setBannerUpdate(null);
+      return;
+    }
+
+    if (isTauriRuntime()) {
+      setBannerUpdateInstalling(true);
+      try {
+        await instalarAtualizacaoTauri();
+      } catch (error) {
+        setErro(
+          error instanceof Error
+            ? error.message
+            : "Não foi possível instalar a atualização."
+        );
+      } finally {
+        setBannerUpdateInstalling(false);
+      }
+      return;
+    }
+
+    if (bannerUpdate.url_download) {
+      await abrirUrl(bannerUpdate.url_download);
+    }
+  };
+
   // Verificação de versão na inicialização (só quando API estiver disponível)
   useEffect(() => {
+    if (isDevRuntime()) {
+      setBannerUpdate(null);
+      return;
+    }
+
     if (!startupConcluido || !apiDisponivel) {
       return;
     }
@@ -2686,12 +2771,15 @@ export default function HomePage() {
               versao_nova: info.versaoNova,
               versao_atual: info.versaoAtual ?? "",
               url_download: "",
+              origem: "tauri",
             });
           }
           return;
         }
         const info = await verificarAtualizacao();
-        if (ativo && info.tem_atualizacao) setBannerUpdate(info);
+        if (ativo && info.tem_atualizacao) {
+          setBannerUpdate({ ...info, origem: "web" });
+        }
       } catch {
         // silencia erros de rede na checagem automática
       }
@@ -2796,6 +2884,11 @@ export default function HomePage() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(QUEUE_MOSTRAR_SIMPLES_KEY, mostrarSimples ? "1" : "0");
   }, [mostrarSimples]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(QUEUE_VIEWED_ROWS_STORAGE_KEY, JSON.stringify(queueViewedRows));
+  }, [queueViewedRows]);
 
   useEffect(() => {
     if (!mostrarSimples || !filaCnpjsKey) {
@@ -3052,7 +3145,7 @@ export default function HomePage() {
       }
       if (!ativo) return;
       setRegistroPendente(registro);
-      setActiveMainTab("liquidacao");
+      setActiveMainTab("registro");
       setRegistroError("");
       setRegistroDificuldadeInteragida(false);
     };
@@ -3340,14 +3433,14 @@ export default function HomePage() {
   };
 
   const garantirChromeAbertoParaFila = async () => {
-    let statusAtual = chromeStatus;
+    let statusAtual: typeof chromeStatus = "erro";
     try {
       const backendStatus = await fetchBackendStatus();
       statusAtual = backendStatus.chromeStatus;
       setChromeStatus(backendStatus.chromeStatus);
       setApiDisponivel(true);
     } catch {
-      statusAtual = "erro";
+      // Mantem statusAtual como erro para forcar nova tentativa de abrir o Chrome.
     }
 
     if (statusAtual === "pronto") {
@@ -3446,6 +3539,15 @@ export default function HomePage() {
 
     try {
       await registrarLiquidacao(payload);
+      if (finalizada) {
+        const rowsParaConcluir = filaDistribuida.filter((row) =>
+          !row.concluido && queueRowMatchesProcesso(row, registroPendente.numeroProcesso)
+        );
+        for (const row of rowsParaConcluir) {
+          await toggleQueueConclusao(row);
+        }
+        setActiveMainTab("registro");
+      }
       if (typeof window !== "undefined") {
         window.localStorage.removeItem(REGISTRO_LIQUIDACAO_PENDENTE_KEY);
       }
@@ -3801,6 +3903,11 @@ export default function HomePage() {
         chromeStatus={chromeStatus}
         browserName={browserName}
         onGoHome={() => setActiveMainTab("dashboard")}
+        onOpenTabelas={() => {
+          setTabelasInitialTab("contratos");
+          setTabelasVisibleTabs(undefined);
+          setIsTabelasOpen(true);
+        }}
         onOpenConfiguracoes={() => setIsConfiguracoesOpen(true)}
         onOpenChrome={handleAbrirChrome}
         chromeActionDisabled={abrindoChrome || !apiDisponivel}
@@ -3821,7 +3928,7 @@ export default function HomePage() {
       />
 
       <main className="relative mx-auto w-full max-w-[96vw] px-4 py-6 sm:px-5 sm:py-8 2xl:max-w-[1700px]">
-        <section className="mb-5 rounded-[28px] border border-glass-border bg-glass-bg px-5 py-5 shadow-[0_28px_80px_-48px_rgba(15,23,42,0.4)] backdrop-blur-xl sm:px-6">
+        <section className="mb-5 rounded-[28px] border border-glass-border bg-glass-bg px-5 py-5 shadow-[0_28px_80px_-48px_rgba(15,23,42,0.4)] sm:px-6">
 
           {/* ── Cabeçalho + Abas ── */}
           <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -3870,30 +3977,39 @@ export default function HomePage() {
 
           {bannerUpdate && (
             <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-violet-500/30 bg-violet-500/10 px-4 py-3">
-            <div className="flex items-center gap-3 min-w-0">
-              <ArrowDownToLine className="h-4 w-4 shrink-0 text-violet-700" />
-              <p className="text-sm text-violet-700">
-                <span className="font-semibold">Nova versão disponível:</span>{" "}
-                v{bannerUpdate.versao_nova}
-              </p>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <a
-                href={bannerUpdate.url_download}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="rounded-lg border border-violet-500/30 bg-background/80 px-3 py-1.5 text-xs font-medium text-violet-700 transition-colors hover:bg-background"
-              >
-                Baixar
-              </a>
-              <button
-                type="button"
-                onClick={() => setBannerUpdate(null)}
-                className="rounded-full p-1 text-violet-500 transition-colors hover:bg-violet-500/10"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
+              <div className="flex items-center gap-3 min-w-0">
+                <ArrowDownToLine className="h-4 w-4 shrink-0 text-violet-700" />
+                <p className="text-sm text-violet-700">
+                  <span className="font-semibold">Nova versão disponível:</span>{" "}
+                  v{bannerUpdate.versao_nova}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleBannerUpdate}
+                  disabled={bannerUpdateInstalling || (!isTauriRuntime() && !bannerUpdate.url_download)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-violet-500/30 bg-background/80 px-3 py-1.5 text-xs font-medium text-violet-700 transition-colors hover:bg-background disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {bannerUpdateInstalling ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <ArrowDownToLine className="h-3.5 w-3.5" />
+                  )}
+                  {bannerUpdateInstalling
+                    ? "Instalando..."
+                    : isTauriRuntime()
+                      ? "Instalar"
+                      : "Baixar"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBannerUpdate(null)}
+                  className="rounded-full p-1 text-violet-500 transition-colors hover:bg-violet-500/10"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
           )}
 
@@ -4105,9 +4221,9 @@ export default function HomePage() {
                     Carregando fila de processos...
                   </div>
                 ) : filaFiltrada.length > 0 ? (
-                  <div className="overflow-x-auto rounded-xl border border-glass-border bg-background/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
+                  <div className="scrollable-surface max-h-[68vh] overflow-auto rounded-xl border border-glass-border bg-background/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
                     <table className={`${queueTableMinWidth} table-fixed text-sm leading-5`}>
-                      <thead className="bg-muted/65">
+                      <thead className="sticky top-0 z-10 bg-muted">
                         <tr>
                           {queueColumnsToRender.map((column) => (
                             <th
@@ -4134,8 +4250,10 @@ export default function HomePage() {
                             className={[
                               "border-b border-glass-border/60 last:border-0",
                               row.concluido
-                                ? "bg-emerald-500/10 hover:bg-emerald-500/15"
-                                : "odd:bg-background/35 even:bg-background/10 hover:bg-primary/5",
+                                ? "bg-emerald-500/15 hover:bg-emerald-500/20"
+                                : queueViewedRows[row.rowKey]
+                                  ? "bg-amber-500/10 hover:bg-amber-500/15"
+                                  : "odd:bg-background/35 even:bg-background/10 hover:bg-primary/5",
                             ].join(" ")}
                           >
                             {queueColumnsToRender.map((column) => (
@@ -4544,7 +4662,7 @@ export default function HomePage() {
                     </div>
                   </>
                 ) : (
-                  <SiafiPreenchimentoPanel apiDisponivel={apiDisponivel} />
+                  <SiafiPreenchimentoPanel apiDisponivel={apiDisponivel} dates={dates} />
                 )}
               </div>
 
@@ -4695,7 +4813,7 @@ export default function HomePage() {
           <button
             type="button"
             aria-label="Fechar ajustes"
-            className="absolute inset-0 bg-background/65 backdrop-blur-sm"
+            className="absolute inset-0 bg-background/80"
             onClick={() => setQueueSettingsOpen(false)}
           />
           <div className="relative z-10 flex max-h-[calc(100dvh-1rem)] w-full max-w-[min(1180px,calc(100vw-1rem))] flex-col overflow-hidden rounded-2xl border border-glass-border bg-background/95 shadow-[0_30px_100px_-45px_rgba(15,23,42,0.45)]">
@@ -4720,7 +4838,7 @@ export default function HomePage() {
               </button>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
+            <div className="scrollable-surface min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
               <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
                 <div className="min-w-0 space-y-4">
                   <section className="min-w-0 rounded-2xl border border-glass-border bg-muted/20 p-4">
@@ -4983,7 +5101,7 @@ export default function HomePage() {
           <button
             type="button"
             aria-label="Fechar ajustes do registro"
-            className="absolute inset-0 bg-background/65 backdrop-blur-sm"
+            className="absolute inset-0 bg-background/80"
             onClick={() => setRegistroSettingsOpen(false)}
           />
           <div className="relative z-10 flex max-h-[calc(100dvh-1rem)] w-full max-w-[min(700px,calc(100vw-1rem))] flex-col overflow-hidden rounded-2xl border border-glass-border bg-background/95 shadow-[0_30px_100px_-45px_rgba(15,23,42,0.45)]">
@@ -5008,7 +5126,7 @@ export default function HomePage() {
               </button>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
+            <div className="scrollable-surface min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
               <div className="space-y-4">
                 {/* Tabelas */}
                 <section className="min-w-0 rounded-2xl border border-glass-border bg-muted/20 p-4">
@@ -5074,22 +5192,38 @@ export default function HomePage() {
       ) : null}
 
       {registroPendente ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/70 px-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-2xl border border-glass-border bg-background p-5 shadow-[0_28px_90px_-45px_rgba(15,23,42,0.55)]">
-            <div className="mb-5">
-              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-primary">Registro da liquidação</p>
-              <h2 className="mt-2 text-xl font-semibold text-foreground">
-                Você terminou a liquidação do processo {registroPendente.numeroProcesso || "informado"}?
-              </h2>
-              <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                Se ainda não terminou, marque como não finalizada agora. Quando finalizar, volte com o documento gerado e registre os dados abaixo.
-              </p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/90 px-4 py-6">
+          <div className="w-full max-w-xl overflow-hidden rounded-2xl border border-glass-border bg-background shadow-[0_28px_90px_-45px_rgba(15,23,42,0.55)]">
+            <div className="border-b border-glass-border bg-secondary/35 px-5 py-4">
+              <div className="flex items-start gap-3">
+                <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-emerald-500/25 bg-emerald-500/10 text-emerald-700">
+                  <CheckCircle2 className="h-5 w-5" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">
+                    Registro da liquidação
+                  </p>
+                  <h2 className="mt-1 text-xl font-semibold text-foreground">
+                    Concluir processo
+                  </h2>
+                  <p className="mt-1 font-mono text-sm font-semibold text-foreground">
+                    {registroPendente.numeroProcesso || "Processo informado"}
+                  </p>
+                </div>
+              </div>
             </div>
 
-            <div className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-[130px_minmax(0,1fr)]">
+            <div className="space-y-5 px-5 py-5">
+              <div className="rounded-2xl border border-glass-border bg-muted/20 px-4 py-3">
+                <p className="text-sm leading-6 text-muted-foreground">
+                  Informe a NP/RP/LF gerada e a dificuldade do processo antes de voltar para a fila.
+                  Ao registrar, a linha correspondente será marcada como concluída.
+                </p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-[120px_minmax(0,1fr)]">
                 <label className="space-y-1.5">
-                  <span className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Tipo</span>
+                  <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Tipo</span>
                   <select
                     value={registroTipoDocumento}
                     onChange={(event) => setRegistroTipoDocumento(event.target.value as RegistroLiquidacaoTipoDocumento)}
@@ -5102,7 +5236,7 @@ export default function HomePage() {
                   </select>
                 </label>
                 <label className="space-y-1.5">
-                  <span className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Número do documento</span>
+                  <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Número do documento</span>
                   <input
                     value={registroNumeroDocumento}
                     onChange={(event) => setRegistroNumeroDocumento(event.target.value)}
@@ -5120,40 +5254,40 @@ export default function HomePage() {
                 onInteract={() => setRegistroDificuldadeInteragida(true)}
                 disabled={registroSaving}
               />
-            </div>
 
-            {registroError ? (
-              <div className="mt-4 rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {registroError}
+              {registroError ? (
+                <div className="rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {registroError}
+                </div>
+              ) : null}
+
+              <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-between">
+                <button
+                  type="button"
+                  onClick={() => void concluirRegistroLiquidacao(false)}
+                  disabled={registroSaving}
+                  className="inline-flex h-11 items-center justify-center rounded-xl border border-glass-border bg-background px-4 text-sm font-semibold text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Ainda não finalizei
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void concluirRegistroLiquidacao(true)}
+                  disabled={registroSaving || !registroNumeroDocumento.trim() || !registroDificuldadeInteragida}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-semibold text-white shadow-md shadow-emerald-900/20 transition-all hover:-translate-y-0.5 hover:bg-emerald-800 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
+                  title={!registroDificuldadeInteragida ? "Mova a barra de dificuldade para habilitar o registro." : undefined}
+                >
+                  {registroSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  Registrar e marcar concluído
+                </button>
               </div>
-            ) : null}
-
-            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
-              <button
-                type="button"
-                onClick={() => void concluirRegistroLiquidacao(false)}
-                disabled={registroSaving}
-                className="inline-flex h-11 items-center justify-center rounded-2xl border border-slate-300 bg-transparent px-4 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Não, ainda não finalizei
-              </button>
-              <button
-                type="button"
-                onClick={() => void concluirRegistroLiquidacao(true)}
-                disabled={registroSaving || !registroNumeroDocumento.trim() || !registroDificuldadeInteragida}
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-slate-900 px-5 text-sm font-semibold text-slate-50 shadow-md shadow-slate-900/20 transition-all hover:-translate-y-0.5 hover:bg-slate-800 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
-                title={!registroDificuldadeInteragida ? "Mova a barra de dificuldade para habilitar o registro." : undefined}
-              >
-                {registroSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                Registrar conclusão
-              </button>
             </div>
           </div>
         </div>
       ) : null}
 
       {registroNotice ? (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-background/35 px-6 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-background/65 px-6">
           <div
             role="status"
             aria-live="polite"
@@ -5240,7 +5374,7 @@ export default function HomePage() {
               </div>
             ) : null}
 
-            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            <div className="scrollable-surface min-h-0 flex-1 overflow-y-auto pr-1">
               {carregandoRegrasDatasDeducoes ? (
                 <div className="flex items-center gap-2 rounded-2xl border border-glass-border bg-background px-4 py-6 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />

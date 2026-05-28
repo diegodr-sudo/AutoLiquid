@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { CheckCircle2, ChevronDown, ChevronRight } from "lucide-react";
+import { AlertTriangle, Banknote, CheckCircle2, ChevronDown, ChevronRight, FileUp, Loader2, Play, Upload, Users } from "lucide-react";
 import { Header } from "@/components/header";
 import { DocumentoPanel } from "@/components/documento-panel";
 import { NotasFiscaisTable } from "@/components/notas-fiscais-table";
@@ -25,6 +25,7 @@ import {
   fetchDocumentoProcessado,
   fetchAppSettings,
   openChromeSession,
+  openSiafiIncognito,
   pararExecucao,
   type Documento,
   type Deducao,
@@ -33,6 +34,7 @@ import {
   type PendenciaDocumento,
   type ResumoFinanceiro,
   type NotaFiscal,
+  type RemessaBolsa,
   type EtapaExecucao,
   type ProcessDates,
   type StatusGeralDocumento,
@@ -44,6 +46,7 @@ import {
   atualizarPendenciaDocumento,
   registrarLiquidacao,
   descartarRegistroLiquidacaoPendente,
+  uploadRemessaBolsa,
 } from "@/lib/data";
 import { readStoredAuthSession } from "@/lib/auth-store";
 import { useAuth } from "@/lib/auth-context";
@@ -54,12 +57,17 @@ const REGISTRO_LIQUIDACAO_PENDENTE_KEY = "autoliquid_registro_liquidacao_pendent
 const IGNORAR_RETORNO_PENDENCIA_SESSION_KEY = "autoliquid_ignorar_retorno_pendencia_sessao";
 const RETORNO_PENDENCIA_DISPENSADO_KEY = "autoliquid_retorno_pendencia_dispensado";
 
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value || 0);
+}
+
 function ConferenciaPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const auth = useAuth();
   const documentoId = searchParams.get("id");
   const execucaoAbortControllerRef = useRef<AbortController | null>(null);
+  const remessaInputRef = useRef<HTMLInputElement | null>(null);
   const registroPendenteRemotoRef = useRef("");
   // Ref para proteger polling: não sobrescreve pendências enquanto um toggle está em voo
   const pendenciaToggleInFlightRef = useRef(false);
@@ -74,6 +82,10 @@ function ConferenciaPageContent() {
   const [dates, setDates] = useState<ProcessDates>(MOCK_PROCESS_DATES);
   const [logs, setLogs] = useState<string[]>([]);
   const [logsSimples, setLogsSimples] = useState<string[]>([]);
+  const [remessasBolsa, setRemessasBolsa] = useState<RemessaBolsa[]>([]);
+  const [uploadingRemessa, setUploadingRemessa] = useState(false);
+  /** Código operacional da bolsa: 01 = Outros, 03 = Pesquisa e/ou Extensão */
+  const [codigoOperacional, setCodigoOperacional] = useState<"01" | "03">("01");
   const [isConfiguracoesOpen, setIsConfiguracoesOpen] = useState(false);
   const [isExecutando, setIsExecutando] = useState(false);
   const [paradaSolicitada, setParadaSolicitada] = useState(false);
@@ -138,6 +150,7 @@ function ConferenciaPageContent() {
     setDates(payload.dates);
     setLogs(payload.logs);
     setLogsSimples(payload.logsSimples ?? []);
+    setRemessasBolsa(payload.remessasBolsa ?? []);
     // Não sobrescreve pendências se um toggle está em andamento (evita race condition)
     if (!pendenciaToggleInFlightRef.current) {
       setPendencias(payload.pendencias ?? []);
@@ -771,6 +784,24 @@ function ConferenciaPageContent() {
     }
   };
 
+  const handleRemessaBolsaInput = async (file: File | null) => {
+    if (!documentoId || !file || uploadingRemessa) return;
+    setUploadingRemessa(true);
+    setErro("");
+    try {
+      const payload = await uploadRemessaBolsa(documentoId, file);
+      aplicarPayload(payload);
+      setStatusMensagem("Remessa de bolsa extraída e vinculada à liquidação.");
+    } catch (error) {
+      setErro(error instanceof Error ? error.message : "Não foi possível extrair a remessa de bolsa.");
+    } finally {
+      setUploadingRemessa(false);
+      if (remessaInputRef.current) {
+        remessaInputRef.current.value = "";
+      }
+    }
+  };
+
   const handleAbrirChrome = async () => {
     setAbrindoChrome(true);
     setErro("");
@@ -788,6 +819,32 @@ function ConferenciaPageContent() {
       setAbrindoChrome(false);
     }
   };
+
+  const handleAbrirSiafi = async () => {
+    setAbrindoChrome(true);
+    setErro("");
+    setStatusMensagem("");
+    try {
+      const result = await openSiafiIncognito();
+      setChromeStatus(result.chromeStatus);
+      if (result.siafiStatus === "login_required") {
+        setErro("O SIAFI está aberto mas aguardando login. Faça login na janela do SIAFI e clique em Executar novamente.");
+      } else if (result.siafiStatus === "tela_preta_clicado") {
+        setStatusMensagem("Clicado em Siafi Operacional — aguarde o download do aplicativo iniciar.");
+      } else if (result.siafiStatus === "pronto") {
+        setStatusMensagem("Aba do SIAFI já estava aberta — janela trazida para frente.");
+      }
+    } catch (error) {
+      setErro(error instanceof Error ? error.message : "Não foi possível abrir o SIAFI.");
+      setChromeStatus("erro");
+    } finally {
+      setAbrindoChrome(false);
+    }
+  };
+
+  const documentoBolsa = documento.tipoOperacional === "bolsa"
+    || Boolean(documento.bolsas?.length)
+    || notasFiscais.some((nota) => nota.tipo.toLowerCase().includes("bolsa"));
 
   const pendenciasBaseVisiveis = pendencias.filter((pendencia) => {
     const titulo = String(pendencia.titulo ?? "").toLowerCase();
@@ -814,39 +871,53 @@ function ConferenciaPageContent() {
 
   const pendenciasLocais: PendenciaDocumento[] = [];
 
-  if (precisaLF && !lfNumero.trim()) {
-    pendenciasLocais.push({
-      id: "local-lf",
-      tipo: "bloqueio",
-      titulo: "LF pendente",
-      descricao: "Preencha a LF para permitir a execução das deduções que dependem dela.",
-      origem: "configuracao",
-    });
-  }
+  // Bolsa não tem deduções nem dados bancários — essas pendências não se aplicam.
+  if (!documentoBolsa) {
+    if (precisaLF && !lfNumero.trim()) {
+      pendenciasLocais.push({
+        id: "local-lf",
+        tipo: "bloqueio",
+        titulo: "LF pendente",
+        descricao: "Preencha a LF para permitir a execução das deduções que dependem dela.",
+        origem: "configuracao",
+      });
+    }
 
-  if (temFatura && !vencimentoDocumento.trim()) {
-    pendenciasLocais.push({
-      id: "local-fatura-vencimento",
-      tipo: "atencao",
-      titulo: "Vencimento da fatura não informado",
-      descricao: "Se este documento usa vencimento específico de fatura, informe-o antes de executar os dados de pagamento.",
-      origem: "configuracao",
-    });
-  }
+    if (temFatura && !vencimentoDocumento.trim()) {
+      pendenciasLocais.push({
+        id: "local-fatura-vencimento",
+        tipo: "atencao",
+        titulo: "Vencimento da fatura não informado",
+        descricao: "Se este documento usa vencimento específico de fatura, informe-o antes de executar os dados de pagamento.",
+        origem: "configuracao",
+      });
+    }
 
-  if (!dadosBancariosResolvidos) {
-    pendenciasLocais.push({
-      id: "local-banco",
-      tipo: "bloqueio",
-      titulo: "Dados bancários pendentes",
-      descricao: usarContaPdf
-        ? "Selecione uma conta válida do PDF ou troque para preenchimento manual."
-        : "Preencha banco, agência e conta para concluir Dados de Pagamento.",
-      origem: "configuracao",
-    });
+    if (!dadosBancariosResolvidos) {
+      pendenciasLocais.push({
+        id: "local-banco",
+        tipo: "bloqueio",
+        titulo: "Dados bancários pendentes",
+        descricao: usarContaPdf
+          ? "Selecione uma conta válida do PDF ou troque para preenchimento manual."
+          : "Preencha banco, agência e conta para concluir Dados de Pagamento.",
+        origem: "configuracao",
+      });
+    }
   }
 
   const pendenciasVisiveis = [...pendenciasBaseVisiveis, ...pendenciasLocais];
+
+  // Entidades federais (universidades, institutos, autarquias) nunca são optantes por Simples.
+  const isFederalEntity = /federal|universidade|instituto\s+fed|autarquia/i.test(
+    documento.nomeCredor ?? ""
+  );
+  const bolsasLiquidacao = documento.bolsas ?? [];
+  const totalBolsistas = remessasBolsa.reduce((total, remessa) => total + (remessa.bolsistas?.length ?? 0), 0);
+  const totalRemessas = remessasBolsa.reduce((total, remessa) => total + (remessa.totais?.valorNumerico ?? 0), 0);
+  const remessasEsperadas = new Set(bolsasLiquidacao.map((bolsa) => bolsa.numeroRemessa).filter(Boolean));
+  const remessasRecebidas = new Set(remessasBolsa.map((remessa) => remessa.numeroRemessa).filter(Boolean));
+  const remessasPendentes = [...remessasEsperadas].filter((numero) => !remessasRecebidas.has(numero));
 
   const pendenciasAtivasVisiveis = pendenciasVisiveis.filter((pendencia) => !pendencia.resolvida);
   const bloqueiosAtivos = pendenciasAtivasVisiveis.filter((pendencia) => pendencia.tipo === "bloqueio");
@@ -911,6 +982,8 @@ function ConferenciaPageContent() {
             apuracaoDate={dates.apuracao}
             vencimentoDate={dates.vencimento}
             onBack={voltarParaInicio}
+            isFederalEntity={isFederalEntity}
+            onConcluir={abrirConclusaoProcesso}
           />
         </div>
 
@@ -918,11 +991,207 @@ function ConferenciaPageContent() {
         <div className="grid items-start gap-5 min-[1180px]:grid-cols-[minmax(180px,220px)_minmax(0,2.45fr)_minmax(220px,270px)]">
           {/* Left Column - Documento */}
           <div className="space-y-6">
-            <DocumentoPanel documento={documento} resumo={resumo} />
+            <DocumentoPanel documento={documento} resumo={resumo} hideOptanteSimples={isFederalEntity || documentoBolsa} />
           </div>
 
           {/* Center Column - Notas Fiscais */}
           <div className="min-w-0 space-y-6">
+            {documentoBolsa ? (
+              <div className="space-y-5">
+                <section className="rounded-2xl border border-glass-border/70 bg-background/65 p-5">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                        Bolsa SIAFI
+                      </p>
+                      <h2 className="mt-1 text-xl font-semibold text-foreground">
+                        Remessas de bolsistas
+                      </h2>
+                    </div>
+                    <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-3">
+                      <div className="rounded-xl border border-glass-border bg-background px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Remessas</p>
+                        <p className="mt-1 text-lg font-semibold text-foreground">{remessasBolsa.length}</p>
+                      </div>
+                      <div className="rounded-xl border border-glass-border bg-background px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Bolsistas</p>
+                        <p className="mt-1 text-lg font-semibold text-foreground">{totalBolsistas}</p>
+                      </div>
+                      <div className="rounded-xl border border-glass-border bg-background px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Total</p>
+                        <p className="mt-1 text-lg font-semibold text-emerald-700">{formatCurrency(totalRemessas)}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Switch código operacional — largura total da section */}
+                  <button
+                    role="switch"
+                    aria-checked={codigoOperacional === "03"}
+                    onClick={() => setCodigoOperacional(codigoOperacional === "01" ? "03" : "01")}
+                    className="mt-4 flex w-full cursor-pointer items-center gap-4 rounded-xl border border-glass-border bg-secondary/20 px-5 py-3 transition-colors hover:bg-secondary/40"
+                  >
+                    <span className={`flex-1 text-left text-sm font-semibold transition-colors ${codigoOperacional === "01" ? "text-foreground" : "text-muted-foreground"}`}>
+                      Outros (01)
+                    </span>
+                    <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${codigoOperacional === "03" ? "bg-primary" : "bg-muted-foreground/30"}`}>
+                      <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-all duration-200 ${codigoOperacional === "03" ? "right-1" : "left-1"}`} />
+                    </span>
+                    <span className={`flex-1 text-right text-sm font-semibold transition-colors ${codigoOperacional === "03" ? "text-primary" : "text-muted-foreground"}`}>
+                      Pesquisa / Extensão (03)
+                    </span>
+                  </button>
+
+                  {bolsasLiquidacao.length > 0 ? (
+                    <div className="mt-5 rounded-xl border border-glass-border bg-secondary/20">
+                      <div className="border-b border-glass-border px-4 py-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                          Remessas previstas na liquidação
+                        </p>
+                      </div>
+                      <div className="divide-y divide-glass-border/60">
+                        {bolsasLiquidacao.map((bolsa) => (
+                          <div key={bolsa.numeroRemessa} className="grid gap-3 px-4 py-3 text-sm sm:grid-cols-[1fr_auto_auto] sm:items-center">
+                            <div className="min-w-0">
+                              <p className="font-semibold text-foreground">Remessa {bolsa.numeroRemessa}</p>
+                              <p className="text-muted-foreground">Ateste {bolsa.ateste || "—"}</p>
+                            </div>
+                            <p className="font-semibold text-foreground">{formatCurrency(bolsa.valor)}</p>
+                            <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                              remessasRecebidas.has(bolsa.numeroRemessa)
+                                ? "bg-emerald-500/10 text-emerald-700"
+                                : "bg-amber-500/10 text-amber-700"
+                            }`}>
+                              {remessasRecebidas.has(bolsa.numeroRemessa) ? "Carregada" : "Pendente"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* Drop zone */}
+                  <div
+                    className={`mt-5 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-8 text-center transition-colors ${
+                      uploadingRemessa
+                        ? "border-primary/40 bg-primary/5"
+                        : "border-glass-border bg-background/60 hover:border-primary/40 hover:bg-primary/5"
+                    }`}
+                    onClick={() => !uploadingRemessa && remessaInputRef.current?.click()}
+                    onDragOver={(e) => { e.preventDefault(); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const file = e.dataTransfer.files?.[0] ?? null;
+                      if (file) void handleRemessaBolsaInput(file);
+                    }}
+                  >
+                    <input
+                      ref={remessaInputRef}
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      className="hidden"
+                      onChange={(event) => void handleRemessaBolsaInput(event.target.files?.[0] ?? null)}
+                    />
+                    {uploadingRemessa ? (
+                      <Loader2 className="h-7 w-7 animate-spin text-primary" />
+                    ) : (
+                      <Upload className="h-7 w-7 text-muted-foreground" />
+                    )}
+                    <p className="text-sm font-medium text-foreground">
+                      {uploadingRemessa ? "Extraindo remessa..." : "Arraste o PDF da remessa aqui"}
+                    </p>
+                    {!uploadingRemessa && (
+                      <p className="text-xs text-muted-foreground">ou clique para selecionar</p>
+                    )}
+                  </div>
+                  {remessasPendentes.length > 0 ? (
+                    <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>Remessa(s) ainda pendente(s): {remessasPendentes.join(", ")}.</span>
+                    </div>
+                  ) : null}
+                </section>
+
+                {remessasBolsa.length === 0 ? (
+                  <div className="rounded-2xl border border-glass-border/70 bg-background/60 px-5 py-10 text-center">
+                    <FileUp className="mx-auto h-8 w-8 text-muted-foreground" />
+                    <p className="mt-3 text-sm font-semibold text-foreground">Nenhuma remessa carregada</p>
+                    <p className="mt-1 text-sm text-muted-foreground">Anexe a remessa da bolsa para visualizar os bolsistas.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-5">
+                    {remessasBolsa.map((remessa) => (
+                      <section key={remessa.numeroRemessa} className="overflow-hidden rounded-2xl border border-glass-border/70 bg-background/65">
+                        <div className="border-b border-glass-border bg-secondary/25 px-5 py-4">
+                          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                                Remessa {remessa.numeroRemessa}
+                              </p>
+                              <h3 className="mt-1 text-lg font-semibold text-foreground">
+                                {remessa.bolsa || "Bolsa"} {remessa.codigoBolsa ? `(${remessa.codigoBolsa})` : ""}
+                              </h3>
+                              <p className="mt-1 text-sm text-muted-foreground">
+                                {remessa.data || "—"} · {remessa.mesAno || "—"} · {remessa.nomeArquivo}
+                              </p>
+                            </div>
+                            <div className="flex flex-wrap gap-2 text-sm">
+                              <span className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border bg-background px-2.5 py-1.5 font-semibold text-foreground">
+                                <Users className="h-3.5 w-3.5 text-muted-foreground" />
+                                {remessa.totais.quantidade} bolsistas
+                              </span>
+                              <span className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border bg-background px-2.5 py-1.5 font-semibold text-emerald-700">
+                                <Banknote className="h-3.5 w-3.5" />
+                                {formatCurrency(remessa.totais.valorNumerico)}
+                              </span>
+                            </div>
+                          </div>
+                          {remessa.alertas?.length ? (
+                            <div className="mt-3 space-y-2">
+                              {remessa.alertas.map((alerta) => (
+                                <div key={alerta} className="flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                                  <span>{alerta}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="table-scroll-surface max-h-[520px] overflow-auto">
+                          <table className="min-w-[980px] w-full text-sm">
+                            <thead className="sticky top-0 z-10 bg-muted">
+                              <tr className="border-b border-glass-border text-left text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                                <th className="px-4 py-3">Nome</th>
+                                <th className="px-4 py-3">CPF</th>
+                                <th className="px-4 py-3">Banco</th>
+                                <th className="px-4 py-3">Agência</th>
+                                <th className="px-4 py-3">Conta</th>
+                                <th className="px-4 py-3 text-right">Valor</th>
+                                <th className="px-4 py-3">LC</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {remessa.bolsistas.map((bolsista) => (
+                                <tr key={`${remessa.numeroRemessa}-${bolsista.cpf}`} className="border-b border-glass-border/60 last:border-0 odd:bg-background/35 even:bg-background/10">
+                                  <td className="max-w-[320px] truncate px-4 py-3 font-medium text-foreground" title={bolsista.nome}>{bolsista.nome}</td>
+                                  <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{bolsista.cpf}</td>
+                                  <td className="px-4 py-3">{bolsista.banco}</td>
+                                  <td className="px-4 py-3">{bolsista.agencia}</td>
+                                  <td className="px-4 py-3 font-mono text-xs">{bolsista.conta}</td>
+                                  <td className="px-4 py-3 text-right font-semibold text-foreground">{formatCurrency(bolsista.valorNumerico)}</td>
+                                  <td className="px-4 py-3 text-muted-foreground">{[bolsista.situacaoLc, bolsista.lc].filter(Boolean).join(" ") || "—"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
             <NotasFiscaisTable
               notasFiscais={notasFiscais}
               empenhos={empenhos}
@@ -1166,26 +1435,106 @@ function ConferenciaPageContent() {
                 setStatusMensagem("Logs limpos.");
               }}
             />
+            )}
           </div>
 
           {/* Right Column - Fila de Execução */}
           <div className="space-y-6 min-[1180px]:min-w-[270px]">
-            <FilaExecucao
-              etapas={etapas}
-              deducoes={deducoes}
-              apuracaoDate={dates.apuracao}
-              vencimentoDate={dates.vencimento}
-              isExecutando={isExecutando}
-              etapaAtivaId={etapaAtivaId}
-              deducaoAtivaId={deducaoAtivaId}
-              paradaSolicitada={paradaSolicitada}
-              statusMensagem={statusMensagem}
-              onExecutarEtapa={handleExecutarEtapa}
-              onExecutarDeducao={handleExecutarDeducao}
-              onExecutarTudo={handleExecutarTudo}
-              onApropriarSIAFI={handleApropriarSIAFI}
-              onPararExecucao={handlePararExecucao}
-            />
+            {documentoBolsa ? (
+              <section className="overflow-hidden rounded-2xl border border-glass-border/70 bg-background/65">
+                {/* Header */}
+                <div className="border-b border-glass-border bg-secondary/25 px-5 py-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Etapas</p>
+                  <h3 className="mt-1 text-base font-semibold text-foreground">Lançamento SIAFI</h3>
+                </div>
+
+                {/* Step cards */}
+                <div className="space-y-2 p-4">
+                  {/* Step 1: Gerar LC(s) */}
+                  <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-start gap-3 rounded-xl border border-primary/20 bg-primary/5 px-3 py-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-bold text-primary">1</div>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-foreground">
+                          {remessasBolsa.length > 1 ? "Gerar LCs" : "Gerar LC"}
+                        </p>
+                        <span className="inline-flex rounded-full border border-glass-border bg-background/70 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                          Aguardando
+                        </span>
+                      </div>
+                      <GlassButton
+                        size="sm"
+                        variant="secondary"
+                        className="mt-2"
+                        onClick={() => void handleAbrirSiafi()}
+                        disabled={abrindoChrome}
+                      >
+                        {abrindoChrome ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                        {abrindoChrome ? "Abrindo..." : "Executar"}
+                      </GlassButton>
+                    </div>
+                  </div>
+
+                  {/* Step 2: Registro no SIAFI */}
+                  <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-start gap-3 rounded-xl border border-glass-border/50 bg-background/40 px-3 py-3 opacity-60">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-bold text-muted-foreground">2</div>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-muted-foreground">Registro no SIAFI</p>
+                        <span className="inline-flex rounded-full border border-glass-border bg-background/70 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                          Aguardando
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Footer */}
+                <div className="border-t border-glass-border px-4 pb-4 pt-3">
+                  <GlassButton
+                    variant="success"
+                    size="lg"
+                    className="w-full"
+                    onClick={() => void handleAbrirSiafi()}
+                    disabled={abrindoChrome}
+                  >
+                    {abrindoChrome ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
+                    {abrindoChrome ? "Abrindo..." : "Executar tudo"}
+                  </GlassButton>
+                  <div className="mt-3 space-y-1.5 rounded-xl border border-glass-border bg-secondary/20 px-3 py-2.5 text-sm">
+                    <div className="flex justify-between gap-3">
+                      <span className="text-muted-foreground">Remessas</span>
+                      <span className="font-semibold text-foreground">{remessasBolsa.length}</span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-muted-foreground">Bolsistas</span>
+                      <span className="font-semibold text-foreground">{totalBolsistas}</span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-muted-foreground">Valor total</span>
+                      <span className="font-semibold text-emerald-700">{formatCurrency(totalRemessas)}</span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            ) : (
+              <FilaExecucao
+                etapas={etapas}
+                deducoes={deducoes}
+                apuracaoDate={dates.apuracao}
+                vencimentoDate={dates.vencimento}
+                isExecutando={isExecutando}
+                etapaAtivaId={etapaAtivaId}
+                deducaoAtivaId={deducaoAtivaId}
+                paradaSolicitada={paradaSolicitada}
+                statusMensagem={statusMensagem}
+                onExecutarEtapa={handleExecutarEtapa}
+                onExecutarDeducao={handleExecutarDeducao}
+                onExecutarTudo={handleExecutarTudo}
+                onApropriarSIAFI={handleApropriarSIAFI}
+                onPararExecucao={handlePararExecucao}
+              />
+            )}
             <LogExecucaoPanel
               logs={logs}
               onLimpar={() => {

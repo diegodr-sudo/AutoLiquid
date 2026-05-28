@@ -126,8 +126,9 @@ export function TabelasModal({
             : "Nao foi possivel carregar a tabela selecionada."
         );
       } finally {
-        if (cancelled) return;
-        setLoadingTabs((current) => ({ ...current, [tab]: false }));
+        if (!cancelled) {
+          setLoadingTabs((current) => ({ ...current, [tab]: false }));
+        }
       }
     };
 
@@ -230,7 +231,7 @@ export function TabelasModal({
   return (
     <div className="fixed inset-0 z-[200] overflow-hidden">
       <div
-        className="absolute inset-0 bg-background/75 backdrop-blur-sm"
+        className="absolute inset-0 bg-background/90"
         onClick={onClose}
       />
 
@@ -361,13 +362,13 @@ export function TabelasModal({
           ) : currentDataset ? (
             <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-glass-border bg-background/65">
               {isActiveTabLoading ? (
-                <div className="pointer-events-none absolute right-3 top-3 z-20 rounded-full border border-glass-border bg-background/90 px-3 py-1 text-xs font-medium text-muted-foreground shadow-sm backdrop-blur">
+                <div className="pointer-events-none absolute right-3 top-3 z-20 rounded-full border border-glass-border bg-background px-3 py-1 text-xs font-medium text-muted-foreground shadow-sm">
                   Atualizando...
                 </div>
               ) : null}
-            <div className="min-h-0 h-full overflow-x-auto overflow-y-scroll overscroll-contain [touch-action:pan-y]">
-              <table className="min-w-full">
-                <thead className="sticky top-0 z-10 bg-background/95 backdrop-blur">
+            <div className="scrollable-surface table-scroll-surface min-h-0 h-full overflow-x-auto overflow-y-scroll overscroll-contain [touch-action:pan-y]">
+              <table className="min-w-[1120px]">
+                <thead className="sticky top-0 z-10 bg-background">
                   <tr className="border-b border-glass-border">
                     <th className="w-12 px-3 py-2 text-left text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                       #

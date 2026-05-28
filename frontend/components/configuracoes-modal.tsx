@@ -48,6 +48,7 @@ import {
   updateAuthUsuario,
   verificarAtualizacao,
   instalarAtualizacaoTauri,
+  isDevRuntime,
   isTauriRuntime,
   abrirUrl,
   AUTO_LIQUID_REPO,
@@ -231,7 +232,8 @@ export function ConfiguracoesModal({
   const [erroUsuarios, setErroUsuarios] = useState("");
   const [erroDatasGlobais, setErroDatasGlobais] = useState("");
   const [mensagemDatasGlobais, setMensagemDatasGlobais] = useState("");
-  const atualizacaoAutomaticaDisponivel = isTauriRuntime();
+  const modoDesenvolvedor = isDevRuntime();
+  const atualizacaoAutomaticaDisponivel = isTauriRuntime() && !modoDesenvolvedor;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -444,6 +446,19 @@ export function ConfiguracoesModal({
   };
 
   const handleVerificarUpdate = async () => {
+    if (modoDesenvolvedor) {
+      setErro("");
+      setInfoUpdate(null);
+      setResultadoUpdate(null);
+      setProgressoUpdate({
+        title: "Modo desenvolvedor",
+        detail: "A verificação automática fica desligada no dev para não comparar a tag publicada com a versão local.",
+        percent: 100,
+        tone: "info",
+      });
+      return;
+    }
+
     setVerificandoUpdate(true);
     setErro("");
     setResultadoUpdate(null);
@@ -704,7 +719,7 @@ export function ConfiguracoesModal({
   return (
     <div className="fixed inset-0 z-[200] overflow-y-auto">
       <div
-        className="absolute inset-0 bg-background/70 backdrop-blur-sm"
+        className="absolute inset-0 bg-background/90"
         onClick={onClose}
       />
 
@@ -766,7 +781,7 @@ export function ConfiguracoesModal({
           </div>
 
           {/* Conteúdo */}
-          <div className="min-h-0 flex-1 overflow-y-scroll overscroll-contain px-5 py-4 [touch-action:pan-y]">
+          <div className="scrollable-surface min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 [touch-action:pan-y]">
             {loading ? (
               <div className="rounded-xl border border-glass-border bg-secondary/40 px-4 py-8 text-center text-sm text-muted-foreground">
                 Carregando configurações...
@@ -930,9 +945,11 @@ export function ConfiguracoesModal({
                             <div>
                               <h3 className="text-sm font-semibold text-foreground">Atualização</h3>
                               <p className="mt-1 text-sm text-muted-foreground">
-                                {atualizacaoAutomaticaDisponivel
-                                  ? "Instala novas versões automaticamente pelo app instalado."
-                                  : "Verifique se há uma nova versão disponível."}
+                                {modoDesenvolvedor
+                                  ? "Atualizações ficam desligadas no modo desenvolvedor."
+                                  : atualizacaoAutomaticaDisponivel
+                                    ? "Instala novas versões automaticamente pelo app instalado."
+                                    : "Verifique se há uma nova versão disponível."}
                               </p>
                             </div>
                             <GlassButton
@@ -948,8 +965,14 @@ export function ConfiguracoesModal({
                                 <RefreshCw className="h-4 w-4" />
                               )}
                               {verificandoUpdate
-                                ? atualizacaoAutomaticaDisponivel ? "Atualizando..." : "Verificando..."
-                                : atualizacaoAutomaticaDisponivel ? "Verificar e instalar" : "Verificar"}
+                                ? atualizacaoAutomaticaDisponivel
+                                  ? "Atualizando..."
+                                  : "Verificando..."
+                                : modoDesenvolvedor
+                                  ? "Modo dev"
+                                  : atualizacaoAutomaticaDisponivel
+                                    ? "Verificar e instalar"
+                                    : "Verificar"}
                             </GlassButton>
                           </div>
 

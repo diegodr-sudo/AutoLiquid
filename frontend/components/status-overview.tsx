@@ -10,6 +10,7 @@ import {
   Receipt,
   ShieldAlert,
   Wallet,
+  CheckCheck,
 } from "lucide-react";
 
 import { GlassCard } from "@/components/glass-card";
@@ -25,6 +26,10 @@ interface StatusOverviewProps {
   apuracaoDate?: string;
   vencimentoDate?: string;
   onBack?: () => void;
+  /** Entidades federais (universidades, institutos etc.) nunca são optantes por Simples — suprime o badge. */
+  isFederalEntity?: boolean;
+  /** Callback do botão "Concluir" exibido ao lado de Voltar. Se ausente, o botão não aparece. */
+  onConcluir?: () => void;
 }
 
 function formatCurrency(value: number): string {
@@ -52,27 +57,32 @@ export function StatusOverview({
   apuracaoDate,
   vencimentoDate,
   onBack,
+  isFederalEntity = false,
+  onConcluir,
 }: StatusOverviewProps) {
+  // Entidades federais nunca são optantes por Simples — badge não se aplica.
   const simplesStatus =
-    optanteSimples === hasDdf055
-      ? optanteSimples
-        ? {
-            tone: "border-amber-500/25 bg-amber-500/10 text-amber-700",
-            title: "Optante com DDF055 presente",
-            description:
-              "A retenção federal DDF055 (IR, CSLL, COFINS, PIS) foi identificada em empresa optante pelo Simples Nacional.",
-          }
-        : {
-            tone: "border-amber-500/25 bg-amber-500/10 text-amber-700",
-            title: "Não optante e sem DDF055",
-            description:
-              "A empresa não consta como optante pelo Simples e nenhuma retenção federal DDF055 foi identificada.",
-          }
-      : null;
+    isFederalEntity
+      ? null
+      : optanteSimples === hasDdf055
+        ? optanteSimples
+          ? {
+              tone: "border-amber-500/25 bg-amber-500/10 text-amber-700",
+              title: "Optante com DDF055 presente",
+              description:
+                "A retenção federal DDF055 (IR, CSLL, COFINS, PIS) foi identificada em empresa optante pelo Simples Nacional.",
+            }
+          : {
+              tone: "border-amber-500/25 bg-amber-500/10 text-amber-700",
+              title: "Não optante e sem DDF055",
+              description:
+                "A empresa não consta como optante pelo Simples e nenhuma retenção federal DDF055 foi identificada.",
+            }
+        : null;
 
   return (
     <GlassCard className="px-5 py-4">
-      {/* Linha 1: Voltar + título + status + datas */}
+      {/* Linha 1: Voltar + Concluir + título + status + datas */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {onBack ? (
           <GlassButton variant="ghost" size="sm" onClick={onBack}>
@@ -86,6 +96,13 @@ export function StatusOverview({
               Voltar
             </GlassButton>
           </Link>
+        )}
+
+        {onConcluir && (
+          <GlassButton variant="success" size="sm" onClick={onConcluir}>
+            <CheckCheck className="h-4 w-4" />
+            Concluir
+          </GlassButton>
         )}
 
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">

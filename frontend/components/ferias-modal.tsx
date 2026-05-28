@@ -289,7 +289,7 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
   return (
     <div
       ref={backdropRef}
-      className="fixed inset-0 z-[200] flex items-center justify-center overflow-hidden bg-black/40 px-2 py-2 backdrop-blur-sm"
+      className="fixed inset-0 z-[200] flex items-center justify-center overflow-hidden bg-black/45 px-2 py-2"
       onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}
     >
       <div className="flex max-h-[calc(100dvh-16px)] w-full max-w-[580px] flex-col overflow-hidden rounded-2xl border border-glass-border bg-background shadow-2xl">
