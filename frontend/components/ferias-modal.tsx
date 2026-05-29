@@ -317,17 +317,21 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                 </button>
               ))}
             </div>
-            <button
-              type="button"
-              onClick={carregarDados}
-              disabled={loadingData}
-              className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary/60 hover:text-foreground disabled:opacity-40"
-              title="Recarregar dados"
-            >
-              <RefreshCw className={`h-4 w-4 ${loadingData ? "animate-spin" : ""}`} />
-            </button>
-            <Popover open={rocketMenuOpen} onOpenChange={setRocketMenuOpen}>
-              <Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={carregarDados}
+                  disabled={loadingData}
+                  className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary/60 hover:text-foreground disabled:opacity-40"
+                >
+                  <RefreshCw className={`h-4 w-4 ${loadingData ? "animate-spin" : ""}`} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="z-[210]">Recarregar dados</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <Popover open={rocketMenuOpen} onOpenChange={setRocketMenuOpen}>
                 <TooltipTrigger asChild>
                   <PopoverTrigger asChild>
                     <button
@@ -339,9 +343,7 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                     </button>
                   </PopoverTrigger>
                 </TooltipTrigger>
-                <TooltipContent>Comandos Rocket.Chat</TooltipContent>
-              </Tooltip>
-              <PopoverContent align="end" sideOffset={8} className="w-64 p-1.5">
+                <PopoverContent align="end" sideOffset={8} className="z-[210] w-64 p-1.5">
                 <button
                   type="button"
                   onClick={() => void handleCopyCommand(rocketOutCommand)}
@@ -359,7 +361,9 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                   Copiar comando de Retorno
                 </button>
               </PopoverContent>
-            </Popover>
+              </Popover>
+              <TooltipContent className="z-[210]">Comandos Rocket.Chat</TooltipContent>
+            </Tooltip>
             <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary/60 hover:text-foreground">
               <X className="h-4 w-4" />
             </button>
@@ -663,10 +667,15 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                               {a.obs && <span className="ml-2 italic">· {a.obs}</span>}
                             </p>
                           </div>
-                          <button type="button" onClick={() => handleDeleteAusencia(a.id)}
-                            className="shrink-0 rounded-lg p-1.5 text-muted-foreground/40 hover:bg-destructive/10 hover:text-destructive" title="Remover">
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button type="button" onClick={() => handleDeleteAusencia(a.id)}
+                                className="shrink-0 rounded-lg p-1.5 text-muted-foreground/40 hover:bg-destructive/10 hover:text-destructive">
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent className="z-[210]">Remover ausência</TooltipContent>
+                          </Tooltip>
                         </div>
                       );
                     })}
@@ -701,15 +710,19 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                         <span className="block truncate text-[11px] text-muted-foreground">{s.nomeCompleto}</span>
                       ) : null}
                     </div>
+                    <Tooltip>
+                    <TooltipTrigger asChild>
                     <button
                       type="button"
                       onClick={() => setEditServIdx(editServIdx === idx ? null : idx)}
                       className="flex items-center gap-1.5 rounded-lg border border-glass-border px-2.5 py-1 text-[11px] text-muted-foreground hover:bg-secondary/60"
-                      title="Trocar cor"
                     >
                       <span className="h-3 w-3 rounded-full border border-white/30" style={{ background: s.cor }} />
                       <Pencil className="h-3 w-3" />
                     </button>
+                    </TooltipTrigger>
+                    <TooltipContent className="z-[210]">Trocar cor</TooltipContent>
+                    </Tooltip>
                     {editServIdx === idx && (
                       <div className="absolute right-4 top-12 z-10 rounded-xl border border-glass-border bg-background p-3 shadow-xl">
                         <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">

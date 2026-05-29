@@ -370,7 +370,7 @@ export function NotasFiscaisTable({
               compact
               headers={["#", "Empenho", "Sit.", "Natureza", "Rec.", "Valor"]}
               headerTitles={["", "Número do Empenho", "Situação", "Natureza da Despesa", "Recurso", "Valor Liquidado"]}
-              className="overflow-x-hidden"
+              className="overflow-x-auto"
             >
               {empenhos.map((empenho, index) => {
                 // Usa o valor individual extraído do PDF; se ausente, divide o bruto igualmente

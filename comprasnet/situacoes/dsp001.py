@@ -56,6 +56,8 @@ def _preencher_situacao_DSP001(
                 "xpath=//*[normalize-space(text())='Conta de Contrato']"
                 "/following::input[1]"
             ).first
+            # Aguarda o campo aparecer via AJAX após selecionar SIM
+            campo_cc.wait_for(state="visible", timeout=6000)
             _preencher_campo_mascarado_com_retry(
                 pagina, campo_cc, conta_contrato, erros,
                 descricao="Conta de Contrato",

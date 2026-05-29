@@ -124,6 +124,35 @@ def executar_pipeline(
     ]
 
 
+def executar_pipeline_transacional(
+    statements: list[tuple[str, list[Any] | tuple[Any, ...] | None]],
+    *,
+    chunk_size: int = 500,
+    timeout: float = 60,
+) -> list[dict[str, Any]]:
+    """Executa statements em lote dentro de transações explícitas (BEGIN/COMMIT).
+
+    Elimina os database locks causados por N auto-commits individuais — cada
+    statement sem BEGIN/COMMIT abre e fecha uma transação própria no SQLite,
+    o que causa bloqueios de dezenas de segundos com grandes volumes.
+
+    Para datasets grandes, divide em chunks de `chunk_size` statements, cada
+    chunk numa transação própria. O primeiro chunk deve conter o DELETE (se
+    houver), e os subsequentes apenas INSERTs.
+    """
+    if not statements:
+        return []
+    results: list[dict[str, Any]] = []
+    for start in range(0, len(statements), chunk_size):
+        chunk = statements[start : start + chunk_size]
+        # Encapsula cada chunk em BEGIN / COMMIT para garantir escrita atômica
+        txn: list[tuple[str, list[Any] | tuple[Any, ...] | None]] = (
+            [("BEGIN", None)] + chunk + [("COMMIT", None)]
+        )
+        results.extend(executar_pipeline(txn, timeout=timeout))
+    return results
+
+
 def _cell_value(cell: Any) -> Any:
     if isinstance(cell, dict):
         if cell.get("type") == "null":
@@ -180,6 +209,8 @@ def garantir_schema_cache(*, timeout: float = 10) -> None:
             ("""create table if not exists documentos_processados (id text primary key, payload text not null, atualizado_em text default current_timestamp)""", None),
             ("""create table if not exists datas_globais (id integer primary key check (id = 1), vencimento_pagamento text, data_apuracao text, atualizado_em text default current_timestamp)""", None),
             ("""create table if not exists contrato_ic_de_para (sarf text primary key, ig text not null, cnpj text, razao_social text, atualizado_em text default current_timestamp)""", None),
+            ("""create index if not exists idx_contrato_ic_ig on contrato_ic_de_para(ig)""", None),
+            ("""create index if not exists idx_contrato_ic_cnpj on contrato_ic_de_para(cnpj)""", None),
             ("""create table if not exists vpd_de_para (chave text primary key, natureza text not null, natureza_base text, situacao_dsp text, situacao_norm text, vpd text not null, atualizado_em text default current_timestamp)""", None),
             ("""create index if not exists idx_vpd_de_para_natureza on vpd_de_para(natureza, situacao_norm)""", None),
             ("""create index if not exists idx_vpd_de_para_base on vpd_de_para(natureza_base, situacao_norm)""", None),
@@ -187,11 +218,9 @@ def garantir_schema_cache(*, timeout: float = 10) -> None:
             ("""create table if not exists servidores (id integer primary key autoincrement, nome text not null, login text unique, email text, setor text, ativo integer not null default 1)""", None),
             ("""create table if not exists servidores_config (nome text primary key, nome_completo text, cor text, ordem integer default 0, criado_em text default current_timestamp)""", None),
             ("""create table if not exists tabelas_operacionais (chave text primary key, dados text not null, atualizado_em text default current_timestamp)""", None),
-            ("""create table if not exists regras_operacionais (chave text primary key, dados text not null, ativo integer not null default 1, atualizado_em text default current_timestamp)""", None),
             ("""create table if not exists processos (id integer primary key autoincrement, numero_processo text not null unique, cnpj text, fornecedor text, contrato text, natureza text, tipo_liquidacao text, optante_simples integer, simples_consultado_em text, atualizado_em text default current_timestamp)""", None),
             ("""create index if not exists idx_processos_cnpj on processos(cnpj)""", None),
             ("""create index if not exists idx_processos_contrato on processos(contrato)""", None),
-            ("""create index if not exists idx_processos_numero on processos(numero_processo)""", None),
             ("""create table if not exists execucoes (id integer primary key autoincrement, processo_id integer not null, servidor_id integer, documento_id text unique, data_execucao text default current_timestamp, bruto real default 0, deducoes real default 0, liquido real default 0, status text, possui_divergencia integer default 0, qtd_notas integer default 0, qtd_deducoes integer default 0, exige_intervencao_manual integer default 0, lf_numero text, ugr_numero text, vencimento_documento text, usar_conta_pdf integer default 1, conta_banco text, conta_agencia text, conta_conta text, observacoes text, vpd_manual text, vpd_informado_usuario integer default 0, empenhos_json text default '[]')""", None),
             ("""create index if not exists idx_execucoes_processo on execucoes(processo_id, data_execucao)""", None),
             ("""create index if not exists idx_execucoes_data on execucoes(data_execucao)""", None),
@@ -201,10 +230,6 @@ def garantir_schema_cache(*, timeout: float = 10) -> None:
             ("""create index if not exists idx_pendencias_execucao on execucao_pendencias(execucao_id)""", None),
             ("""create table if not exists notas_fiscais_execucao (id integer primary key autoincrement, execucao_id integer not null, numero_nota text, tipo text, emissao text, ateste text, valor real default 0)""", None),
             ("""create index if not exists idx_notas_execucao on notas_fiscais_execucao(execucao_id)""", None),
-            ("""create table if not exists bolsistas (id integer primary key autoincrement, documento_id text, numero_processo text, solicitacao_pagamento text, numero_remessa text not null, codigo_bolsa text, bolsa text, data_remessa text, nome text not null, cpf text not null, banco text, agencia text, conta text, valor real default 0, rp_gerada text, payload text not null default '{}', atualizado_em text default current_timestamp)""", None),
-            ("""create index if not exists idx_bolsistas_documento on bolsistas(documento_id, numero_remessa)""", None),
-            ("""create index if not exists idx_bolsistas_cpf on bolsistas(cpf)""", None),
-            ("""create index if not exists idx_bolsistas_remessa on bolsistas(numero_remessa)""", None),
             ("""create table if not exists deducoes_execucao (id integer primary key autoincrement, execucao_id integer not null, codigo text, siafi text, tipo text, valor real default 0, base_calculo real default 0, status text)""", None),
             ("""create index if not exists idx_deducoes_execucao on deducoes_execucao(execucao_id)""", None),
             ("""create table if not exists liquidacao_registros (documento_id text primary key, numero_processo text, servidor_nome text, servidor_username text, finalizada integer not null default 0, tipo_documento text, numero_documento text, dificuldade integer, registrado_em text default current_timestamp)""", None),
@@ -213,7 +238,6 @@ def garantir_schema_cache(*, timeout: float = 10) -> None:
             ("""create index if not exists idx_empenhos_processo on empenhos(processo_id)""", None),
             ("""create index if not exists idx_empenhos_numero on empenhos(numero)""", None),
             ("""create table if not exists fila_processos_atual (chave text primary key, numero_processo text, sol_pagamento text, protocolo text, competencia text, dados text not null default '{}', responsavel_manual text, responsavel_manual_por text, responsavel_manual_em text, concluido integer not null default 0, concluido_por text, concluido_em text, presente integer not null default 1, atualizado_em text default current_timestamp)""", None),
-            ("""create index if not exists idx_fila_atual_presente on fila_processos_atual(presente, competencia, numero_processo)""", None),
             ("""create index if not exists idx_fila_atual_presente_ordem on fila_processos_atual(presente, competencia, numero_processo, chave)""", None),
             ("""create table if not exists fila_processos_historico (chave text primary key, numero_processo text, sol_pagamento text, protocolo text, competencia text, dados text not null default '{}', responsavel_manual text, concluido integer not null default 0, presente integer not null default 0, primeiro_visto_em text, ultimo_visto_em text, saiu_da_fila_em text, retornou_em text, atualizado_em text default current_timestamp)""", None),
             ("""create index if not exists idx_fila_historico_numero on fila_processos_historico(numero_processo, ultimo_visto_em)""", None),
@@ -221,7 +245,6 @@ def garantir_schema_cache(*, timeout: float = 10) -> None:
             ("""create table if not exists fila_processos_alertas (id integer primary key autoincrement, chave text not null, numero_processo text, sol_pagamento text, mensagem text not null, autor text, ativo integer not null default 1, criado_em text default current_timestamp)""", None),
             ("""create index if not exists idx_fila_alertas_chave on fila_processos_alertas(chave, ativo, criado_em)""", None),
             ("""create index if not exists idx_fila_alertas_numero on fila_processos_alertas(numero_processo, ativo, criado_em)""", None),
-            ("""create index if not exists idx_fila_alertas_ativo on fila_processos_alertas(ativo, criado_em)""", None),
             ("""create table if not exists ausencias (id text primary key, servidor text not null, tipo text not null, inicio text not null, fim text not null, obs text)""", None),
         ]
     existing_result = executar(
@@ -266,12 +289,10 @@ def garantir_schema_fila_cache(*, timeout: float = 5) -> None:
     statements = [
         ("""create table if not exists cache_snapshots (chave text primary key, payload text not null, atualizado_em text)""", None),
         ("""create table if not exists fila_processos_atual (chave text primary key, numero_processo text, sol_pagamento text, protocolo text, competencia text, dados text not null default '{}', responsavel_manual text, responsavel_manual_por text, responsavel_manual_em text, concluido integer not null default 0, concluido_por text, concluido_em text, presente integer not null default 1, atualizado_em text default current_timestamp)""", None),
-        ("""create index if not exists idx_fila_atual_presente on fila_processos_atual(presente, competencia, numero_processo)""", None),
         ("""create index if not exists idx_fila_atual_presente_ordem on fila_processos_atual(presente, competencia, numero_processo, chave)""", None),
         ("""create table if not exists fila_processos_alertas (id integer primary key autoincrement, chave text not null, numero_processo text, sol_pagamento text, mensagem text not null, autor text, ativo integer not null default 1, criado_em text default current_timestamp)""", None),
         ("""create index if not exists idx_fila_alertas_chave on fila_processos_alertas(chave, ativo, criado_em)""", None),
         ("""create index if not exists idx_fila_alertas_numero on fila_processos_alertas(numero_processo, ativo, criado_em)""", None),
-        ("""create index if not exists idx_fila_alertas_ativo on fila_processos_alertas(ativo, criado_em)""", None),
     ]
     existing_result = executar(
         "select name from sqlite_master where type in ('table', 'index')",
@@ -710,7 +731,7 @@ def persistir_documento(snapshot: dict[str, Any]) -> int | None:
         statements.append(("insert into deducoes_execucao (execucao_id, codigo, siafi, tipo, valor, base_calculo, status) values (?, ?, ?, ?, ?, ?, ?)", [execucao_id, str(item.get("codigo") or "").strip() or None, str(item.get("siafi") or "").strip() or None, str(item.get("tipo") or "").strip() or None, _to_float(item.get("valor")), _to_float(item.get("baseCalculo")), str(item.get("status") or "aguardando").strip()]))
     for item in snapshot.get("empenhos", []) or []:
         statements.append(("insert into empenhos (processo_id, numero, situacao, recurso, natureza, valor, saldo) values (?, ?, ?, ?, ?, ?, ?)", [processo_id, str(item.get("numero") or "").strip() or None, str(item.get("situacao") or "").strip() or None, str(item.get("recurso") or "").strip() or None, str(item.get("natureza") or "").strip() or None, _to_float(item.get("valor")), _to_float(item.get("saldo"))]))
-    executar_pipeline(statements, timeout=20)
+    executar_pipeline_transacional(statements, chunk_size=500, timeout=30)
     return execucao_id
 
 
@@ -1091,9 +1112,12 @@ def _situacao_vpd_compativel(situacao_linha: str, situacao_alvo: str) -> bool:
 
 
 def salvar_vpd_de_para(rows: list[dict[str, Any]]) -> None:
-    """Recria o de/para global somente a partir da tabela operacional VPD."""
+    """Recria o de/para global somente a partir da tabela operacional VPD.
+
+    DELETE + batch INSERTs dentro de uma única transação para evitar locks.
+    """
     garantir_schema_cache(timeout=10)
-    statements: list[tuple[str, list[Any] | tuple[Any, ...] | None]] = [("delete from vpd_de_para", None)]
+    valid_rows: list[list[Any]] = []
     for index, row in enumerate(rows or []):
         if not isinstance(row, dict):
             continue
@@ -1105,24 +1129,32 @@ def salvar_vpd_de_para(rows: list[dict[str, Any]]) -> None:
         natureza_base = natureza.split(".")[0]
         situacao_norm = _normalizar_situacao_vpd(situacao)
         chave = f"{natureza}|{situacao_norm}|{index}"
+        valid_rows.append([chave, natureza, natureza_base, situacao, situacao_norm, vpd])
+
+    statements: list[tuple[str, list[Any] | tuple[Any, ...] | None]] = [
+        ("delete from vpd_de_para", None)
+    ]
+    for start in range(0, len(valid_rows), _BATCH_INSERT_SIZE):
+        chunk = valid_rows[start : start + _BATCH_INSERT_SIZE]
+        placeholders = ", ".join("(?, ?, ?, ?, ?, ?, current_timestamp)" for _ in chunk)
+        flat_args = [val for row_args in chunk for val in row_args]
         statements.append(
             (
-                """
-                insert into vpd_de_para
-                  (chave, natureza, natureza_base, situacao_dsp, situacao_norm, vpd, atualizado_em)
-                values (?, ?, ?, ?, ?, ?, current_timestamp)
-                """,
-                [chave, natureza, natureza_base, situacao, situacao_norm, vpd],
+                f"insert into vpd_de_para (chave, natureza, natureza_base, situacao_dsp, situacao_norm, vpd, atualizado_em) values {placeholders}",
+                flat_args,
             )
         )
-    executar_pipeline(statements, timeout=30)
+    executar_pipeline_transacional(statements, chunk_size=500, timeout=60)
     materializar_vpd_execucoes()
 
 
 def salvar_uorg_de_para(rows: list[dict[str, Any]]) -> None:
-    """Recria o de/para global somente a partir da tabela operacional UORG."""
+    """Recria o de/para global somente a partir da tabela operacional UORG.
+
+    DELETE + batch INSERTs dentro de uma única transação para evitar locks.
+    """
     garantir_schema_cache(timeout=10)
-    statements: list[tuple[str, list[Any] | tuple[Any, ...] | None]] = [("delete from uorg_de_para", None)]
+    valid_rows: list[list[Any]] = []
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -1131,13 +1163,22 @@ def salvar_uorg_de_para(rows: list[dict[str, Any]]) -> None:
         nome = str(row.get("nome") or "").strip()
         if not ugr or not uorg:
             continue
+        valid_rows.append([ugr, uorg, nome or None])
+
+    statements: list[tuple[str, list[Any] | tuple[Any, ...] | None]] = [
+        ("delete from uorg_de_para", None)
+    ]
+    for start in range(0, len(valid_rows), _BATCH_INSERT_SIZE):
+        chunk = valid_rows[start : start + _BATCH_INSERT_SIZE]
+        placeholders = ", ".join("(?, ?, ?, current_timestamp)" for _ in chunk)
+        flat_args = [val for row_args in chunk for val in row_args]
         statements.append(
             (
-                "insert into uorg_de_para (ugr, uorg, nome, atualizado_em) values (?, ?, ?, current_timestamp)",
-                [ugr, uorg, nome or None],
+                f"insert into uorg_de_para (ugr, uorg, nome, atualizado_em) values {placeholders}",
+                flat_args,
             )
         )
-    executar_pipeline(statements, timeout=30)
+    executar_pipeline_transacional(statements, chunk_size=500, timeout=60)
     materializar_siorg_execucoes()
 
 
@@ -1272,20 +1313,51 @@ def salvar_servidores_sorteio(rows: list[dict[str, Any]]) -> None:
     salvar_tabela_operacional(_QUEUE_SERVERS_CONFIG_KEY, rows)
 
 
+_BATCH_INSERT_SIZE = 50  # linhas por INSERT multi-valores (ajuste conforme payload médio)
+
+
 def salvar_contratos_ic_de_para(rows: list[dict[str, Any]]) -> None:
+    """Recria contrato_ic_de_para em uma única transação atômica.
+
+    Usa batch inserts (N linhas por INSERT) dentro de BEGIN/COMMIT para
+    evitar os locks de 25s causados por N auto-commits individuais.
+    """
     garantir_schema_cache(timeout=15)
     normalized: list[dict[str, str]] = []
-    statements: list[tuple[str, list[Any] | tuple[Any, ...] | None]] = [("delete from contrato_ic_de_para", None)]
+    valid_rows: list[list[Any]] = []
+
     for row in rows or []:
         sarf = str((row or {}).get("sarf") or "").strip()
         ig = str((row or {}).get("ig") or "").strip()
         if not sarf or not ig:
             continue
-        item = {"sarf": sarf, "ig": ig, "cnpj": str((row or {}).get("cnpj") or "").strip(), "razaoSocial": str((row or {}).get("razaoSocial") or "").strip()}
-        normalized.append(item)
-        statements.append(("insert into contrato_ic_de_para (sarf, ig, cnpj, razao_social, atualizado_em) values (?, ?, ?, ?, current_timestamp)", [item["sarf"], item["ig"], item["cnpj"], item["razaoSocial"]]))
-    statements.append(("insert into cache_snapshots (chave, payload, atualizado_em) values ('contrato_ic_de_para', ?, current_timestamp) on conflict(chave) do update set payload = excluded.payload, atualizado_em = excluded.atualizado_em", [json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))]))
-    executar_pipeline(statements, timeout=15)
+        cnpj = str((row or {}).get("cnpj") or "").strip()
+        razao = str((row or {}).get("razaoSocial") or "").strip()
+        normalized.append({"sarf": sarf, "ig": ig, "cnpj": cnpj, "razaoSocial": razao})
+        valid_rows.append([sarf, ig, cnpj, razao])
+
+    # Monta statements: DELETE + batch INSERTs + cache snapshot
+    statements: list[tuple[str, list[Any] | tuple[Any, ...] | None]] = [
+        ("delete from contrato_ic_de_para", None)
+    ]
+    for start in range(0, len(valid_rows), _BATCH_INSERT_SIZE):
+        chunk = valid_rows[start : start + _BATCH_INSERT_SIZE]
+        placeholders = ", ".join("(?, ?, ?, ?, current_timestamp)" for _ in chunk)
+        flat_args = [val for row_args in chunk for val in row_args]
+        statements.append(
+            (
+                f"insert into contrato_ic_de_para (sarf, ig, cnpj, razao_social, atualizado_em) values {placeholders}",
+                flat_args,
+            )
+        )
+    statements.append(
+        (
+            "insert into cache_snapshots (chave, payload, atualizado_em) values ('contrato_ic_de_para', ?, current_timestamp) on conflict(chave) do update set payload = excluded.payload, atualizado_em = excluded.atualizado_em",
+            [json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))],
+        )
+    )
+    # Uma única transação: DELETE + todos os INSERTs em lote
+    executar_pipeline_transacional(statements, chunk_size=500, timeout=60)
     aplicar_de_para_contratos_na_fila()
 
 
@@ -1507,7 +1579,7 @@ def salvar_snapshot_fila(rows: list[dict[str, Any]], updated_at: str | None) -> 
                 ],
             )
         )
-    executar_pipeline(statements, timeout=90)
+    executar_pipeline_transacional(statements, chunk_size=500, timeout=90)
 
 
 def materializar_sorteio_fila(servidores: list[dict[str, Any]] | None = None) -> int:
@@ -2071,6 +2143,139 @@ def obter_dashboard_historico(empresa: str = "", contrato: str = "", servidor: s
         "porContrato": [{"contrato": str(r.get("contrato") or "-"), "count": _to_int(r.get("count")), "valor": _to_float(r.get("valor"))} for r in por_contrato],
         "porMes": [{"mes": str(r.get("mes") or ""), "count": _to_int(r.get("count")), "valor": _to_float(r.get("valor"))} for r in por_mes],
     }
+
+
+# ── Bug Reports ───────────────────────────────────────────────────────────────
+
+_BUG_REPORTS_SCHEMA_OK = False
+
+
+def garantir_schema_bug_reports(*, timeout: float = 10) -> None:
+    global _BUG_REPORTS_SCHEMA_OK
+    if _BUG_REPORTS_SCHEMA_OK:
+        return
+    existing_result = executar(
+        "select name from sqlite_master where type in ('table', 'index')",
+        timeout=timeout,
+    )
+    existing = {str(row.get("name") or "").casefold() for row in _rows(existing_result)}
+    statements: list[tuple[str, list[Any] | tuple[Any, ...] | None]] = []
+    if "bug_reports" not in existing:
+        statements.append((
+            """create table if not exists bug_reports (
+                id integer primary key autoincrement,
+                pagina text,
+                descricao text not null,
+                contexto text,
+                campos_dom text,
+                erros_console text,
+                versao_app text,
+                servidor_nome text,
+                resolvido integer not null default 0,
+                criado_em text default current_timestamp,
+                resolvido_em text
+            )""",
+            None,
+        ))
+    if "idx_bug_reports_criado" not in existing:
+        statements.append((
+            "create index if not exists idx_bug_reports_criado on bug_reports(criado_em desc)",
+            None,
+        ))
+    if statements:
+        executar_pipeline(statements, timeout=timeout)
+    _BUG_REPORTS_SCHEMA_OK = True
+
+
+def salvar_bug_report(
+    *,
+    pagina: str = "",
+    descricao: str,
+    contexto: dict | None = None,
+    campos_dom: dict | None = None,
+    erros_console: list | None = None,
+    versao_app: str = "",
+    servidor_nome: str = "",
+) -> int:
+    garantir_schema_bug_reports(timeout=8)
+    result = executar(
+        """
+        insert into bug_reports
+            (pagina, descricao, contexto, campos_dom, erros_console, versao_app, servidor_nome)
+        values (?, ?, ?, ?, ?, ?, ?)
+        returning id
+        """,
+        [
+            str(pagina or "").strip() or None,
+            str(descricao or "").strip(),
+            json.dumps(contexto or {}, ensure_ascii=False) if contexto else None,
+            json.dumps(campos_dom or {}, ensure_ascii=False) if campos_dom else None,
+            json.dumps(erros_console or [], ensure_ascii=False) if erros_console else None,
+            str(versao_app or "").strip() or None,
+            str(servidor_nome or "").strip() or None,
+        ],
+        timeout=8,
+    )
+    return _first_returning_id(result)
+
+
+def listar_bug_reports(*, resolvido: bool | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    if not turso_configurado():
+        return []
+    garantir_schema_bug_reports(timeout=6)
+    filtro = ""
+    args: list[Any] = []
+    if resolvido is not None:
+        filtro = "where resolvido = ?"
+        args.append(1 if resolvido else 0)
+    result = executar(
+        f"""
+        select id, pagina, descricao, contexto, campos_dom, erros_console,
+               versao_app, servidor_nome, resolvido, criado_em, resolvido_em
+        from bug_reports
+        {filtro}
+        order by criado_em desc
+        limit ?
+        """,
+        [*args, limit],
+        timeout=8,
+    )
+    out = []
+    for row in _rows(result):
+        out.append({
+            "id": _to_int(row.get("id")),
+            "pagina": str(row.get("pagina") or ""),
+            "descricao": str(row.get("descricao") or ""),
+            "contexto": _json_loads(row.get("contexto"), {}),
+            "camposDom": _json_loads(row.get("campos_dom"), {}),
+            "errosConsole": _json_loads(row.get("erros_console"), []),
+            "versaoApp": str(row.get("versao_app") or ""),
+            "servidorNome": str(row.get("servidor_nome") or ""),
+            "resolvido": bool(_to_int(row.get("resolvido"))),
+            "criadoEm": str(row.get("criado_em") or ""),
+            "resolvidoEm": str(row.get("resolvido_em") or ""),
+        })
+    return out
+
+
+def resolver_bug_report(bug_id: int) -> bool:
+    garantir_schema_bug_reports(timeout=6)
+    executar(
+        "update bug_reports set resolvido = 1, resolvido_em = current_timestamp where id = ?",
+        [bug_id],
+        timeout=6,
+    )
+    return True
+
+
+def deletar_bug_report(bug_id: int) -> bool:
+    garantir_schema_bug_reports(timeout=6)
+    executar(
+        "delete from bug_reports where id = ?",
+        [bug_id],
+        timeout=6,
+    )
+    return True
 
 
 def importar_historico_postgres(postgres_service: Any) -> dict[str, int]:

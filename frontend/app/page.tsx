@@ -83,6 +83,7 @@ import {
   uploadPDF,
 } from "@/lib/data";
 import { readStoredAuthSession } from "@/lib/auth-store";
+import { parseDbTimestamp } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
 
 const INITIAL_STARTUP_STATE: BackendStartupProgress = {
@@ -597,8 +598,8 @@ function formatFirstNameLabel(value: string): string {
 function formatResponsavelTooltip(autor: string, alteradoEm: string): string {
   const parts: string[] = [];
   if (autor) parts.push(`Alterado por ${autor}`);
-  const parsed = alteradoEm ? new Date(alteradoEm) : null;
-  if (parsed && !Number.isNaN(parsed.getTime())) {
+  const parsed = alteradoEm ? parseDbTimestamp(alteradoEm) : null;
+  if (parsed) {
     parts.push(
       `em ${parsed.toLocaleDateString("pt-BR", {
         day: "2-digit",
@@ -636,8 +637,8 @@ function getQueueRawRowKey(row: Record<string, unknown>): string {
 }
 
 function formatAlertaCriadoEm(value?: string | null): string {
-  const parsed = value ? new Date(value) : null;
-  if (!parsed || Number.isNaN(parsed.getTime())) return "";
+  const parsed = value ? parseDbTimestamp(value) : null;
+  if (!parsed) return "";
   return parsed.toLocaleString("pt-BR", {
     day: "2-digit",
     month: "2-digit",
@@ -2984,7 +2985,9 @@ export default function HomePage() {
         setLoginUsername(savedSession?.username || "");
         if (savedSession && temRegistroLiquidacaoPendente()) {
           setAuthGateReady(false);
-          setActiveMainTab("liquidacao");
+          // Não redireciona para "liquidacao" no startup — o useEffect de
+          // aplicarRegistroPendente decide se exibe o modal (só quando o
+          // usuário clicou em Concluir, via flag sessionStorage).
           await auth.setSession(savedSession);
         }
       } catch {
@@ -3116,6 +3119,18 @@ export default function HomePage() {
     let ativo = true;
 
     const aplicarRegistroPendente = async (registro: RegistroLiquidacaoPendente) => {
+      // O modal de NP/nota só aparece quando o usuário clicou explicitamente em
+      // "Concluir processo". Se o app foi fechado e reaberto, ficamos na fila.
+      const vemDeConcluir = window.sessionStorage.getItem("autoliquid_vem_de_concluir");
+      if (!vemDeConcluir) {
+        // Não redireciona. Limpa o localStorage para não verificar de novo no
+        // próximo startup — será re-gravado quando o usuário abrir a conferência.
+        window.localStorage.removeItem(REGISTRO_LIQUIDACAO_PENDENTE_KEY);
+        return;
+      }
+      // Consome a flag imediatamente (um único uso por clique em Concluir).
+      window.sessionStorage.removeItem("autoliquid_vem_de_concluir");
+
       const ignorarDocumentoNestaSessao = window.sessionStorage.getItem(IGNORAR_RETORNO_PENDENCIA_SESSION_KEY);
       if (registro.documentoId && ignorarDocumentoNestaSessao === registro.documentoId) {
         return;
@@ -3914,6 +3929,14 @@ export default function HomePage() {
         onOpenDashboard={() => setIsDashboardOpen(true)}
         onOpenFerias={() => setIsFeriasOpen(true)}
         rocketChatUnreadCount={rocketChatUnreadCount}
+        bugReportContexto={{
+          apiDisponivel,
+          arquivo: selectedFile ? selectedFile.name : null,
+          tamanhoArquivo: selectedFile ? selectedFile.size : null,
+          apuracao: dates.apuracao,
+          vencimento: dates.vencimento,
+        }}
+        bugReportServidor={nomeUsuario ?? ""}
       />
 
       <DashboardModal
@@ -4149,7 +4172,7 @@ export default function HomePage() {
                     </div>
                     <p className="text-sm text-muted-foreground">
                       {filaProcessos?.updatedAt
-                        ? `Última atualização: ${new Date(filaProcessos.updatedAt).toLocaleString("pt-BR", {
+                        ? `Última atualização: ${(parseDbTimestamp(filaProcessos.updatedAt) ?? new Date(filaProcessos.updatedAt)).toLocaleString("pt-BR", {
                             day: "2-digit",
                             month: "2-digit",
                             year: "numeric",

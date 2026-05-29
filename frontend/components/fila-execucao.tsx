@@ -17,6 +17,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { GlassCard, GlassButton } from "./glass-card";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Deducao, EtapaExecucao } from "@/lib/data";
 import { cn } from "@/lib/utils";
 
@@ -167,7 +168,6 @@ export function FilaExecucao({
                   type="button"
                   onClick={() => onExecutarEtapa?.(etapa)}
                   disabled={!isClickable}
-                  title={onExecutarEtapa ? "Clique para executar apenas esta etapa" : undefined}
                   aria-label={`Etapa ${index + 1}: ${etapa.nome}. Status ${statusLabel}.`}
                   className={cn(
                     "grid w-full grid-cols-[2rem_minmax(0,1fr)] gap-3 rounded-xl border px-3 py-3 text-left transition-all",
@@ -260,11 +260,12 @@ export function FilaExecucao({
                               Recolhido - {formatCurrency(ded.valor)}
                             </p>
                           </div>
+                          <Tooltip>
+                          <TooltipTrigger asChild>
                           <button
                             type="button"
                             disabled={!dedClickable}
                             onClick={() => onExecutarDeducao?.(ded)}
-                            title="Executar apenas esta dedução"
                             className={cn(
                               "flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
                               ded.status === "concluido"
@@ -278,6 +279,9 @@ export function FilaExecucao({
                             <Play className="h-2.5 w-2.5" />
                             {ded.status === "concluido" ? "Refazer" : "Executar"}
                           </button>
+                          </TooltipTrigger>
+                          <TooltipContent>Executar apenas esta dedução</TooltipContent>
+                          </Tooltip>
                         </div>
                       );
                     })}
@@ -289,28 +293,36 @@ export function FilaExecucao({
         </div>
 
         <div className="mt-6 grid gap-2">
-          <GlassButton
-            variant="secondary"
-            className={cn("w-full", EXECUTION_GREEN_BUTTON_CLASS)}
-            aria-label={isExecutando ? "Executando todas as etapas" : "Executar todas as etapas"}
-            title="Executar todas as etapas em sequência"
-            onClick={onExecutarTudo}
-            disabled={isExecutando}
-          >
-            <Play className="h-4 w-4" />
-            {isExecutando ? "Executando..." : "Executar Tudo"}
-          </GlassButton>
-          <GlassButton
-            variant="ghost"
-            aria-label="Apropriar no SIAFI"
-            title="Enviar o documento atual para apropriação no SIAFI"
-            onClick={onApropriarSIAFI}
-            disabled={isExecutando}
-            className={cn("w-full border", EXECUTION_SIAFI_OUTLINE_CLASS)}
-          >
-            <Circle className="h-4 w-4" />
-            Apropriar SIAFI
-          </GlassButton>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <GlassButton
+                variant="secondary"
+                className={cn("w-full", EXECUTION_GREEN_BUTTON_CLASS)}
+                aria-label={isExecutando ? "Executando todas as etapas" : "Executar todas as etapas"}
+                onClick={onExecutarTudo}
+                disabled={isExecutando}
+              >
+                <Play className="h-4 w-4" />
+                {isExecutando ? "Executando..." : "Executar Tudo"}
+              </GlassButton>
+            </TooltipTrigger>
+            <TooltipContent>Executar todas as etapas em sequência</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <GlassButton
+                variant="ghost"
+                aria-label="Apropriar no SIAFI"
+                onClick={onApropriarSIAFI}
+                disabled={isExecutando}
+                className={cn("w-full border", EXECUTION_SIAFI_OUTLINE_CLASS)}
+              >
+                <Circle className="h-4 w-4" />
+                Apropriar SIAFI
+              </GlassButton>
+            </TooltipTrigger>
+            <TooltipContent>Enviar o documento atual para apropriação no SIAFI</TooltipContent>
+          </Tooltip>
         </div>
 
         {isExecutando && (

@@ -19,7 +19,6 @@ export function GlobalScopeIcon({
         <button
           type="button"
           aria-label={message}
-          title={message}
           className={[
             "inline-flex h-7 items-center justify-center gap-1.5 rounded-full border border-teal-500/25 bg-teal-500/10 px-2 text-xs font-medium text-teal-700 shadow-sm shadow-teal-950/5 transition-colors hover:border-teal-500/40 hover:bg-teal-500/15",
             label ? "min-w-0 pr-2.5" : "w-7 px-0",
@@ -50,7 +49,7 @@ export function GlobalScopeIcon({
         side="top"
         align="center"
         sideOffset={8}
-        className="z-[200] max-w-72 rounded-xl px-3 py-2 text-xs leading-5"
+        className="z-[210] max-w-72 rounded-xl px-3 py-2 text-xs leading-5"
       >
         {message}
       </TooltipContent>

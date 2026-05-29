@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Plus, Save, Search, Trash2, Upload, X } from "lucide-react";
 import { GlassButton, GlassCard } from "./glass-card";
 import { GlobalScopeIcon } from "./global-scope-icon";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   fetchTabela,
   saveTabela,
@@ -237,8 +238,8 @@ export function TabelasModal({
 
       <div className="relative flex min-h-full items-center justify-center p-2">
       <GlassCard
-        className="relative z-10 pointer-events-auto w-full max-w-[min(1120px,calc(100vw-16px))] overflow-hidden border-white/50"
-        contentClassName="flex max-h-[calc(100dvh-16px)] min-h-0 flex-col"
+        className="relative z-10 pointer-events-auto flex flex-col w-full max-w-[min(1120px,calc(100vw-16px))] max-h-[calc(100dvh-16px)] [overflow:clip] border-white/50"
+        contentClassName="flex min-h-0 flex-1 flex-col"
       >
         <div className="shrink-0 flex items-center justify-between border-b border-glass-border px-4 py-2.5">
           <div className="min-w-0">
@@ -304,14 +305,15 @@ export function TabelasModal({
           </div>
 
           {isDatasOnly ? null : (
-            <GlassButton
-              variant="secondary"
-              disabled
-              title="Sincronizacao via planilha ainda nao foi ligada na versao web"
-            >
-              <Upload className="h-4 w-4" />
-              Planilha
-            </GlassButton>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <GlassButton variant="secondary" disabled>
+                  <Upload className="h-4 w-4" />
+                  Planilha
+                </GlassButton>
+              </TooltipTrigger>
+              <TooltipContent className="z-[210]">Sincronização via planilha ainda não foi ligada na versão web</TooltipContent>
+            </Tooltip>
           )}
         </div>
 
@@ -350,7 +352,7 @@ export function TabelasModal({
           null
         )}
 
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-2.5">
+        <div className="flex min-h-0 flex-1 flex-col px-4 py-2.5">
           {!currentDataset && isActiveTabLoading ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               Carregando tabela...
@@ -360,7 +362,7 @@ export function TabelasModal({
               {erro}
             </div>
           ) : currentDataset ? (
-            <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-glass-border bg-background/65">
+            <div className="relative min-h-0 flex-1 rounded-2xl border border-glass-border bg-background/65" style={{ contain: "paint" }}>
               {isActiveTabLoading ? (
                 <div className="pointer-events-none absolute right-3 top-3 z-20 rounded-full border border-glass-border bg-background px-3 py-1 text-xs font-medium text-muted-foreground shadow-sm">
                   Atualizando...

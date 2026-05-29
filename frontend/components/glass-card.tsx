@@ -1,6 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/utils";
+import { forwardRef } from "react";
 import type { ReactNode } from "react";
 
 interface GlassCardProps {
@@ -80,13 +81,10 @@ interface GlassButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement>
   children: ReactNode;
 }
 
-export function GlassButton({
-  variant = "secondary",
-  size = "md",
-  children,
-  className,
-  ...props
-}: GlassButtonProps) {
+export const GlassButton = forwardRef<HTMLButtonElement, GlassButtonProps>(function GlassButton(
+  { variant = "secondary", size = "md", children, className, ...props },
+  ref
+) {
   const variants = {
     primary: "bg-primary text-primary-foreground hover:bg-primary/90 border-primary/50",
     secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80 border-glass-border",
@@ -103,6 +101,7 @@ export function GlassButton({
 
   return (
     <button
+      ref={ref}
       className={cn(
         "inline-flex items-center justify-center gap-2 rounded-lg border font-medium",
         "transition-all duration-200",
@@ -117,7 +116,7 @@ export function GlassButton({
       {children}
     </button>
   );
-}
+});
 
 interface GlassTableProps {
   headers: string[];
@@ -130,7 +129,7 @@ interface GlassTableProps {
 export function GlassTable({ headers, headerTitles, children, className, compact }: GlassTableProps) {
   const thPad = compact ? "px-2 py-2" : "px-4 py-3";
   return (
-    <div className={cn("overflow-x-auto", className)}>
+    <div className={cn("scrollable-surface overflow-x-auto", className)}>
       <table className="w-full">
         <thead>
           <tr className="border-b border-glass-border">

@@ -484,7 +484,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
                     continue
 
                 m_bolsa = re.match(
-                    r"Bolsa\s+(\d+)\s+([\d-]+)\s+([\d-]+)\s+([\d,.]+)$",
+                    r"Bolsa\s+(?:Remessa\s+)?(\d+)\s+([\d/\-]+)\s+([\d/\-]+)\s+([\d,.]+)",
                     linha,
                     re.IGNORECASE,
                 )
@@ -518,7 +518,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
                 })
 
             bolsas_encontradas = re.findall(
-                r"Bolsa\s+(\d+)\s+([\d-]+)\s+([\d-]+)\s+([\d,\.]+)",
+                r"Bolsa\s+(?:Remessa\s+)?(\d+)\s+([\d/\-]+)\s+([\d/\-]+)\s+([\d,\.]+)",
                 texto,
                 re.IGNORECASE,
             )
@@ -740,13 +740,25 @@ def extrair_remessa_bolsa_pdf(caminho_pdf, nome_arquivo: str | None = None):
         if re.search(r"\bNome\s+CPF\s+Banco\s+Ag[eê]ncia\s+Conta\s+Valor\b", linha_limpa, re.IGNORECASE):
             lendo_tabela = True
             continue
-        if lendo_tabela and re.match(r"N[úu]mero\s+de\s+Bolsas:", linha_limpa, re.IGNORECASE):
+        if lendo_tabela and re.match(r"N[úu]mero\s+de\s+Bolsas:|Total\s*:", linha_limpa, re.IGNORECASE):
             break
         if not lendo_tabela:
             continue
 
+        # CPF pode vir formatado (123.456.789-01) ou sem pontos (12345678901 ou 123456789-01).
+        # Agência: 4-6 dígitos, possivelmente com dígito verificador separado por hífen.
+        # Conta: alfanumérico com ponto ou hífen.
+        # Valor: formato brasileiro (1.234,56) ou americano (1,234.56).
+        # Sit/LC: valores opcionais de status e código de LC.
         match_linha = re.match(
-            r"(.+?)\s+(\d{9}-\d{2})\s+(\d{3})\s+(\d{4})\s+([0-9A-Za-z.\-]+)\s+([\d.]+,\d{2})\s+(\d+)(?:\s+([A-Z]))?$",
+            r"(.+?)\s+"
+            r"(\d{3}\.?\d{3}\.?\d{3}-\d{2}|\d{11})\s+"
+            r"(\d{3})\s+"
+            r"(\d{1,6}(?:-\d+)?)\s+"
+            r"([0-9A-Za-z.\-/]+)\s+"
+            r"([\d.,]+)\s+"
+            r"(\S+)"
+            r"(?:\s+(\S+))?",
             linha_limpa,
         )
         if not match_linha:

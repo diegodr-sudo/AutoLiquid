@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { MessageCircle, Table2, Settings, Circle, Palmtree } from "lucide-react";
 import { GlassButton } from "./glass-card";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { BugReportButton } from "@/components/bug-report-button";
 
 interface HeaderProps {
   chromeStatus?: "pronto" | "carregando" | "erro";
@@ -16,6 +18,9 @@ interface HeaderProps {
   onOpenDashboard?: () => void;
   onOpenFerias?: () => void;
   rocketChatUnreadCount?: number | null;
+  bugReportContexto?: Record<string, unknown>;
+  bugReportVersao?: string;
+  bugReportServidor?: string;
 }
 
 export function Header({
@@ -30,6 +35,9 @@ export function Header({
   onOpenDashboard,
   onOpenFerias,
   rocketChatUnreadCount = null,
+  bugReportContexto,
+  bugReportVersao,
+  bugReportServidor,
 }: HeaderProps) {
   const statusColor = {
     pronto: "text-success",
@@ -67,78 +75,108 @@ export function Header({
             </h1>
           </Link>
 
-          <a
-            href="https://chat.ufsc.br"
-            target="_blank"
-            rel="noreferrer"
-            title={
-              rocketChatBadge
-                ? `${rocketChatBadge} notificação(ões) no Rocket.Chat`
-                : "Abrir Rocket.Chat"
-            }
-            className="relative inline-flex h-8 items-center gap-1.5 rounded-full border border-glass-border bg-background px-3 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-primary"
-          >
-            <MessageCircle className="h-3.5 w-3.5" />
-            Rocket.Chat
-            {rocketChatBadge ? (
-              <span
-                aria-label={`${rocketChatBadge} notificação(ões) no Rocket.Chat`}
-                className="absolute -right-1.5 -top-2 inline-flex min-w-5 items-center justify-center rounded-full border-2 border-background bg-red-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white shadow-[0_4px_12px_rgba(239,68,68,0.35)]"
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                href="https://chat.ufsc.br"
+                target="_blank"
+                rel="noreferrer"
+                className="relative inline-flex h-8 items-center gap-1.5 rounded-full border border-glass-border bg-background px-3 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-primary"
               >
-                {rocketChatBadge}
-              </span>
-            ) : null}
-          </a>
+                <MessageCircle className="h-3.5 w-3.5" />
+                Rocket.Chat
+                {rocketChatBadge ? (
+                  <span
+                    aria-label={`${rocketChatBadge} notificação(ões) no Rocket.Chat`}
+                    className="absolute -right-1.5 -top-2 inline-flex min-w-5 items-center justify-center rounded-full border-2 border-background bg-red-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white shadow-[0_4px_12px_rgba(239,68,68,0.35)]"
+                  >
+                    {rocketChatBadge}
+                  </span>
+                ) : null}
+              </a>
+            </TooltipTrigger>
+            <TooltipContent>
+              {rocketChatBadge
+                ? `${rocketChatBadge} notificação(ões) no Rocket.Chat`
+                : "Abrir Rocket.Chat"}
+            </TooltipContent>
+          </Tooltip>
 
-          <button
-            type="button"
-            onClick={onOpenFerias}
-            disabled={!onOpenFerias}
-            title="Férias, Afastamentos e Licenças"
-            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-glass-border bg-background px-3 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Palmtree className="h-3.5 w-3.5" />
-            Ausências
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onOpenFerias}
+                disabled={!onOpenFerias}
+                className="inline-flex h-8 items-center gap-1.5 rounded-full border border-glass-border bg-background px-3 text-xs font-medium text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Palmtree className="h-3.5 w-3.5" />
+                Ausências
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Férias, Afastamentos e Licenças</TooltipContent>
+          </Tooltip>
         </div>
 
         <nav className="flex items-center gap-2">
-          <GlassButton
-            variant="ghost"
-            size="sm"
-            onClick={onOpenTabelas}
-            disabled={!onOpenTabelas}
-            title={onOpenTabelas ? "Abrir tabelas operacionais" : "Acao indisponivel nesta tela"}
-          >
-            <Table2 className="h-4 w-4" />
-            Tabelas
-          </GlassButton>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <GlassButton
+                variant="ghost"
+                size="sm"
+                onClick={onOpenTabelas}
+                disabled={!onOpenTabelas}
+              >
+                <Table2 className="h-4 w-4" />
+                Tabelas
+              </GlassButton>
+            </TooltipTrigger>
+            <TooltipContent>
+              {onOpenTabelas ? "Abrir tabelas operacionais" : "Ação indisponível nesta tela"}
+            </TooltipContent>
+          </Tooltip>
 
-          <GlassButton
-            variant="ghost"
-            size="sm"
-            onClick={onOpenChrome}
-            disabled={!onOpenChrome || chromeActionDisabled}
-            title={
-              onOpenChrome
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <GlassButton
+                variant="ghost"
+                size="sm"
+                onClick={onOpenChrome}
+                disabled={!onOpenChrome || chromeActionDisabled}
+              >
+                <Circle className={`h-3 w-3 fill-current ${statusColor[chromeStatus]}`} />
+                <span className={statusColor[chromeStatus]}>{statusText[chromeStatus]}</span>
+              </GlassButton>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" align="center" avoidCollisions={false} className="max-w-52 text-center">
+              {onOpenChrome
                 ? `Abrir ou reconectar o ${browserName} na página inicial da automação`
-                : "Ação indisponível nesta tela"
-            }
-          >
-            <Circle className={`h-3 w-3 fill-current ${statusColor[chromeStatus]}`} />
-            <span className={statusColor[chromeStatus]}>{statusText[chromeStatus]}</span>
-          </GlassButton>
+                : "Ação indisponível nesta tela"}
+            </TooltipContent>
+          </Tooltip>
 
-          <GlassButton
-            variant="ghost"
-            size="sm"
-            onClick={onOpenConfiguracoes}
-            disabled={!onOpenConfiguracoes}
-            title={onOpenConfiguracoes ? undefined : "Configurações web ainda não implementadas"}
-          >
-            <Settings className="h-4 w-4" />
-            Configurações
-          </GlassButton>
+          <BugReportButton
+            contexto={bugReportContexto}
+            versaoApp={bugReportVersao}
+            servidorNome={bugReportServidor}
+          />
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <GlassButton
+                variant="ghost"
+                size="sm"
+                onClick={onOpenConfiguracoes}
+                disabled={!onOpenConfiguracoes}
+              >
+                <Settings className="h-4 w-4" />
+                Configurações
+              </GlassButton>
+            </TooltipTrigger>
+            {!onOpenConfiguracoes && (
+              <TooltipContent>Configurações web ainda não implementadas</TooltipContent>
+            )}
+          </Tooltip>
         </nav>
       </div>
     </header>

@@ -17,6 +17,7 @@ import {
   User,
 } from "lucide-react";
 import { GlassButton, GlassTable, GlassTableCell, GlassTableRow } from "@/components/glass-card";
+import { parseDbTimestamp } from "@/lib/utils";
 
 const API = "http://127.0.0.1:8000";
 
@@ -110,15 +111,15 @@ function brl(v: number) {
 
 function fmtData(iso: string | null | undefined) {
   if (!iso) return "—";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
+  const d = parseDbTimestamp(iso);
+  if (!d) return iso;
   return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 function fmtDataHora(iso: string | null | undefined) {
   if (!iso) return "—";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
+  const d = parseDbTimestamp(iso);
+  if (!d) return iso;
   return d.toLocaleString("pt-BR", {
     day: "2-digit", month: "2-digit", year: "numeric",
     hour: "2-digit", minute: "2-digit",

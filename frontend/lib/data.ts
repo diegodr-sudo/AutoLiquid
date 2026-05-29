@@ -1697,3 +1697,73 @@ export async function abrirUrl(url: string): Promise<void> {
     body: JSON.stringify({ url }),
   })
 }
+
+// ── Bug Reports ───────────────────────────────────────────────────────────────
+
+export interface BugReport {
+  id: number
+  pagina: string
+  descricao: string
+  contexto: Record<string, unknown>
+  camposDom: Record<string, string>
+  errosConsole: string[]
+  versaoApp: string
+  servidorNome: string
+  resolvido: boolean
+  criadoEm: string
+  resolvidoEm: string
+}
+
+export interface EnviarBugReportPayload {
+  pagina: string
+  descricao: string
+  contexto?: Record<string, unknown>
+  camposDom?: Record<string, string>
+  errosConsole?: string[]
+  versaoApp?: string
+  servidorNome?: string
+}
+
+export interface ChromeAbaAtual {
+  url?: string
+  titulo?: string
+  titulos_secoes?: string[]
+  campos_formulario?: Record<string, string>
+  mensagens_erro?: string[]
+  timestamp?: string
+  erro?: string
+}
+
+export async function fetchChromeAbaAtual(): Promise<ChromeAbaAtual> {
+  try {
+    return await apiFetch<ChromeAbaAtual>("/api/chrome/aba-atual", undefined, { timeoutMs: 5000 })
+  } catch {
+    return { erro: "Não foi possível capturar o estado do Chrome." }
+  }
+}
+
+export async function enviarBugReport(payload: EnviarBugReportPayload): Promise<{ ok: boolean; id: number }> {
+  return apiFetch<{ ok: boolean; id: number }>("/api/bug-report", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }, { timeoutMs: 10000 })
+}
+
+export async function fetchBugReports(filtro?: "abertos" | "resolvidos"): Promise<BugReport[]> {
+  const qs = filtro === "abertos" ? "?resolvido=false" : filtro === "resolvidos" ? "?resolvido=true" : ""
+  const data = await apiFetch<{ reports: BugReport[] }>(`/api/bug-reports${qs}`, undefined, { timeoutMs: 10000 })
+  return data.reports ?? []
+}
+
+export async function resolverBugReport(id: number): Promise<void> {
+  await apiFetch<{ ok: boolean }>(`/api/bug-reports/${id}/resolver`, {
+    method: "PATCH",
+  }, { timeoutMs: 8000 })
+}
+
+export async function deletarBugReport(id: number): Promise<void> {
+  await apiFetch<{ ok: boolean }>(`/api/bug-reports/${id}`, {
+    method: "DELETE",
+  }, { timeoutMs: 8000 })
+}

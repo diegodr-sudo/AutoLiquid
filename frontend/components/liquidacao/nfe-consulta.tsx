@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { Bug, FileText, Key, Loader2, Paperclip, Plus, X } from "lucide-react";
 import { GlassButton } from "@/components/glass-card";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const API = "http://127.0.0.1:8000";
 
@@ -312,30 +313,40 @@ export function NfeConsulta() {
               {/* Botão PDF */}
               <input ref={(el) => { pdfRefs.current[entrada.id] = el; }} type="file" accept=".pdf" className="hidden"
                 onChange={(e) => set(entrada.id, { pdfFile: e.target.files?.[0] ?? null, status: "pendente", erro: undefined, resultado: undefined })} />
-              <button type="button" title={entrada.pdfFile ? entrada.pdfFile.name : "Anexar PDF"}
-                onClick={() => pdfRefs.current[entrada.id]?.click()}
-                className={`shrink-0 flex items-center gap-1 rounded-xl border px-2.5 py-2 text-xs transition-colors ${
-                  entrada.pdfFile ? "border-red-400/50 bg-red-500/5 text-red-600" : "border-glass-border bg-background/60 text-muted-foreground hover:border-red-400/40 hover:text-red-600"
-                }`}>
-                <FileText className="h-3.5 w-3.5 shrink-0" />
-                <span className="hidden sm:inline max-w-[60px] truncate">
-                  {entrada.pdfFile ? entrada.pdfFile.name.replace(".pdf","") : "PDF"}
-                </span>
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button type="button"
+                    onClick={() => pdfRefs.current[entrada.id]?.click()}
+                    className={`shrink-0 flex items-center gap-1 rounded-xl border px-2.5 py-2 text-xs transition-colors ${
+                      entrada.pdfFile ? "border-red-400/50 bg-red-500/5 text-red-600" : "border-glass-border bg-background/60 text-muted-foreground hover:border-red-400/40 hover:text-red-600"
+                    }`}>
+                    <FileText className="h-3.5 w-3.5 shrink-0" />
+                    <span className="hidden sm:inline max-w-[60px] truncate">
+                      {entrada.pdfFile ? entrada.pdfFile.name.replace(".pdf","") : "PDF"}
+                    </span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{entrada.pdfFile ? entrada.pdfFile.name : "Anexar PDF"}</TooltipContent>
+              </Tooltip>
 
               {/* Botão XML */}
               <input ref={(el) => { xmlRefs.current[entrada.id] = el; }} type="file" accept=".xml" className="hidden"
                 onChange={(e) => set(entrada.id, { xmlFile: e.target.files?.[0] ?? null, status: "pendente", erro: undefined, resultado: undefined })} />
-              <button type="button" title={entrada.xmlFile ? entrada.xmlFile.name : "Anexar XML"}
-                onClick={() => xmlRefs.current[entrada.id]?.click()}
-                className={`shrink-0 flex items-center gap-1 rounded-xl border px-2.5 py-2 text-xs transition-colors ${
-                  entrada.xmlFile ? "border-primary/40 bg-primary/5 text-primary" : "border-glass-border bg-background/60 text-muted-foreground hover:border-primary/40 hover:text-foreground"
-                }`}>
-                <Paperclip className="h-3.5 w-3.5 shrink-0" />
-                <span className="hidden sm:inline max-w-[60px] truncate">
-                  {entrada.xmlFile ? entrada.xmlFile.name.replace(".xml","") : "XML"}
-                </span>
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button type="button"
+                    onClick={() => xmlRefs.current[entrada.id]?.click()}
+                    className={`shrink-0 flex items-center gap-1 rounded-xl border px-2.5 py-2 text-xs transition-colors ${
+                      entrada.xmlFile ? "border-primary/40 bg-primary/5 text-primary" : "border-glass-border bg-background/60 text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                    }`}>
+                    <Paperclip className="h-3.5 w-3.5 shrink-0" />
+                    <span className="hidden sm:inline max-w-[60px] truncate">
+                      {entrada.xmlFile ? entrada.xmlFile.name.replace(".xml","") : "XML"}
+                    </span>
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{entrada.xmlFile ? entrada.xmlFile.name : "Anexar XML"}</TooltipContent>
+              </Tooltip>
 
               {/* Consultar */}
               <GlassButton type="button" variant="secondary" size="sm"

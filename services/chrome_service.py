@@ -259,6 +259,21 @@ def _garantir_barra_favoritos_visivel() -> bool:
     if autoliquid.get("extractor_bookmark_version") != AUTOLIQUID_EXTRACTOR_BOOKMARK_VERSION:
         autoliquid["extractor_bookmark_version"] = AUTOLIQUID_EXTRACTOR_BOOKMARK_VERSION
         changed = True
+
+    # Configura download automático sem dialog nativo do SO.
+    # O SIAFI baixa o hodcivws.jnlp ao clicar em "Siafi Operacional" — sem
+    # esta configuração o Chrome abre o "Salvar Como" nativo e bloqueia a automação.
+    _downloads_dir = str(Path.home() / "Downloads")
+    _dl_prefs = preferences.setdefault("download", {})
+    if (
+        _dl_prefs.get("prompt_for_download") is not False
+        or _dl_prefs.get("default_directory") != _downloads_dir
+    ):
+        _dl_prefs["prompt_for_download"] = False
+        _dl_prefs["default_directory"] = _downloads_dir
+        _dl_prefs["directory_upgrade"] = True
+        changed = True
+
     if changed:
         preferences_path.write_text(json.dumps(preferences, ensure_ascii=False, indent=2), encoding="utf-8")
     return changed
@@ -536,6 +551,19 @@ def abrir_ou_focar_siafi(url: str) -> dict:
                         "#frmMenu\\:lnkArvoreMenu, a:text('Siafi Operacional')"
                     ).first
                     link.wait_for(state="visible", timeout=3000)
+                    # Antes de clicar, configura auto-download via CDP para
+                    # evitar o dialog nativo "Salvar Como" do macOS/Windows.
+                    # Isso não exige nenhuma permissão do sistema operacional.
+                    try:
+                        _dl_path = str(Path.home() / "Downloads")
+                        _cdp = pagina_siafi.context.new_cdp_session(pagina_siafi)
+                        _cdp.send("Page.setDownloadBehavior", {
+                            "behavior": "allow",
+                            "downloadPath": _dl_path,
+                        })
+                    except Exception:
+                        pass
+
                     link.click(timeout=5000)
                     return {"action": "tela_preta_clicado", "url": siafi_url}
                 except Exception:
@@ -606,3 +634,128 @@ def conectar_chrome_cdp(porta=None, abrir_se_fechado=True):
         )
 
     return playwright, pagina
+
+
+# JavaScript executado via CDP para capturar o estado completo da página do governo
+_JS_CAPTURAR_ESTADO_PAGINA = r"""
+() => {
+    const normalizar = (txt) => (txt || '').replace(/\s+/g, ' ').trim();
+
+    // ── Labels associados a um elemento ──────────────────────────────────────
+    function labelDe(el) {
+        if (el.id) {
+            const lbl = document.querySelector('label[for="' + el.id + '"]');
+            if (lbl) return normalizar(lbl.textContent);
+        }
+        const aria = el.getAttribute('aria-label');
+        if (aria) return normalizar(aria);
+        const lblById = el.getAttribute('aria-labelledby');
+        if (lblById) {
+            const lbl = document.getElementById(lblById);
+            if (lbl) return normalizar(lbl.textContent);
+        }
+        const parent = el.closest('label');
+        if (parent) {
+            const clone = parent.cloneNode(true);
+            clone.querySelectorAll('input,select,textarea').forEach(n => n.remove());
+            return normalizar(clone.textContent);
+        }
+        // Fallback: texto do elemento anterior no DOM
+        let sib = el.previousElementSibling;
+        while (sib) {
+            const txt = normalizar(sib.textContent);
+            if (txt && txt.length < 80) return txt;
+            sib = sib.previousElementSibling;
+        }
+        return el.getAttribute('name') || el.getAttribute('id') || el.getAttribute('placeholder') || el.tagName.toLowerCase();
+    }
+
+    // ── Campos de formulário ─────────────────────────────────────────────────
+    const campos = {};
+    const seletores = 'input:not([type=hidden]):not([type=password]):not([type=submit]):not([type=button]):not([type=image]):not([type=reset]), select, textarea';
+    document.querySelectorAll(seletores).forEach(el => {
+        const rect = el.getBoundingClientRect();
+        const estilo = window.getComputedStyle(el);
+        const visivel = rect.width > 0 && rect.height > 0 && estilo.visibility !== 'hidden' && estilo.display !== 'none';
+        if (!visivel) return;
+
+        const chave = labelDe(el);
+        let valor = '';
+        if (el.tagName === 'SELECT') {
+            const opt = el.options[el.selectedIndex];
+            valor = opt ? (el.value + (opt.text && opt.text !== el.value ? ' (' + opt.text + ')' : '')) : el.value;
+        } else {
+            valor = el.value;
+        }
+        if (chave && valor && valor !== '' && !valor.startsWith('__')) {
+            campos[chave.slice(0, 80)] = String(valor).slice(0, 300);
+        }
+    });
+
+    // ── Mensagens de erro / alerta visíveis na página ────────────────────────
+    const erros = [];
+    document.querySelectorAll('.alert, .alert-danger, .alert-warning, .error, [class*="erro"], [class*="error"], [class*="aviso"], [class*="alert"]').forEach(el => {
+        const txt = normalizar(el.textContent);
+        if (txt && txt.length > 5 && txt.length < 500) erros.push(txt);
+    });
+
+    // ── Título da seção/etapa visível (h1-h4, .box-title, .panel-title) ──────
+    const titulos = [];
+    document.querySelectorAll('h1, h2, h3, h4, .box-title, .panel-title, .title-item-acordion').forEach(el => {
+        const txt = normalizar(el.textContent);
+        if (txt && txt.length > 3 && txt.length < 200) titulos.push(txt);
+    });
+
+    return JSON.stringify({
+        url: window.location.href,
+        titulo: document.title,
+        titulos_secoes: titulos.slice(0, 8),
+        campos_formulario: campos,
+        mensagens_erro: erros.slice(0, 10),
+        timestamp: new Date().toISOString(),
+    });
+}
+"""
+
+
+def capturar_estado_aba_chrome(porta: int | None = None) -> dict:
+    """Captura URL, título, campos de formulário e mensagens de erro
+    da aba ativa do Chrome (preferencialmente a do Comprasnet).
+
+    Retorna um dicionário com as informações ou um dict com 'erro' se falhar.
+    """
+    import asyncio
+    try:
+        asyncio.set_event_loop(None)
+    except Exception:
+        pass
+
+    porta_efetiva = resolver_porta_chrome(porta)
+    if not chrome_esta_pronto(porta_efetiva):
+        return {"erro": "Chrome não está disponível na porta esperada."}
+
+    try:
+        from playwright.sync_api import sync_playwright
+        playwright = sync_playwright().start()
+        try:
+            nav = playwright.chromium.connect_over_cdp(f"http://localhost:{porta_efetiva}")
+            # Prioriza aba do Comprasnet; senão, a primeira disponível
+            paginas = [p for ctx in nav.contexts for p in ctx.pages]
+            dominios_alvo = ("comprasnet", "contratos.gov", "siafi", "sof.planejamento")
+            pagina = next(
+                (p for p in paginas if any(d in (p.url or "") for d in dominios_alvo)),
+                paginas[0] if paginas else None,
+            )
+            if pagina is None:
+                return {"erro": "Nenhuma aba encontrada no navegador."}
+
+            resultado_json = pagina.evaluate(_JS_CAPTURAR_ESTADO_PAGINA)
+            resultado = json.loads(resultado_json)
+            return resultado
+        finally:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
+    except Exception as exc:
+        return {"erro": str(exc)[:300]}

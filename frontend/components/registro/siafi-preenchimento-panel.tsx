@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Chrome, FileUp, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { GlassButton } from "@/components/glass-card";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { UploadZone } from "@/components/upload-zone";
 import { openSiafiIncognito, uploadPDF, type ProcessDates } from "@/lib/data";
 
@@ -99,21 +100,25 @@ export function SiafiPreenchimentoPanel({ apiDisponivel, dates }: SiafiPreenchim
             )}
             {processando ? "Processando..." : "Processar"}
           </GlassButton>
-          <GlassButton
-            variant="secondary"
-            size="lg"
-            onClick={() => void handleAbrirSiafi()}
-            disabled={abrindoSiafi || !apiDisponivel}
-            className="w-full md:w-auto"
-            title="Abrir SIAFI em aba anônima do Chrome"
-          >
-            {abrindoSiafi ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : (
-              <Chrome className="h-5 w-5" />
-            )}
-            {abrindoSiafi ? "Abrindo..." : "Abrir SIAFI"}
-          </GlassButton>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <GlassButton
+                variant="secondary"
+                size="lg"
+                onClick={() => void handleAbrirSiafi()}
+                disabled={abrindoSiafi || !apiDisponivel}
+                className="w-full md:w-auto"
+              >
+                {abrindoSiafi ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  <Chrome className="h-5 w-5" />
+                )}
+                {abrindoSiafi ? "Abrindo..." : "Abrir SIAFI"}
+              </GlassButton>
+            </TooltipTrigger>
+            <TooltipContent>Abrir SIAFI em aba anônima do Chrome</TooltipContent>
+          </Tooltip>
         </div>
       </div>
     </>

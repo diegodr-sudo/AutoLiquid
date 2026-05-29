@@ -1803,7 +1803,9 @@ def _montar_pendencias_documento(
     _is_bolsa = tipo_operacional == "bolsa"
     _is_federal = bool(
         __import__("re").search(
-            r"federal|universidade|instituto\s+fed|autarquia",
+            r"federal|universidade|instituto\s+fed|autarquia"
+            r"|fund\w*\s+(?:de\s+)?ensino|fund\w*\s+(?:de\s+)?pesquisa"
+            r"|feesc|fepese|funjab|funpesquisa|feaufsc",
             _nome_credor,
             __import__("re").IGNORECASE,
         )
@@ -1875,15 +1877,6 @@ def _montar_pendencias_documento(
                 mensagem_txt,
                 "portal",
             )
-
-    notas = dados_extraidos.get("Notas Fiscais", []) or[]
-    if len(notas) > 1:
-        adicionar(
-            "atencao",
-            "Documento com múltiplas notas fiscais",
-            f"Foram identificadas {len(notas)} notas fiscais no PDF. Vale conferir se o portal refletiu todas elas corretamente.",
-            "pdf",
-        )
 
     return pendencias
 
@@ -3447,6 +3440,20 @@ def abrir_chrome_endpoint() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.get("/api/chrome/aba-atual")
+def chrome_aba_atual_endpoint() -> dict[str, Any]:
+    """Captura o estado completo da aba ativa do Chrome: URL, título,
+    campos de formulário com labels, mensagens de erro e títulos de seção.
+    Usado pelo relatório de bugs para capturar o contexto do Playwright.
+    """
+    chrome_service = _chrome_service()
+    porta = obter_porta_chrome()
+    try:
+        return chrome_service.capturar_estado_aba_chrome(porta)
+    except Exception as exc:
+        return {"erro": str(exc)[:300]}
+
+
 _SIAFI_WEB_URL = "https://siafi.tesouro.gov.br/"
 
 
@@ -4194,6 +4201,26 @@ async def processar_pdf(
 
         dados_extraidos = _extrator().extrair_dados_pdf(tmp_path, nome_arquivo=file.filename)
         if not dados_extraidos:
+            # Verifica se é uma Remessa de bolsa enviada pelo lugar errado.
+            # Tenta detectar "REMESSA NNNNNN" na primeira página do PDF.
+            _é_remessa = bool(re.search(r"\bremessa\b", str(file.filename or ""), re.IGNORECASE))
+            if not _é_remessa:
+                try:
+                    import pdfplumber as _pdfplumber
+                    with _pdfplumber.open(tmp_path) as _pdf_chk:
+                        _pg0 = (_pdf_chk.pages[0].extract_text() or "") if _pdf_chk.pages else ""
+                    _é_remessa = bool(re.search(r"\bREMESSA\s+\d+", _pg0, re.IGNORECASE))
+                except Exception:
+                    pass
+            if _é_remessa:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Este arquivo parece ser uma Remessa de bolsa, não uma Liquidação. "
+                        "Carregue primeiro o PDF de Liquidação (DAL) e depois vincule a remessa "
+                        "pelo botão 'Remessa' dentro do documento."
+                    ),
+                )
             raise HTTPException(
                 status_code=422,
                 detail="Não foi possível extrair dados do PDF. Verifique se é um documento LF válido.",
@@ -6048,6 +6075,65 @@ async def siafi_atulc_stream(execution_id: str, request: Request):
     )
 
 
+# ── Bug Reports ───────────────────────────────────────────────────────────────
+
+class BugReportBody(BaseModel):
+    pagina: str = ""
+    descricao: str
+    contexto: dict = {}
+    camposDom: dict = {}
+    errosConsole: list = []
+    versaoApp: str = ""
+    servidorNome: str = ""
+
+
+@app.post("/api/bug-report")
+async def criar_bug_report(body: BugReportBody):
+    turso = _turso_service()
+    if not turso.turso_configurado():
+        raise HTTPException(status_code=503, detail="Banco de dados não configurado.")
+    bug_id = turso.salvar_bug_report(
+        pagina=body.pagina,
+        descricao=body.descricao,
+        contexto=body.contexto or None,
+        campos_dom=body.camposDom or None,
+        erros_console=body.errosConsole or None,
+        versao_app=body.versaoApp,
+        servidor_nome=body.servidorNome,
+    )
+    return {"ok": True, "id": bug_id}
+
+
+@app.get("/api/bug-reports")
+async def listar_bug_reports(resolvido: str | None = None):
+    turso = _turso_service()
+    filtro: bool | None = None
+    if resolvido == "true":
+        filtro = True
+    elif resolvido == "false":
+        filtro = False
+    reports = turso.listar_bug_reports(resolvido=filtro)
+    return {"reports": reports}
+
+
+@app.patch("/api/bug-reports/{bug_id}/resolver")
+async def resolver_bug_report(bug_id: int):
+    turso = _turso_service()
+    if not turso.turso_configurado():
+        raise HTTPException(status_code=503, detail="Banco de dados não configurado.")
+    turso.resolver_bug_report(bug_id)
+    return {"ok": True}
+
+
+@app.delete("/api/bug-reports/{bug_id}")
+async def deletar_bug_report(bug_id: int):
+    turso = _turso_service()
+    if not turso.turso_configurado():
+        raise HTTPException(status_code=503, detail="Banco de dados não configurado.")
+    turso.deletar_bug_report(bug_id)
+    return {"ok": True}
+
+
 def _warmup_turso_schema() -> None:
     """
     Inicializa o schema do Turso em background logo que a API sobe.
@@ -6079,6 +6165,10 @@ def _warmup_turso_schema() -> None:
         if _turso.turso_configurado():
             timeout_seconds = int(os.getenv("AUTO_LIQUID_TURSO_WARMUP_TIMEOUT", "25") or "25")
             _turso.garantir_schema_cache(timeout=timeout_seconds)
+            try:
+                _turso.garantir_schema_bug_reports(timeout=8)
+            except Exception:
+                log.debug("Warmup do schema bug_reports falhou (não crítico).", exc_info=True)
             log.info("Warmup do schema Turso concluido em %.0fms.", (time.monotonic() - started_at) * 1000)
     except Exception:
         log.debug("Warmup do schema Turso falhou (não crítico).", exc_info=True)

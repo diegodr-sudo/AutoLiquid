@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AlertTriangle, Banknote, CheckCircle2, ChevronDown, ChevronRight, FileUp, Loader2, Play, Upload, Users } from "lucide-react";
+import { AlertTriangle, Banknote, CheckCircle2, ChevronDown, ChevronRight, FileUp, Loader2, Play, Upload, Users, X } from "lucide-react";
 import { Header } from "@/components/header";
 import { DocumentoPanel } from "@/components/documento-panel";
 import { NotasFiscaisTable } from "@/components/notas-fiscais-table";
@@ -12,6 +12,7 @@ import { StatusOverview } from "@/components/status-overview";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
 import { GlassButton } from "@/components/glass-card";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   abrirUrl,
   MOCK_DOCUMENTO,
@@ -47,9 +48,59 @@ import {
   registrarLiquidacao,
   descartarRegistroLiquidacaoPendente,
   uploadRemessaBolsa,
+  type RegistroLiquidacaoTipoDocumento,
 } from "@/lib/data";
 import { readStoredAuthSession } from "@/lib/auth-store";
 import { useAuth } from "@/lib/auth-context";
+
+// ── Pontuação de Dificuldade ─────────────────────────────────────────────────
+
+const DIFFICULTY_OPTIONS: { value: number; label: string; short: string; color: string; bg: string; ring: string }[] = [
+  { value: 1, label: "Rotineiro",  short: "1", color: "text-emerald-700", bg: "bg-emerald-500/10 hover:bg-emerald-500/20", ring: "ring-emerald-500/40" },
+  { value: 2, label: "Simples",    short: "2", color: "text-teal-700",    bg: "bg-teal-500/10 hover:bg-teal-500/20",     ring: "ring-teal-500/40" },
+  { value: 3, label: "Moderado",   short: "3", color: "text-amber-700",   bg: "bg-amber-500/10 hover:bg-amber-500/20",   ring: "ring-amber-500/40" },
+  { value: 4, label: "Trabalhoso", short: "4", color: "text-orange-700",  bg: "bg-orange-500/10 hover:bg-orange-500/20", ring: "ring-orange-500/40" },
+  { value: 5, label: "Complexo",   short: "5", color: "text-rose-700",    bg: "bg-rose-500/10 hover:bg-rose-500/20",     ring: "ring-rose-500/40" },
+];
+
+function DifficultyPicker({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: number | null;
+  onChange: (v: number) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+        Dificuldade
+      </span>
+      <div className="grid grid-cols-5 gap-1.5">
+        {DIFFICULTY_OPTIONS.map((opt) => {
+          const selected = value === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange(opt.value)}
+              className={`flex flex-col items-center gap-1 rounded-xl border py-2.5 px-1 text-center transition-all disabled:cursor-not-allowed disabled:opacity-50
+                ${selected
+                  ? `ring-2 ${opt.ring} border-transparent ${opt.bg} ${opt.color} font-semibold`
+                  : `border-glass-border bg-background/60 text-muted-foreground hover:border-transparent ${opt.bg} ${opt.color}`
+                }`}
+            >
+              <span className="text-base font-bold leading-none">{opt.short}</span>
+              <span className="text-[10px] leading-tight font-medium">{opt.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 const FILA_TRABALHO_URL =
   "https://docs.google.com/spreadsheets/d/1O2Ft4Ioy3_t4bKmPQ38d56UhHY2TBHfPI6kTkNkmy-4/edit?gid=0#gid=0";
@@ -106,6 +157,8 @@ function ConferenciaPageContent() {
   const [lfNumero, setLfNumero] = useState("");
   const [ugrNumero, setUgrNumero] = useState("");
   const [vencimentoDocumento, setVencimentoDocumento] = useState("");
+  /** Quando false, a fatura não tem LF/vencimento — o pagamento segue normal, sem exigir esses campos. */
+  const [faturaTemLf, setFaturaTemLf] = useState(true);
   const [requiresCentroCusto, setRequiresCentroCusto] = useState(false);
   const [usarContaPdf, setUsarContaPdf] = useState(true);
   const [contaBanco, setContaBanco] = useState("");
@@ -121,6 +174,13 @@ function ConferenciaPageContent() {
   const [salvandoPendencias, setSalvandoPendencias] = useState(false);
   const [pendenciaToggleId, setPendenciaToggleId] = useState<string | null>(null);
   const [pendenciasExpanded, setPendenciasExpanded] = useState(true);
+  // ── Dialog de conclusão (NP + dificuldade) ──
+  const [conclusaoAberta, setConclusaoAberta] = useState(false);
+  const [conclusaoTipo, setConclusaoTipo] = useState<RegistroLiquidacaoTipoDocumento>("NP");
+  const [conclusaoNumero, setConclusaoNumero] = useState("");
+  const [conclusaoDificuldade, setConclusaoDificuldade] = useState<number | null>(null);
+  const [conclusaoSaving, setConclusaoSaving] = useState(false);
+  const [conclusaoErro, setConclusaoErro] = useState("");
   const precisaLF = deducoes.some((deducao) => deducao.siafi === "DOB001");
   const precisaUGR = requiresCentroCusto;
   const _temPendenciaVpd = pendencias.some(
@@ -264,9 +324,50 @@ function ConferenciaPageContent() {
       return;
     }
     setErro("");
-    // O registro pendente já está no localStorage (escrito por registrarLiquidacaoPendente).
-    // Redireciona para a fila — o dialog unificado em page.tsx cuida do resto.
-    router.push("/");
+    setConclusaoNumero("");
+    setConclusaoTipo("NP");
+    setConclusaoDificuldade(null);
+    setConclusaoErro("");
+    setConclusaoAberta(true);
+  };
+
+  const handleConcluirComRegistro = async (finalizada: boolean) => {
+    if (conclusaoSaving) return;
+    if (finalizada && !conclusaoNumero.trim()) {
+      setConclusaoErro("Informe o número do documento.");
+      return;
+    }
+    if (finalizada && !conclusaoDificuldade) {
+      setConclusaoErro("Selecione a dificuldade do processo.");
+      return;
+    }
+    setConclusaoErro("");
+    setConclusaoSaving(true);
+    try {
+      await registrarLiquidacao({
+        documentoId: documentoId ?? "",
+        numeroProcesso: documento.processo ?? "",
+        finalizada,
+        tipoDocumento: finalizada ? conclusaoTipo : "",
+        numeroDocumento: finalizada ? conclusaoNumero.trim() : "",
+        dificuldade: finalizada ? (conclusaoDificuldade ?? undefined) : undefined,
+        servidorNome: auth.session?.nome || nomeUsuario || "",
+        servidorUsername: auth.session?.username || "",
+      });
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem(REGISTRO_LIQUIDACAO_PENDENTE_KEY);
+      }
+      liquidacaoFinalizadaRef.current = true;
+      // Sinaliza para page.tsx que o registro já foi feito aqui
+      if (typeof window !== "undefined") {
+        window.sessionStorage.removeItem("autoliquid_vem_de_concluir");
+      }
+      router.push("/");
+    } catch (error) {
+      setConclusaoErro(error instanceof Error ? error.message : "Erro ao registrar. Tente novamente.");
+    } finally {
+      setConclusaoSaving(false);
+    }
   };
 
   const handleTogglePendenciaResolvida = async (pendencia: PendenciaDocumento, resolvida: boolean) => {
@@ -465,10 +566,10 @@ function ConferenciaPageContent() {
   }, [documentoId]);
 
   useEffect(() => {
-    if (precisaUGR || precisaLF || precisaVpd || temFatura || !dadosBancariosResolvidos) {
+    if (precisaUGR || precisaLF || precisaVpd || (temFatura && faturaTemLf) || !dadosBancariosResolvidos) {
       setPendenciasExpanded(true);
     }
-  }, [precisaUGR, precisaLF, precisaVpd, temFatura, dadosBancariosResolvidos]);
+  }, [precisaUGR, precisaLF, precisaVpd, temFatura, faturaTemLf, dadosBancariosResolvidos]);
 
   useEffect(() => {
     if (!documentoId || !isExecutando) return;
@@ -630,7 +731,7 @@ function ConferenciaPageContent() {
     }
 
     if (contexto === "todas" || etapa?.id === 4) {
-      if (temFatura && !vencimentoDocumento.trim()) {
+      if (temFatura && faturaTemLf && !vencimentoDocumento.trim()) {
         faltas.push("vencimento da fatura");
         if (!mensagemSemClique && !tocouFatura) {
           mensagemSemClique = "Revise os dados de fatura na aba Pendências antes de executar.";
@@ -873,16 +974,6 @@ function ConferenciaPageContent() {
 
   // Bolsa não tem deduções nem dados bancários — essas pendências não se aplicam.
   if (!documentoBolsa) {
-    if (precisaLF && !lfNumero.trim()) {
-      pendenciasLocais.push({
-        id: "local-lf",
-        tipo: "bloqueio",
-        titulo: "LF pendente",
-        descricao: "Preencha a LF para permitir a execução das deduções que dependem dela.",
-        origem: "configuracao",
-      });
-    }
-
     if (temFatura && !vencimentoDocumento.trim()) {
       pendenciasLocais.push({
         id: "local-fatura-vencimento",
@@ -964,6 +1055,39 @@ function ConferenciaPageContent() {
         onOpenChrome={handleAbrirChrome}
         chromeActionDisabled={abrindoChrome}
         onOpenFilaTrabalho={() => void abrirUrl(FILA_TRABALHO_URL)}
+        bugReportContexto={{
+          processo: documento.processo,
+          solPagamento: documento.solPagamento,
+          fornecedor: documento.nomeCredor,
+          cnpj: documento.cnpj,
+          contrato: documento.contrato,
+          natureza: documento.natureza,
+          tipoLiquidacao: documento.tipoLiquidacao,
+          optanteSimples: documento.optanteSimples,
+          valorBruto: resumo.bruto,
+          valorLiquido: resumo.liquido,
+          etapaAtiva: etapaAtivaId !== null
+            ? (etapas.find((e) => e.id === etapaAtivaId)?.nome ?? etapaAtivaId)
+            : null,
+          deducaoAtiva: deducaoAtivaId !== null
+            ? (deducoes.find((d) => d.id === deducaoAtivaId)?.siafi ?? deducaoAtivaId)
+            : null,
+          deducoes: deducoes.map((d) => ({ siafi: d.siafi, tipo: d.tipo, status: d.status })),
+          pendencias: pendencias.map((p) => ({ id: p.id, tipo: p.tipo, titulo: p.titulo })),
+          lfNumero: lfNumero || null,
+          ugrNumero: ugrNumero || null,
+          vencimentoDocumento: vencimentoDocumento || null,
+          contaBanco: contaBanco || null,
+          contaAgencia: contaAgencia || null,
+          contaConta: contaConta || null,
+          vpd: vpd || null,
+          isExecutando,
+          chromeStatus,
+          apuracao: dates.apuracao,
+          vencimento: dates.vencimento,
+          statusMensagem: statusMensagem || null,
+        }}
+        bugReportServidor={nomeUsuario ?? ""}
       />
 
       <main className="relative mx-auto max-w-[1600px] px-4 py-8 sm:px-6 xl:px-8">
@@ -1248,23 +1372,36 @@ function ConferenciaPageContent() {
 
                           {mostraBlocoLf && (
                             <div className="space-y-3">
-                              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">LF e Fatura</p>
-                              <div className="space-y-2">
-                                <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-                                  LF
-                                </label>
-                                <Input
-                                  value={lfNumero}
-                                  maxLength={12}
-                                  placeholder="Ex.: 2026LF00123"
-                                  onFocus={() => setTocouLf(true)}
-                                  onChange={(event) => {
-                                    setTocouLf(true);
-                                    setLfNumero(event.target.value);
-                                  }}
-                                />
+                              <div className="flex items-center justify-between">
+                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">LF e Fatura</p>
+                                {temFatura && (
+                                  <label className="flex cursor-pointer items-center gap-2">
+                                    <span className="text-xs text-muted-foreground">Esta fatura tem LF?</span>
+                                    <Switch
+                                      checked={faturaTemLf}
+                                      onCheckedChange={setFaturaTemLf}
+                                    />
+                                  </label>
+                                )}
                               </div>
-                              {temFatura && (
+                              {(precisaLF || (temFatura && faturaTemLf)) && (
+                                <div className="space-y-2">
+                                  <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                    LF
+                                  </label>
+                                  <Input
+                                    value={lfNumero}
+                                    maxLength={12}
+                                    placeholder="Ex.: 2026LF00123"
+                                    onFocus={() => setTocouLf(true)}
+                                    onChange={(event) => {
+                                      setTocouLf(true);
+                                      setLfNumero(event.target.value);
+                                    }}
+                                  />
+                                </div>
+                              )}
+                              {temFatura && faturaTemLf && (
                                 <div className="space-y-2">
                                   <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
                                     Vencimento da fatura
@@ -1279,6 +1416,11 @@ function ConferenciaPageContent() {
                                     }}
                                   />
                                 </div>
+                              )}
+                              {temFatura && !faturaTemLf && (
+                                <p className="text-xs text-muted-foreground">
+                                  Pagamento sem LF — seguirá como nota fiscal comum.
+                                </p>
                               )}
                             </div>
                           )}
@@ -1569,6 +1711,98 @@ function ConferenciaPageContent() {
           </GlassButton>
         </div>
       </main>
+
+      {/* ── Dialog de conclusão: NP + dificuldade ── */}
+      {conclusaoAberta && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-background/70 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-2xl border border-glass-border bg-background shadow-[0_28px_90px_-30px_rgba(15,23,42,0.3)]">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-glass-border px-5 py-4">
+              <div className="flex items-center gap-3">
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600">
+                  <CheckCircle2 className="h-4 w-4" />
+                </span>
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Registrar conclusão</p>
+                  <p className="text-xs text-muted-foreground font-mono">{documento.processo || "Processo"}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConclusaoAberta(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="flex flex-col gap-5 px-5 py-5">
+              {/* Tipo + número */}
+              <div className="grid grid-cols-[110px_1fr] gap-3">
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Tipo</span>
+                  <select
+                    value={conclusaoTipo}
+                    onChange={(e) => setConclusaoTipo(e.target.value as RegistroLiquidacaoTipoDocumento)}
+                    disabled={conclusaoSaving}
+                    className="h-10 rounded-lg border border-glass-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary/50"
+                  >
+                    <option value="NP">NP</option>
+                    <option value="RP">RP</option>
+                    <option value="LF">LF</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Número</span>
+                  <input
+                    value={conclusaoNumero}
+                    onChange={(e) => { setConclusaoNumero(e.target.value); setConclusaoErro(""); }}
+                    disabled={conclusaoSaving}
+                    placeholder="Ex.: 2026NP001234"
+                    className="h-10 rounded-lg border border-glass-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary/50 placeholder:text-muted-foreground/50"
+                    autoFocus
+                  />
+                </label>
+              </div>
+
+              {/* Dificuldade */}
+              <DifficultyPicker
+                value={conclusaoDificuldade}
+                onChange={(v) => { setConclusaoDificuldade(v); setConclusaoErro(""); }}
+                disabled={conclusaoSaving}
+              />
+
+              {conclusaoErro && (
+                <p className="rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {conclusaoErro}
+                </p>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between gap-2 border-t border-glass-border px-5 py-4">
+              <button
+                type="button"
+                onClick={() => void handleConcluirComRegistro(false)}
+                disabled={conclusaoSaving}
+                className="h-10 rounded-xl border border-glass-border bg-background px-4 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-50"
+              >
+                Ainda não finalizei
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConcluirComRegistro(true)}
+                disabled={conclusaoSaving || !conclusaoNumero.trim() || !conclusaoDificuldade}
+                className="inline-flex h-10 items-center gap-2 rounded-xl bg-emerald-600 px-5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
+              >
+                {conclusaoSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                Registrar e concluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ConfiguracoesModal
         isOpen={isConfiguracoesOpen}

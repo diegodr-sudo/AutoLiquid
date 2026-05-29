@@ -2752,27 +2752,30 @@ def _confirmar_com_datas_atomico(pagina, did: str, data_ddmmaaaa: str, erros: li
             pass  # O evaluate abaixo registra o estado real do botão
 
         # Passo 1 — seta as duas datas silenciosamente (sem eventos)
-        resultado = pagina.evaluate(
-            """([did, iso]) => {
-                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-                const setData = (id) => {
-                    const el = document.getElementById(id);
-                    if (!el) return 'NAO_ENCONTRADO:' + id;
-                    if (setter) setter.call(el, iso); else el.value = iso;
-                    el.defaultValue = iso;
-                    el.setAttribute('value', iso);
-                    return el.value;
-                };
-                const vencVal = setData('sfdeducaodtvenc' + did);
-                const pgtoVal = setData('sfdeducaodtpgtoreceb' + did);
-                const btn = document.getElementById('confirma-dados-deducao-' + did);
-                if (!btn) return 'SEM_BTN:venc=' + vencVal + ':pgto=' + pgtoVal;
-                if (btn.disabled) return 'BTN_DISABLED:venc=' + vencVal + ':pgto=' + pgtoVal;
-                btn.scrollIntoView({ block: 'center' });
-                return 'OK:venc=' + vencVal + ':pgto=' + pgtoVal;
-            }""",
-            [did, iso],
-        ) or "EVAL_ERRO"
+        try:
+            resultado = pagina.evaluate(
+                """([did, iso]) => {
+                    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                    const setData = (id) => {
+                        const el = document.getElementById(id);
+                        if (!el) return 'NAO_ENCONTRADO:' + id;
+                        if (setter) setter.call(el, iso); else el.value = iso;
+                        el.defaultValue = iso;
+                        el.setAttribute('value', iso);
+                        return el.value;
+                    };
+                    const vencVal = setData('sfdeducaodtvenc' + did);
+                    const pgtoVal = setData('sfdeducaodtpgtoreceb' + did);
+                    const btn = document.getElementById('confirma-dados-deducao-' + did);
+                    if (!btn) return 'SEM_BTN:venc=' + vencVal + ':pgto=' + pgtoVal;
+                    if (btn.disabled) return 'BTN_DISABLED:venc=' + vencVal + ':pgto=' + pgtoVal;
+                    btn.scrollIntoView({ block: 'center' });
+                    return 'OK:venc=' + vencVal + ':pgto=' + pgtoVal;
+                }""",
+                [did, iso],
+            ) or "EVAL_ERRO"
+        except Exception as e_eval:
+            resultado = f"EVAL_ERRO:{e_eval}"
 
         ultimo_resultado = resultado
         print(f"    [Confirmar] tentativa {tentativa}/3 did={did} iso={iso} | datas setadas → {resultado}")
@@ -3057,7 +3060,7 @@ def _preencher_dob001_total(
         return False
     print(f"    did={did}")
 
-    _select(pagina, f"sfdeducaocodsit{did}", "DOB001", erros, "SituaÃ§Ã£o")
+    _select(pagina, f"sfdeducaocodsit{did}", "DOB001", erros, "Situação")
     try:
         _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=15000)
     except Exception:
@@ -3076,22 +3079,25 @@ def _preencher_dob001_total(
 
     _fill_if_different(pagina, f"sfdeducaocodugpgto{did}", _UG_TOMADORA, erros, "UG Pagadora")
     _fill_money(pagina, f"sfdeducaovlr{did}", valor_item_br, erros, "Valor do Item")
-    _select(pagina, f"sfdeducaopossui_acrescimo{did}", "NÃƒO", erros, "Possui AcrÃ©scimo")
+    _select(pagina, f"sfdeducaopossui_acrescimo{did}", "NÃO", erros, "Possui Acréscimo")
 
     # Diagnóstico: mostra as opções reais do select Tipo de OB
-    opcoes_reais = pagina.evaluate(
-        "(id) => { const s = document.getElementById(id); "
-        "return s ? Array.from(s.options).map(o => o.value + ‘|’ + o.text) : [‘NAO_ENCONTRADO’]; }",
-        f"codtipoob{did}",
-    )
-    print(f"    [Tipo de OB] opções disponíveis: {opcoes_reais}")
+    try:
+        opcoes_reais = pagina.evaluate(
+            "(id) => { const s = document.getElementById(id); "
+            "return s ? Array.from(s.options).map(o => o.value + ‘|’ + o.text) : [‘NAO_ENCONTRADO’]; }",
+            f"codtipoob{did}",
+        )
+        print(f"    [Tipo de OB] opções disponíveis: {opcoes_reais}")
+    except Exception as ex_opts:
+        print(f"    [Tipo de OB] diagnóstico falhou: {ex_opts}")
 
     _select_com_fallback(
         pagina,
         f"codtipoob{did}",
         [tipo_ob, "OB Fatura", "OB Crédito", "fatura", "credito", "crédito"],
         erros,
-        "PrÃ©-Doc/Tipo de OB",
+        "Pré-Doc/Tipo de OB",
     )
 
     # ── Batch fill: todos os campos de texto do Pré-Doc DOB001 (1 round-trip) ─
@@ -3109,11 +3115,15 @@ def _preencher_dob001_total(
     try:
         _batch_fill(pagina, campos_dob001)
     except Exception as e:
-        erros.append(f"PrÃ©-Doc DOB001/batch: {e}")
+        erros.append(f"Pré-Doc DOB001/batch: {e}")
 
     # ── Confirmar (atômico: seta datas + clica no mesmo tick JS) ─────────────
     print(f"    Confirmando DOB001 (did={did})")
-    return _confirmar_com_datas_atomico(pagina, did, data_venc, erros)
+    try:
+        return _confirmar_com_datas_atomico(pagina, did, data_venc, erros)
+    except Exception as e:
+        erros.append(f"DOB001: erro ao confirmar dedução (did={did}): {e}")
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

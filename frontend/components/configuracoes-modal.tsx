@@ -1,8 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   ArrowDownToLine,
+  Bug,
+  FileDown,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -36,12 +39,15 @@ import { GlassButton, GlassCard } from "./glass-card";
 import {
   fetchAppSettings,
   fetchAuthUsuarios,
+  fetchBugReports,
   fetchDatasGlobais,
   loginAutoLiquid,
   fetchRocketChatNotifications,
   fetchServidoresConfig,
   openChromeSession,
   recarregarModulos,
+  resolverBugReport,
+  deletarBugReport,
   saveAppSettings,
   saveDatasGlobais,
   upsertServidorConfig,
@@ -57,12 +63,14 @@ import {
   type AppSettings,
   type AtualizacaoTauriInfo,
   type AtualizacaoTauriProgresso,
+  type BugReport,
   type AuthUsuario,
   type ProcessDates,
   type ServidorConfigRemoto,
   type VersaoInfo,
 } from "@/lib/data";
 import { useAuth } from "@/lib/auth-context";
+import { parseDbTimestamp } from "@/lib/utils";
 
 interface ConfiguracoesModalProps {
   isOpen: boolean;
@@ -227,6 +235,11 @@ export function ConfiguracoesModal({
   const [salvandoDatasGlobais, setSalvandoDatasGlobais] = useState(false);
   const [validandoUsuario, setValidandoUsuario] = useState("");
   const [validacaoUsuarios, setValidacaoUsuarios] = useState<Record<string, "ok" | "erro">>({});
+  const [bugReports, setBugReports] = useState<BugReport[]>([]);
+  const [carregandoBugs, setCarregandoBugs] = useState(false);
+  const [erroBugs, setErroBugs] = useState("");
+  const [resolvendo, setResolvendo] = useState<number | null>(null);
+  const [excluindo, setExcluindo] = useState<number | null>(null);
   const [novoServidorNome, setNovoServidorNome] = useState("");
   const [erroServidores, setErroServidores] = useState("");
   const [erroUsuarios, setErroUsuarios] = useState("");
@@ -333,8 +346,105 @@ export function ConfiguracoesModal({
       .finally(() => {
         if (ativo) setCarregandoDatasGlobais(false);
       });
+    setCarregandoBugs(true);
+    setErroBugs("");
+    fetchBugReports("abertos")
+      .then((rows) => {
+        if (ativo) setBugReports(rows);
+      })
+      .catch((err) => {
+        if (ativo) setErroBugs(err instanceof Error ? err.message : "Erro ao carregar bugs.");
+      })
+      .finally(() => {
+        if (ativo) setCarregandoBugs(false);
+      });
     return () => { ativo = false; };
   }, [isOpen, abaAtiva, isModerator]);
+
+  const handleRecarregarBugs = () => {
+    setCarregandoBugs(true);
+    setErroBugs("");
+    fetchBugReports("abertos")
+      .then((rows) => setBugReports(rows))
+      .catch((err) => setErroBugs(err instanceof Error ? err.message : "Erro ao carregar bugs."))
+      .finally(() => setCarregandoBugs(false));
+  };
+
+  const [exportandoBugs, setExportandoBugs] = useState(false);
+
+  const handleExportarBugs = async () => {
+    setExportandoBugs(true);
+    try {
+      // Busca todos os bugs (abertos + resolvidos)
+      const [abertos, resolvidos] = await Promise.all([
+        fetchBugReports("abertos"),
+        fetchBugReports("resolvidos"),
+      ]);
+      const todos = [...abertos, ...resolvidos].sort(
+        (a, b) => new Date(b.criadoEm).getTime() - new Date(a.criadoEm).getTime()
+      );
+
+      if (todos.length === 0) {
+        return;
+      }
+
+      // ── Formata contexto e campos DOM como texto legível ──
+      const fmtObj = (obj: Record<string, unknown> | Record<string, string>): string => {
+        if (!obj || Object.keys(obj).length === 0) return "";
+        return Object.entries(obj)
+          .filter(([, v]) => v !== null && v !== undefined && v !== "")
+          .map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`)
+          .join(" | ");
+      };
+
+      const fmtTs = (ts: string) => {
+        const d = parseDbTimestamp(ts);
+        if (!d) return ts;
+        return d.toLocaleString("pt-BR", {
+          day: "2-digit", month: "2-digit", year: "numeric",
+          hour: "2-digit", minute: "2-digit", second: "2-digit",
+        });
+      };
+
+      // ── CSV ──
+      const escCsv = (v: string) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+      const colunas = [
+        "ID", "Status", "Descrição", "Página", "Servidor", "Versão",
+        "Criado em", "Resolvido em", "Contexto do app", "Campos do formulário", "Erros de console",
+      ];
+      const linhas = todos.map((b) => [
+        b.id,
+        b.resolvido ? "Resolvido" : "Aberto",
+        b.descricao,
+        b.pagina,
+        b.servidorNome,
+        b.versaoApp,
+        fmtTs(b.criadoEm),
+        b.resolvidoEm ? fmtTs(b.resolvidoEm) : "",
+        fmtObj(b.contexto),
+        fmtObj(b.camposDom),
+        (b.errosConsole ?? []).join(" | "),
+      ].map((c) => escCsv(String(c ?? ""))).join(";"));
+
+      const csv = [colunas.map((c) => escCsv(c)).join(";"), ...linhas].join("\r\n");
+      const bom = "﻿"; // BOM para Excel reconhecer UTF-8
+      const blob = new Blob([bom + csv], { type: "text/csv;charset=utf-8;" });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const dataHoje = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `bugs_autoliquid_${dataHoje}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      // silencioso — falha de exportação não bloqueia a tela
+    } finally {
+      setExportandoBugs(false);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -1498,35 +1608,43 @@ export function ConfiguracoesModal({
                                         className="min-w-0 flex-1 rounded-xl border border-glass-border bg-background px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary"
                                         title="Senha"
                                       />
-                                      <button
-                                        type="button"
-                                        onClick={() => void handleAtualizarUsuario(usuario, { senha: null })}
-                                        className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-glass-border text-muted-foreground transition hover:text-foreground"
-                                        title="Gerar nova senha"
-                                      >
-                                        <RefreshCw className="h-4 w-4" />
-                                      </button>
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <button
+                                            type="button"
+                                            onClick={() => void handleAtualizarUsuario(usuario, { senha: null })}
+                                            className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-glass-border text-muted-foreground transition hover:text-foreground"
+                                          >
+                                            <RefreshCw className="h-4 w-4" />
+                                          </button>
+                                        </TooltipTrigger>
+                                        <TooltipContent className="z-[210]">Gerar nova senha</TooltipContent>
+                                      </Tooltip>
                                     </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => void handleValidarUsuario(usuario)}
-                                      disabled={validandoUsuario === usuario.username}
-                                      className={`inline-flex h-9 items-center justify-center gap-2 rounded-xl border px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                                        validacaoUsuarios[usuario.username] === "ok"
-                                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700"
-                                          : validacaoUsuarios[usuario.username] === "erro"
-                                            ? "border-destructive/30 bg-destructive/10 text-destructive"
-                                            : "border-glass-border text-muted-foreground hover:text-foreground"
-                                      }`}
-                                      title="Validar autenticação"
-                                    >
-                                      {validandoUsuario === usuario.username ? (
-                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                      ) : (
-                                        <CheckCircle2 className="h-3.5 w-3.5" />
-                                      )}
-                                      {validacaoUsuarios[usuario.username] === "ok" ? "Validado" : "Validar"}
-                                    </button>
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <button
+                                          type="button"
+                                          onClick={() => void handleValidarUsuario(usuario)}
+                                          disabled={validandoUsuario === usuario.username}
+                                          className={`inline-flex h-9 items-center justify-center gap-2 rounded-xl border px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                                            validacaoUsuarios[usuario.username] === "ok"
+                                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700"
+                                              : validacaoUsuarios[usuario.username] === "erro"
+                                                ? "border-destructive/30 bg-destructive/10 text-destructive"
+                                                : "border-glass-border text-muted-foreground hover:text-foreground"
+                                          }`}
+                                        >
+                                          {validandoUsuario === usuario.username ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                          ) : (
+                                            <CheckCircle2 className="h-3.5 w-3.5" />
+                                          )}
+                                          {validacaoUsuarios[usuario.username] === "ok" ? "Validado" : "Validar"}
+                                        </button>
+                                      </TooltipTrigger>
+                                      <TooltipContent className="z-[210]">Validar autenticação</TooltipContent>
+                                    </Tooltip>
                                   </>
                                 ) : (
                                   <>
@@ -1537,14 +1655,18 @@ export function ConfiguracoesModal({
                                     <span />
                                   </>
                                 )}
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoverServidorSistema(servidor)}
-                                  className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-glass-border text-muted-foreground transition hover:border-destructive/30 hover:text-destructive"
-                                  title="Remover servidor"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoverServidorSistema(servidor)}
+                                      className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-glass-border text-muted-foreground transition hover:border-destructive/30 hover:text-destructive"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent className="z-[210]">Remover servidor</TooltipContent>
+                                </Tooltip>
                               </div>
                             ))}
                           </div>
@@ -1827,6 +1949,130 @@ export function ConfiguracoesModal({
                           )}
                         </div>
                       </div>
+                    </section>
+
+                    {/* ── Central de Bugs ── */}
+                    <section className="rounded-2xl border border-red-500/20 bg-red-500/5 px-4 py-4">
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-red-500/20 bg-background/80 text-red-600">
+                            <Bug className="h-5 w-5" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold text-foreground">Central de bugs</p>
+                            <p className="mt-1 text-sm text-muted-foreground">
+                              Relatórios enviados pelos usuários. Marque como resolvido após corrigir.
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {(carregandoBugs || exportandoBugs) && (
+                            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void handleExportarBugs()}
+                            disabled={exportandoBugs || carregandoBugs}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40"
+                            title="Exportar relatório CSV"
+                          >
+                            <FileDown className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleRecarregarBugs}
+                            disabled={carregandoBugs}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40"
+                            title="Recarregar"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {erroBugs && (
+                        <p className="text-xs text-destructive px-1 pb-2">{erroBugs}</p>
+                      )}
+
+                      {!carregandoBugs && !erroBugs && bugReports.length === 0 && (
+                        <p className="text-sm text-muted-foreground text-center py-4">
+                          Nenhum bug em aberto.
+                        </p>
+                      )}
+
+                      {bugReports.length > 0 && (
+                        <div className="flex flex-col gap-2">
+                          {bugReports.map((bug) => (
+                            <div
+                              key={bug.id}
+                              className="rounded-xl border border-glass-border bg-background/70 px-3 py-3 flex flex-col gap-1.5"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex flex-col gap-0.5 min-w-0">
+                                  <p className="text-sm text-foreground break-words">{bug.descricao}</p>
+                                  <div className="flex flex-wrap gap-2 mt-1">
+                                    {bug.pagina && (
+                                      <span className="inline-flex items-center rounded-full border border-glass-border bg-background px-2 py-0.5 text-[10px] text-muted-foreground font-mono">
+                                        {bug.pagina}
+                                      </span>
+                                    )}
+                                    {bug.servidorNome && (
+                                      <span className="inline-flex items-center rounded-full border border-glass-border bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
+                                        {bug.servidorNome}
+                                      </span>
+                                    )}
+                                    <span className="inline-flex items-center rounded-full border border-glass-border bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
+                                      {(parseDbTimestamp(bug.criadoEm) ?? new Date(bug.criadoEm)).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="flex shrink-0 gap-1">
+                                  <GlassButton
+                                    variant="ghost"
+                                    size="sm"
+                                    className="text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10"
+                                    disabled={resolvendo === bug.id || excluindo === bug.id}
+                                    onClick={() => {
+                                      setResolvendo(bug.id);
+                                      resolverBugReport(bug.id)
+                                        .then(() => setBugReports((current) => current.filter((b) => b.id !== bug.id)))
+                                        .catch(() => {/* silencioso */})
+                                        .finally(() => setResolvendo(null));
+                                    }}
+                                  >
+                                    {resolvendo === bug.id ? (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                      <Check className="h-3.5 w-3.5" />
+                                    )}
+                                    Resolvido
+                                  </GlassButton>
+                                  <GlassButton
+                                    variant="ghost"
+                                    size="sm"
+                                    className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                                    disabled={excluindo === bug.id || resolvendo === bug.id}
+                                    title="Excluir"
+                                    onClick={() => {
+                                      setExcluindo(bug.id);
+                                      deletarBugReport(bug.id)
+                                        .then(() => setBugReports((current) => current.filter((b) => b.id !== bug.id)))
+                                        .catch(() => {/* silencioso */})
+                                        .finally(() => setExcluindo(null));
+                                    }}
+                                  >
+                                    {excluindo === bug.id ? (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    )}
+                                  </GlassButton>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </section>
                   </>
                 )}
