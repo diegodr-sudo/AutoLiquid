@@ -1391,12 +1391,15 @@ export default function HomePage() {
   const [registroPendente, setRegistroPendente] = useState<RegistroLiquidacaoPendente | null>(null);
   const [registroTipoDocumento, setRegistroTipoDocumento] = useState<RegistroLiquidacaoTipoDocumento>("NP");
   const [registroNumeroDocumento, setRegistroNumeroDocumento] = useState("");
+  const [registroNumeroDocumentoPronto, setRegistroNumeroDocumentoPronto] = useState(false);
   const [registroDificuldade, setRegistroDificuldade] = useState(3);
   const [registroDificuldadeInteragida, setRegistroDificuldadeInteragida] = useState(false);
   const [registroSaving, setRegistroSaving] = useState(false);
   const [registroError, setRegistroError] = useState("");
   const [registroNotice, setRegistroNotice] = useState("");
   const registroNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const registroEncaminhamentoCopiadoKeyRef = useRef("");
+  const registroEncaminhamentoCopyingRef = useRef(false);
   const [startupRunId, setStartupRunId] = useState(0);
   const [dashboardPeriodo, setDashboardPeriodo] =
     useState<keyof typeof DASHBOARD_LABELS>("semana");
@@ -3186,6 +3189,7 @@ export default function HomePage() {
       setRegistroPendente(registro);
       setActiveMainTab("registro");
       setRegistroError("");
+      setRegistroNumeroDocumentoPronto(false);
       setRegistroDificuldadeInteragida(false);
     };
 
@@ -3534,7 +3538,7 @@ export default function HomePage() {
     }
   };
 
-  const mostrarRegistroNotice = (mensagem: string) => {
+  const mostrarRegistroNotice = (mensagem: string, durationMs = 1500) => {
     setRegistroNotice(mensagem);
     if (registroNoticeTimerRef.current) {
       clearTimeout(registroNoticeTimerRef.current);
@@ -3542,7 +3546,7 @@ export default function HomePage() {
     registroNoticeTimerRef.current = setTimeout(() => {
       setRegistroNotice("");
       registroNoticeTimerRef.current = null;
-    }, 2000);
+    }, durationMs);
   };
 
   const temRegistroLiquidacaoPendente = () => {
@@ -3555,8 +3559,10 @@ export default function HomePage() {
     }
   };
 
-  const montarTextoEncaminhamento = () =>
-    `Para conformidade, ${registroTipoDocumento} ${registroNumeroDocumento.trim()}.`;
+  const registroTextoEncaminhamento = useMemo(
+    () => `Para conformidade, ${registroTipoDocumento} ${registroNumeroDocumento.trim()}.`,
+    [registroTipoDocumento, registroNumeroDocumento],
+  );
 
   const copiarTextoParaAreaTransferencia = async (texto: string) => {
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
@@ -3577,6 +3583,42 @@ export default function HomePage() {
       throw new Error("O navegador recusou a cópia automática.");
     }
   };
+
+  useEffect(() => {
+    if (!registroPendente || registroSaving) return;
+    const numero = registroNumeroDocumento.trim();
+    if (!numero || !registroNumeroDocumentoPronto || !registroDificuldadeInteragida) return;
+
+    const copyKey = `${registroTipoDocumento}:${numero}:${registroDificuldade}`;
+    if (
+      registroEncaminhamentoCopiadoKeyRef.current === copyKey
+      || registroEncaminhamentoCopyingRef.current
+    ) {
+      return;
+    }
+
+    registroEncaminhamentoCopyingRef.current = true;
+    copiarTextoParaAreaTransferencia(registroTextoEncaminhamento)
+      .then(() => {
+        registroEncaminhamentoCopiadoKeyRef.current = copyKey;
+        mostrarRegistroNotice("Encaminhamento copiado", 1500);
+      })
+      .catch((error) => {
+        console.warn("Não foi possível copiar o encaminhamento automaticamente.", error);
+      })
+      .finally(() => {
+        registroEncaminhamentoCopyingRef.current = false;
+      });
+  }, [
+    registroPendente,
+    registroSaving,
+    registroTipoDocumento,
+    registroNumeroDocumento,
+    registroNumeroDocumentoPronto,
+    registroDificuldade,
+    registroDificuldadeInteragida,
+    registroTextoEncaminhamento,
+  ]);
 
   const concluirRegistroLiquidacao = async (finalizada: boolean) => {
     if (!registroPendente) return;
@@ -3599,10 +3641,12 @@ export default function HomePage() {
       servidorUsername: auth.session?.username || "",
     };
 
-    let encaminhamentoCopiado = false;
+    const encaminhamentoKey = `${registroTipoDocumento}:${registroNumeroDocumento.trim()}:${registroDificuldade}`;
+    let encaminhamentoCopiado = registroEncaminhamentoCopiadoKeyRef.current === encaminhamentoKey;
     try {
-      if (finalizada) {
-        await copiarTextoParaAreaTransferencia(montarTextoEncaminhamento());
+      if (finalizada && !encaminhamentoCopiado) {
+        await copiarTextoParaAreaTransferencia(registroTextoEncaminhamento);
+        registroEncaminhamentoCopiadoKeyRef.current = encaminhamentoKey;
         encaminhamentoCopiado = true;
       }
     } catch (error) {
@@ -3637,8 +3681,10 @@ export default function HomePage() {
       }
       setRegistroPendente(null);
       setRegistroNumeroDocumento("");
+      setRegistroNumeroDocumentoPronto(false);
       setRegistroDificuldade(3);
       setRegistroDificuldadeInteragida(false);
+      registroEncaminhamentoCopiadoKeyRef.current = "";
       setDashboardRefreshSeq((seq) => seq + 1);
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("autoliquid:liquidacao-registrada", { detail: payload }));
@@ -5430,7 +5476,11 @@ export default function HomePage() {
                   <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Número do documento</span>
                   <input
                     value={registroNumeroDocumento}
-                    onChange={(event) => setRegistroNumeroDocumento(event.target.value)}
+                    onChange={(event) => {
+                      setRegistroNumeroDocumento(event.target.value);
+                      setRegistroNumeroDocumentoPronto(false);
+                    }}
+                    onBlur={(event) => setRegistroNumeroDocumentoPronto(Boolean(event.currentTarget.value.trim()))}
                     className={PILL_FORM_CONTROL_CLASS}
                     disabled={registroSaving}
                   />
@@ -5482,12 +5532,13 @@ export default function HomePage() {
       ) : null}
 
       {registroNotice ? (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-background/65 px-6">
+        <div className="pointer-events-none fixed inset-x-0 top-6 z-[100] flex justify-center px-4">
           <div
             role="status"
             aria-live="polite"
-            className="registro-notice rounded-3xl border border-emerald-500/25 bg-background/95 px-6 py-5 text-center text-base font-semibold text-emerald-800 shadow-[0_28px_90px_-45px_rgba(15,23,42,0.65)]"
+            className="registro-notice inline-flex items-center gap-2 rounded-xl border border-emerald-500/25 bg-background/95 px-4 py-2.5 text-sm font-semibold text-emerald-700 shadow-[0_18px_55px_-28px_rgba(15,23,42,0.85)] backdrop-blur"
           >
+            <CheckCircle2 className="h-4 w-4" />
             {registroNotice}
           </div>
         </div>

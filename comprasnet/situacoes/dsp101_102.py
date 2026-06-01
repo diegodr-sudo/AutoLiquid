@@ -20,6 +20,9 @@ from comprasnet.principal_helpers import (
     _preencher_vpd,
     _aguardar_mascara_campo,
     _JS_POSICIONAR_MASCARA,
+    _campo_empenho_atual,
+    _preencher_campo_empenho_por_prefixo,
+    _valor_conta_estoque_formatado,
 )
 
 
@@ -30,10 +33,23 @@ def _preencher_conta_estoque(pagina, codigo: str, erros: list):
     digita somente os dígitos editáveis — nunca usa fill("") que corrompe a máscara.
     """
     try:
-        campo = pagina.locator(
-            "xpath=//*[normalize-space(text())='Conta de Estoque']"
-            "/following::input[1]"
-        ).first
+        valor_direto = _preencher_campo_empenho_por_prefixo(
+            pagina,
+            "numclassa",
+            _valor_conta_estoque_formatado(codigo),
+        )
+        if valor_direto:
+            print(f"    Conta de Estoque: '{valor_direto}' por ID do empenho")
+            return
+
+        campo = _campo_empenho_atual(pagina, "Conta de Estoque")
+        try:
+            campo.wait_for(state="visible", timeout=1200)
+        except Exception:
+            campo = pagina.locator(
+                "xpath=//*[normalize-space(text())='Conta de Estoque']"
+                "/following::input[1]"
+            ).first
         campo.wait_for(state="visible", timeout=5000)
         codigo_digitos = re.sub(r"\D+", "", str(codigo or ""))
 

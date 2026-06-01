@@ -27,7 +27,6 @@ import logging
 import os
 import re
 import shutil
-import socket
 import tempfile
 import inspect
 import time
@@ -175,6 +174,7 @@ FILA_PROCESSOS_CACHE: dict[str, Any] = {
     "columns":[],
     "updatedAt": None,
 }
+SOLAR_FILA_TARGET_URL = "https://suporte.egestao.ufsc.br/pagamentos/index.xhtml"
 FILA_EVENT_SUBSCRIBERS: set[Queue[str]] = set()
 FILA_EVENT_SUBSCRIBERS_LOCK = Lock()
 FILA_EVENT_LISTENER_LOCK = Lock()
@@ -2289,8 +2289,13 @@ def _executar_uma_etapa(
             _verificar_resultado(resultado, "Dedução")
         elif etapa_id == 4:
             _log(doc_id, "→ Iniciando Dados de Pagamento...")
+            dados_pagamento = {
+                **dados,
+                "_lf_numero": lf_numero,
+                "_vencimento_documento": venc,
+            }
             resultado = comprasnet_dados_pagamento.executar(
-                dados, venc,
+                dados_pagamento, venc,
                 usar_conta_pdf=usar_conta_pdf,
                 conta_banco=conta_banco,
                 conta_agencia=conta_agencia,
@@ -2693,16 +2698,13 @@ def atualizar_usuario_auth(payload: UsuarioAuthPayload) -> dict[str, Any]:
 @app.get("/api/status")
 async def status_backend() -> dict[str, Any]:
     porta = obter_porta_chrome()
-    aberto = False
-
     try:
-        with socket.create_connection(("127.0.0.1", porta), timeout=0.01):
-            aberto = True
+        chrome_pronto = _chrome_service().chrome_esta_pronto(porta, timeout_s=0.5)
     except Exception:
-        aberto = False
+        chrome_pronto = False
 
     return {
-        "chromeStatus": "pronto" if aberto else "erro",
+        "chromeStatus": "pronto" if chrome_pronto else "erro",
         "chromePorta": porta,
     }
 
@@ -2901,7 +2903,7 @@ def fila_processos(refresh: bool = Query(default=False)) -> dict[str, Any]:
                 aguardar=True,
                 timeout_s=20,
                 oculto=True,
-                url_inicial=url_consulta,
+                url_inicial=SOLAR_FILA_TARGET_URL,
             )
 
         from scripts.solar_fila_headless import SolarFilaConfig, SolarFilaExtractor

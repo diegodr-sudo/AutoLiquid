@@ -29,6 +29,8 @@ from comprasnet.principal_helpers import (
     _preencher_campo_com_retry,
     _capturar_empenhos_web,
     _comparar_empenhos_pdf_web,
+    _pre_expandir_barras_empenhos,
+    _reparar_contas_a_pagar_empenhos,
 )
 from core.de_para_contratos import formatar_sarf, buscar_ig
 
@@ -318,6 +320,8 @@ def executar(dados_extraidos, deve_parar=None, *, pagina=None, playwright=None):
 
         _abrir_aba_principal_orcamento(pagina)
         time.sleep(0.3)
+        situacao_selecionada = ""
+        empenhos_pre_abertos_por_situacao: set[str] = set()
 
         for idx, emp in enumerate(dados_extraidos.get("Empenhos", [])):
             _verificar_interrupcao(deve_parar)
@@ -341,16 +345,29 @@ def executar(dados_extraidos, deve_parar=None, *, pagina=None, playwright=None):
                 )
                 continue
 
-            ok = _selecionar_situacao_dropdown(pagina, cod_completo, cod_numerico)
-            if not ok:
-                erros.append(f"Empenho {num}: não foi possível selecionar situação '{chave}'.")
-                continue
+            if chave != situacao_selecionada:
+                ok = _selecionar_situacao_dropdown(pagina, cod_completo, cod_numerico)
+                if not ok:
+                    erros.append(f"Empenho {num}: não foi possível selecionar situação '{chave}'.")
+                    continue
+                situacao_selecionada = chave
+                if chave not in empenhos_pre_abertos_por_situacao:
+                    empenhos_mesma_situacao = [
+                        item for item in dados_extraidos.get("Empenhos", [])
+                        if (
+                            (extrair_siafi_completo(item.get("Situação", "")) or extrair_codigo_situacao(item.get("Situação", "")))
+                            == chave
+                        )
+                    ]
+                    _pre_expandir_barras_empenhos(pagina, empenhos_mesma_situacao, erros)
+                    empenhos_pre_abertos_por_situacao.add(chave)
+            else:
+                print(f"    Situação {chave} já selecionada — mantendo formulário atual.")
 
             handler = _HANDLERS.get(cod_completo) or _HANDLERS.get(cod_numerico)
             if handler:
                 # Injeta o código da situação no dict de dados para que os
                 # handlers possam adaptar o comportamento por situação.
-                _resolver_ig_contrato(dados_extraidos)
                 dados_handler = {**(dados_extraidos or {}), "_SITUACAO_NORM": cod_completo}
                 handler(
                     pagina,
@@ -362,6 +379,18 @@ def executar(dados_extraidos, deve_parar=None, *, pagina=None, playwright=None):
                 )
             else:
                 erros.append(f"Handler para situação '{chave}' não implementado.")
+
+        if not erros:
+            por_codigo: dict[str, list] = {}
+            for emp in dados_extraidos.get("Empenhos", []):
+                raw_emp = emp.get("Situação", "")
+                chave_emp = extrair_siafi_completo(raw_emp) or extrair_codigo_situacao(raw_emp)
+                cfg_emp = config_situacao(chave_emp)
+                codigo_cap = str((cfg_emp or {}).get("contas_a_pagar", "") or "")
+                if codigo_cap:
+                    por_codigo.setdefault(codigo_cap, []).append(emp)
+            for codigo_cap, empenhos_codigo in por_codigo.items():
+                _reparar_contas_a_pagar_empenhos(pagina, empenhos_codigo, codigo_cap, erros)
 
         # Confirma aba (somente sem erros)
         if not erros:

@@ -106,14 +106,14 @@ class SolarFilaExtractor:
             # Aqui não exigimos login automático: esperamos que a sessão já esteja autenticada.
             return self._extract_from_page(page, require_login=False)
         finally:
-            if self.config.close_tab:
+            if self.config.close_tab or self._page_is_blank(page):
                 try:
                     page.close()
                 except Exception:
                     pass
 
     def _extract_from_page(self, page: Page, require_login: bool) -> pd.DataFrame:
-        page.goto(TARGET_URL, wait_until="domcontentloaded")
+        self._goto_target(page)
         if require_login:
             self._login_if_needed(page)
         else:
@@ -131,6 +131,38 @@ class SolarFilaExtractor:
         headers, rows = self._extract_results_table_rows(frame)
         dataframe = self._table_rows_to_dataframe(headers, rows)
         return self._normalize_dataframe(dataframe)
+
+    def _page_is_blank(self, page: Page) -> bool:
+        try:
+            return str(page.url or "").strip().lower() in {"", "about:blank"}
+        except Exception:
+            return False
+
+    def _goto_target(self, page: Page) -> None:
+        last_error: Exception | None = None
+        for _attempt in range(2):
+            try:
+                page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=self.config.timeout_ms)
+                page.wait_for_timeout(500)
+                if not self._page_is_blank(page):
+                    return
+            except Exception as exc:
+                last_error = exc
+
+            try:
+                page.evaluate("(url) => { window.location.href = url; }", TARGET_URL)
+                page.wait_for_load_state("domcontentloaded", timeout=self.config.timeout_ms)
+                page.wait_for_timeout(500)
+                if not self._page_is_blank(page):
+                    return
+            except Exception as exc:
+                last_error = exc
+
+        detail = f" Detalhe: {last_error}" if last_error else ""
+        raise RuntimeError(
+            "Não foi possível abrir a fila do Solar no Chrome da automação; a aba permaneceu em about:blank."
+            f"{detail}"
+        )
 
     def _login_if_needed(self, page: Page) -> None:
         has_login_form = page.locator("form#fm1, form[action*='login']").count() > 0

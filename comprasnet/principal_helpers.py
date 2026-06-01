@@ -206,9 +206,398 @@ def _empenho_expandido(pagina, num_empenho: str) -> bool:
         return False
 
 
+def _marcar_empenho_atual(pagina, num_empenho: str) -> bool:
+    """Marca o painel expandido do empenho atual para os preenchimentos escopados."""
+    num_fmt = _formatar_numero_empenho(num_empenho)
+    try:
+        return bool(
+            pagina.evaluate(
+                r"""(numEmp) => {
+                    const normalizar = (txt) => (txt || '').replace(/\s+/g, '').toUpperCase();
+                    const alvo = normalizar(numEmp);
+                    const visivel = (el) => {
+                        if (!el) return false;
+                        const rect = el.getBoundingClientRect();
+                        const estilo = window.getComputedStyle(el);
+                        return rect.width > 0 && rect.height > 0
+                            && estilo.visibility !== 'hidden'
+                            && estilo.display !== 'none';
+                    };
+                    document.querySelectorAll('[data-autoliquid-empenho-atual="1"]')
+                        .forEach((el) => el.removeAttribute('data-autoliquid-empenho-atual'));
+                    document.body.removeAttribute('data-autoliquid-empenho-sufixo');
+                    const painelDo = (el) => {
+                        const preferido = el.closest('.count-poo-item, [data-count-poo-item], .box.box-solid, .box, .panel, .card, section, fieldset, form');
+                        if (preferido) return preferido;
+                        let atual = el;
+                        while (atual && atual !== document.body) {
+                            const txt = normalizar(atual.innerText || atual.textContent);
+                            const inputs = atual.querySelectorAll ? atual.querySelectorAll('input').length : 0;
+                            if (txt.includes(alvo) && inputs >= 3) return atual;
+                            atual = atual.parentElement;
+                        }
+                        return el.parentElement || el;
+                    };
+
+                    const inputs = Array.from(document.querySelectorAll('input')).filter((el) => {
+                        return visivel(el) && normalizar(el.value || '').includes(alvo);
+                    });
+                    for (const input of inputs) {
+                        const painel = painelDo(input);
+                        if (painel && visivel(painel)) {
+                            painel.setAttribute('data-autoliquid-empenho-atual', '1');
+                            const sufixo = String(input.id || '').match(/^numempe(.+)$/)?.[1] || '';
+                            if (sufixo) document.body.setAttribute('data-autoliquid-empenho-sufixo', sufixo);
+                            painel.scrollIntoView({ block: 'center', inline: 'nearest' });
+                            return true;
+                        }
+                    }
+
+                    const headers = Array.from(document.querySelectorAll('.row.pointer-hand, .box-header, .title-item-acordion, .panel-heading, .card-header, div'))
+                        .filter((el) => visivel(el) && normalizar(el.innerText || el.textContent).includes(alvo));
+                    for (const header of headers) {
+                        const painel = painelDo(header);
+                        if (painel && visivel(painel)) {
+                            painel.setAttribute('data-autoliquid-empenho-atual', '1');
+                            const input = Array.from(painel.querySelectorAll('input[id^="numempe"]'))
+                                .find((el) => normalizar(el.value || '').includes(alvo));
+                            const sufixo = String(input?.id || '').match(/^numempe(.+)$/)?.[1] || '';
+                            if (sufixo) document.body.setAttribute('data-autoliquid-empenho-sufixo', sufixo);
+                            painel.scrollIntoView({ block: 'center', inline: 'nearest' });
+                            return true;
+                        }
+                    }
+                    return false;
+                }""",
+                num_fmt,
+            )
+        )
+    except Exception:
+        return False
+
+
+def _campo_empenho_atual(pagina, rotulo: str):
+    """Retorna o primeiro input após um rótulo dentro do painel marcado."""
+    prefixos_por_rotulo = {
+        "Conta de Bens": "numclassa",
+        "Conta de Estoque": "numclassa",
+        "Contas a Pagar": "numclassb",
+        "Variação Patrimonial": "numclassc",
+    }
+    prefixo = next((pref for chave, pref in prefixos_por_rotulo.items() if chave in rotulo), "")
+    if prefixo:
+        try:
+            sufixo = pagina.evaluate("() => document.body.getAttribute('data-autoliquid-empenho-sufixo') || ''")
+            if sufixo:
+                return pagina.locator(f"#{prefixo}{sufixo}").first
+        except Exception:
+            pass
+
+    raiz = pagina.locator("[data-autoliquid-empenho-atual='1']").first
+    return raiz.locator(
+        f"xpath=.//*[contains(normalize-space(text()),'{rotulo}')]"
+        "/following::input[1]"
+    ).first
+
+
+def _sufixo_empenho_atual(pagina) -> str:
+    try:
+        return str(pagina.evaluate("() => document.body.getAttribute('data-autoliquid-empenho-sufixo') || ''") or "")
+    except Exception:
+        return ""
+
+
+def _preencher_campo_empenho_por_prefixo(pagina, prefixo: str, valor: str) -> str:
+    """Preenche campo do item PCO atual por ID real, mesmo se o painel estiver recolhido."""
+    sufixo = _sufixo_empenho_atual(pagina)
+    if not sufixo or not prefixo or not valor:
+        return ""
+    try:
+        return str(
+            pagina.evaluate(
+                """([prefixo, sufixo, valor]) => {
+                    const el = document.getElementById(`${prefixo}${sufixo}`);
+                    if (!el) return '';
+                    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                    el.focus();
+                    if (setter) setter.call(el, valor); else el.value = valor;
+                    el.defaultValue = valor;
+                    el.setAttribute('value', valor);
+                    el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    el.dispatchEvent(new Event('blur', { bubbles: true }));
+                    return el.value || '';
+                }""",
+                [prefixo, sufixo, str(valor)],
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _preencher_campo_empenho_mascarado_por_prefixo(
+    pagina,
+    prefixo: str,
+    valor_formatado: str,
+    valor_digitos: str,
+) -> str:
+    """Preenche campo mascarado por ID real usando inputmask quando disponível."""
+    sufixo = _sufixo_empenho_atual(pagina)
+    if not sufixo or not prefixo:
+        return ""
+    try:
+        return str(
+            pagina.evaluate(
+                """([prefixo, sufixo, formatado, digitos]) => {
+                    const el = document.getElementById(`${prefixo}${sufixo}`);
+                    if (!el) return '';
+
+                    const fire = () => {
+                        el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        el.dispatchEvent(new Event('blur', { bubbles: true }));
+                    };
+                    const setNative = (val) => {
+                        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                        el.focus();
+                        if (setter) setter.call(el, val); else el.value = val;
+                        el.defaultValue = val;
+                        el.setAttribute('value', val);
+                        fire();
+                        return el.value || '';
+                    };
+                    const completo = (val) => String(val || '').replace(/\\D/g, '') === String(formatado || '').replace(/\\D/g, '');
+
+                    if (window.$ && $(el).inputmask) {
+                        try {
+                            $(el).inputmask('setvalue', digitos);
+                            fire();
+                            if (completo(el.value)) return el.value || '';
+                            $(el).inputmask('setvalue', formatado);
+                            fire();
+                            if (completo(el.value)) return el.value || '';
+                        } catch(e) {}
+                    }
+
+                    const viaDigitos = setNative(digitos);
+                    if (completo(viaDigitos)) return viaDigitos;
+                    const viaFormatado = setNative(formatado);
+                    if (completo(viaFormatado)) return viaFormatado;
+                    return viaDigitos || el.value || '';
+                }""",
+                [prefixo, sufixo, str(valor_formatado), str(valor_digitos)],
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _campo_empenho_por_prefixo(pagina, prefixo: str):
+    sufixo = _sufixo_empenho_atual(pagina)
+    if not sufixo or not prefixo:
+        return None
+    return pagina.locator(f"#{prefixo}{sufixo}").first
+
+
+def _valor_contas_a_pagar_formatado(codigo: str) -> str:
+    digitos = re.sub(r"\D+", "", str(codigo or ""))
+    if digitos in {"104", "1104"}:
+        return "2.1.3.1.1.04.00"
+    return str(codigo or "").strip()
+
+
+def _valor_conta_estoque_formatado(codigo: str) -> str:
+    digitos = re.sub(r"\D+", "", str(codigo or ""))
+    if digitos == "60100":
+        return "1.1.5.6.1.01.00"
+    return str(codigo or "").strip()
+
+
+def _campo_equivalente_contas_a_pagar(valor_campo: str, valor_esperado: str) -> bool:
+    atual = re.sub(r"\D+", "", str(valor_campo or ""))
+    esperado = re.sub(r"\D+", "", str(valor_esperado or ""))
+    if not atual or not esperado:
+        return False
+    if atual == esperado:
+        return True
+    equivalencias = {
+        "104": {"213110400"},
+        "1104": {"213111000", "213110400"},
+    }
+    return atual in equivalencias.get(esperado, set())
+
+
+def _digitar_mascara_no_primeiro_placeholder(pagina, campo, digitos: str, delay_ms: int = 45) -> str:
+    """Digita os dígitos no primeiro '_' preservando a máscara já pré-preenchida."""
+    if campo is None:
+        return ""
+    campo.click()
+    time.sleep(0.05)
+    _aguardar_mascara_campo(campo)
+    campo.evaluate(
+        """(el) => {
+            const valor = String(el.value || '');
+            const primeiro = valor.indexOf('_');
+            el.focus();
+            const pos = primeiro >= 0 ? primeiro : valor.length;
+            try {
+                if (window.$ && $(el).caret) $(el).caret(pos);
+            } catch(e) {}
+            try { el.setSelectionRange(pos, pos); } catch(e) {}
+        }"""
+    )
+    # Teclas reais disparam melhor os hooks do inputmask do SIAFI do que insert_text.
+    campo.press_sequentially(str(digitos or ""), delay=delay_ms)
+    pagina.keyboard.press("Tab")
+    time.sleep(0.35)
+    return campo.input_value().strip()
+
+
+def _reparar_contas_a_pagar_empenhos(pagina, empenhos: list, codigo: str, erros: list) -> None:
+    """Última passada: garante Contas a Pagar em cada empenho usando IDs numclassb."""
+    codigo_digitos = re.sub(r"\D+", "", str(codigo or ""))
+    if not codigo_digitos:
+        return
+    for emp in empenhos or []:
+        numero = _formatar_numero_empenho((emp or {}).get("Empenho", ""))
+        if not numero:
+            continue
+        try:
+            _marcar_empenho_atual(pagina, numero)
+            sufixo = _sufixo_empenho_atual(pagina)
+            if not sufixo:
+                continue
+            campo = _campo_empenho_por_prefixo(pagina, "numclassb")
+            if campo is None:
+                continue
+            valor_atual = campo.input_value(timeout=2000).strip()
+            if _campo_equivalente_contas_a_pagar(valor_atual, codigo):
+                continue
+            valor_final = _digitar_mascara_no_primeiro_placeholder(pagina, campo, codigo_digitos, delay_ms=35)
+            if _campo_equivalente_contas_a_pagar(valor_final, codigo):
+                print(f"    Contas a Pagar reparada ({numero}): '{valor_final}'")
+            else:
+                erros.append(f"Contas a Pagar {numero}: campo terminou com '{valor_final or 'vazio'}'.")
+        except Exception as exc:
+            erros.append(f"Contas a Pagar {numero}: reparo final falhou ({exc}).")
+
+
+def _pre_expandir_barras_empenhos(pagina, empenhos: list, erros: list | None = None) -> set[str]:
+    """Abre em lote todos os painéis de empenho presentes na aba.
+
+    O Comprasnet demora bastante quando cada handler procura e abre sua barra
+    separadamente. Este passo localiza todos os números do PDF e clica nos
+    cabeçalhos fechados primeiro, deixando os campos disponíveis para o
+    preenchimento escopado por empenho.
+    """
+    numeros = []
+    for emp in empenhos or []:
+        numero = _formatar_numero_empenho((emp or {}).get("Empenho", ""))
+        if numero and numero not in numeros:
+            numeros.append(numero)
+    if not numeros:
+        return set()
+
+    try:
+        resultado = pagina.evaluate(
+            r"""(nums) => {
+                const normalizar = (txt) => (txt || '').replace(/\s+/g, ' ').trim().toUpperCase();
+                const normalizarCompacto = (txt) => normalizar(txt).replace(/\s+/g, '');
+                const visivel = (el) => {
+                    if (!el) return false;
+                    const rect = el.getBoundingClientRect();
+                    const estilo = window.getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0
+                        && estilo.visibility !== 'hidden'
+                        && estilo.display !== 'none';
+                };
+                const estaExpandido = (num) => {
+                    const alvo = normalizarCompacto(num);
+                    return Array.from(document.querySelectorAll('input'))
+                        .some((el) => visivel(el) && normalizarCompacto(el.value || '').includes(alvo));
+                };
+                const acharHeader = (num) => {
+                    const alvo = normalizar(num);
+                    const roots = Array.from(document.querySelectorAll('.count-poo-item, [data-count-poo-item], .box.box-solid, .box, .panel, .card, .row.pointer-hand, .box-header, div'));
+                    const candidatos = [];
+                    for (const root of roots) {
+                        if (!visivel(root)) continue;
+                        const txt = normalizar(root.innerText || root.textContent);
+                        if (!txt.includes(alvo) || !txt.includes('EMPENHO')) continue;
+                        const container = root.closest('.count-poo-item, [data-count-poo-item], .box.box-solid, .box, .panel, .card') || root;
+                        const header = container.querySelector('.row.pointer-hand, .box-header, .title-item-acordion, .panel-heading, .card-header')
+                            || root.closest('.row.pointer-hand, .box-header, .title-item-acordion, .panel-heading, .card-header')
+                            || root;
+                        if (!visivel(header)) continue;
+                        let score = 0;
+                        const htxt = normalizar(header.innerText || header.textContent);
+                        if (htxt.includes(alvo)) score += 20;
+                        if (htxt.includes('SUBELEMENTO')) score += 4;
+                        if (htxt.includes('LIQUIDADO')) score += 4;
+                        if (htxt.includes('R$')) score += 2;
+                        if (header.matches('.row.pointer-hand, .box-header, .title-item-acordion')) score += 10;
+                        score -= Math.min(htxt.length, 600) / 200;
+                        candidatos.push({ header, score });
+                    }
+                    candidatos.sort((a, b) => b.score - a.score);
+                    return candidatos[0]?.header || null;
+                };
+
+                const clicados = [];
+                const jaAbertos = [];
+                const naoEncontrados = [];
+                for (const num of nums) {
+                    if (estaExpandido(num)) {
+                        jaAbertos.push(num);
+                        continue;
+                    }
+                    const header = acharHeader(num);
+                    if (!header) {
+                        naoEncontrados.push(num);
+                        continue;
+                    }
+                    header.scrollIntoView({ block: 'center', inline: 'nearest' });
+                    header.click();
+                    clicados.push(num);
+                }
+                return { clicados, jaAbertos, naoEncontrados };
+            }""",
+            numeros,
+        ) or {}
+    except Exception as exc:
+        print(f"    Aviso: pré-expansão dos empenhos falhou ({exc}); usando abertura individual.")
+        resultado = {"clicados": [], "jaAbertos": [], "naoEncontrados": numeros}
+
+    abertos = set(resultado.get("jaAbertos") or [])
+    limite = time.time() + (2.2 if resultado.get("clicados") else 0.3)
+    while time.time() < limite:
+        abertos = {numero for numero in numeros if _empenho_expandido(pagina, numero)}
+        if len(abertos) == len(numeros):
+            break
+        time.sleep(0.15)
+
+    for numero in numeros:
+        if numero not in abertos and _empenho_expandido(pagina, numero):
+            abertos.add(numero)
+
+    nao_encontrados = (set(resultado.get("naoEncontrados") or []) | (set(numeros) - abertos)) - abertos
+    print(
+        "    Empenhos pré-abertos: "
+        f"{len(abertos)}/{len(numeros)}"
+        + (f" | não encontrados: {', '.join(sorted(nao_encontrados))}" if nao_encontrados else "")
+    )
+    return abertos
+
+
 def _expandir_barra_empenho(pagina, num_empenho_pdf: str, erros: list) -> bool:
     """Localiza e clica na barra azul do empenho para expandi-la."""
     num_fmt = re.sub(r"^(\d{4})(\d{6})$", r"\1NE\2", num_empenho_pdf)
+    if _empenho_expandido(pagina, num_fmt):
+        _marcar_empenho_atual(pagina, num_fmt)
+        print(f"    Barra já expandida ({num_fmt}).")
+        return True
     candidatos_numero = [num_fmt]
     numero_bruto = str(num_empenho_pdf or "").strip()
     if numero_bruto and numero_bruto not in candidatos_numero:
@@ -296,6 +685,7 @@ def _expandir_barra_empenho(pagina, num_empenho_pdf: str, erros: list) -> bool:
                     )
                     time.sleep(0.6)
                     if _empenho_expandido(pagina, num_fmt):
+                        _marcar_empenho_atual(pagina, num_fmt)
                         print(f"    Barra expandida rapidamente ({num_fmt}).")
                         return True
 
@@ -388,6 +778,7 @@ def _expandir_barra_empenho(pagina, num_empenho_pdf: str, erros: list) -> bool:
 
             time.sleep(1.0)
             if _empenho_expandido(pagina, num_fmt):
+                _marcar_empenho_atual(pagina, num_fmt)
                 print(f"    Barra expandida ({num_fmt}).")
                 return True
 
@@ -398,6 +789,7 @@ def _expandir_barra_empenho(pagina, num_empenho_pdf: str, erros: list) -> bool:
 
             time.sleep(1.0)
             if _empenho_expandido(pagina, num_fmt):
+                _marcar_empenho_atual(pagina, num_fmt)
                 print(f"    Barra expandida ({num_fmt}).")
                 return True
 
@@ -409,6 +801,7 @@ def _expandir_barra_empenho(pagina, num_empenho_pdf: str, erros: list) -> bool:
                 )
                 time.sleep(1.0)
                 if _empenho_expandido(pagina, num_fmt):
+                    _marcar_empenho_atual(pagina, num_fmt)
                     print(f"    Barra expandida ({num_fmt}).")
                     return True
 
@@ -539,8 +932,9 @@ def _verificar_empenho(pagina, num_empenho_pdf: str, erros: list):
     """Confere se o número do empenho visível bate com o do PDF."""
     num_fmt = re.sub(r"^(\d{4})(\d{6})$", r"\1NE\2", num_empenho_pdf)
     try:
-        campo = pagina.locator(
-            f"xpath=//input[@value='{num_fmt}' or contains(@value,'{num_fmt}')]"
+        _marcar_empenho_atual(pagina, num_fmt)
+        campo = pagina.locator("[data-autoliquid-empenho-atual='1']").first.locator(
+            f"xpath=.//input[@value='{num_fmt}' or contains(@value,'{num_fmt}')]"
         ).first
         val = campo.input_value().strip()
         print(f"    Verificação empenho → Web: {val} | PDF: {num_fmt}")
@@ -556,33 +950,20 @@ def _verificar_empenho(pagina, num_empenho_pdf: str, erros: list):
 
 def _preencher_contas_a_pagar(pagina, codigo: str, erros: list, desc: str = ""):
     """Preenche o campo 'Contas a Pagar' com o código informado."""
-    def _normalizar_codigo(valor: str) -> str:
-        return re.sub(r"\D+", "", str(valor or ""))
-
-    def _codigo_equivalente(valor_campo: str, valor_esperado: str) -> bool:
-        atual = _normalizar_codigo(valor_campo)
-        esperado = _normalizar_codigo(valor_esperado)
-        if not atual or not esperado:
-            return False
-        if atual == esperado:
-            return True
-        equivalencias = {
-            "104": {"213110400"},
-            "1104": {"213111000", "213110400"},
-        }
-        return atual in equivalencias.get(esperado, set())
-
     try:
-        campo = pagina.locator(
-            "xpath=//*[normalize-space(text())='Contas a Pagar']"
-            "/following::input[1]"
-        ).first
         codigo_str = str(codigo or "").strip()
-        # Somente os dígitos são digitados na máscara
         codigo_digitos = re.sub(r"\D+", "", codigo_str)
+        campo = _campo_empenho_atual(pagina, "Contas a Pagar")
+        try:
+            campo.wait_for(state="visible", timeout=1200)
+        except Exception:
+            campo = pagina.locator(
+                "xpath=//*[normalize-space(text())='Contas a Pagar']"
+                "/following::input[1]"
+            ).first
         valor_final = campo.input_value(timeout=3000).strip()
 
-        if _codigo_equivalente(valor_final, codigo_str):
+        if _campo_equivalente_contas_a_pagar(valor_final, codigo_str):
             print(
                 f"    Contas a Pagar já preenchida: '{valor_final}'"
                 f"{' ' + desc if desc else ''}"
@@ -590,21 +971,9 @@ def _preencher_contas_a_pagar(pagina, codigo: str, erros: list, desc: str = ""):
             return
 
         for tentativa in range(1, 4):
-            # 1. Foco — aguarda template da máscara aparecer (evita fill("") que corrompe)
-            campo.click()
-            time.sleep(0.15)
-            _aguardar_mascara_campo(campo)
+            valor_final = _digitar_mascara_no_primeiro_placeholder(pagina, campo, codigo_digitos, delay_ms=45)
 
-            # 2. Posiciona cursor no primeiro '_' (sem selecionar — a máscara avança sozinha)
-            campo.evaluate(_JS_POSICIONAR_MASCARA)
-
-            # 3. Digita somente os dígitos editáveis
-            campo.press_sequentially(codigo_digitos, delay=90)
-            pagina.keyboard.press("Tab")
-            time.sleep(0.8)
-            valor_final = campo.input_value().strip()
-
-            if _codigo_equivalente(valor_final, codigo_str):
+            if _campo_equivalente_contas_a_pagar(valor_final, codigo_str):
                 print(
                     f"    Contas a Pagar: '{valor_final}'"
                     f"{' ' + desc if desc else ''}"
@@ -712,10 +1081,14 @@ def _preencher_vpd(pagina, vpd_codigo: str, erros: list):
     """
     if not vpd_codigo:
         try:
-            loc_check = pagina.locator(
-                "xpath=//*[contains(normalize-space(text()),'Variação Patrimonial')]"
-                "/following::input[1]"
-            ).first
+            loc_check = _campo_empenho_atual(pagina, "Variação Patrimonial")
+            try:
+                loc_check.wait_for(state="visible", timeout=800)
+            except Exception:
+                loc_check = pagina.locator(
+                    "xpath=//*[contains(normalize-space(text()),'Variação Patrimonial')]"
+                    "/following::input[1]"
+                ).first
             loc_check.wait_for(state="visible", timeout=2000)
             existe = True
         except Exception:
@@ -745,10 +1118,14 @@ def _preencher_vpd(pagina, vpd_codigo: str, erros: list):
             vpd_editavel = re.sub(r"\D+", "", vpd_normalizado)
             vpd_digitos = vpd_editavel
 
-        locator_vpd = pagina.locator(
-            "xpath=//*[contains(normalize-space(text()),'Variação Patrimonial')]"
-            "/following::input[1]"
-        ).first
+        locator_vpd = _campo_empenho_atual(pagina, "Variação Patrimonial")
+        try:
+            locator_vpd.wait_for(state="visible", timeout=1200)
+        except Exception:
+            locator_vpd = pagina.locator(
+                "xpath=//*[contains(normalize-space(text()),'Variação Patrimonial')]"
+                "/following::input[1]"
+            ).first
         try:
             locator_vpd.wait_for(state="visible", timeout=3000)
         except Exception:

@@ -10,6 +10,11 @@ import time
 
 from comprasnet.base import conectar, preencher_data, normalizar_valor, clicar_aba_generica, aguardar_aba_ativa
 
+_BANCO_BRASIL_CNPJ = "00000000000191"
+_BANCO_BRASIL_CNPJ_FORMATADO = "00.000.000/0001-91"
+_OB_FATURA_BANCO = "001"
+_OB_FATURA_AGENCIA = "3582"
+
 
 def _documentos_para_observacao(dados_extraidos: dict) -> list[tuple[str, str]]:
     documentos: list[tuple[str, str]] = []
@@ -43,6 +48,13 @@ def _montar_observacao(dados_extraidos: dict) -> str:
     if sol:
         partes.append(f"Solicitação Pagamento {sol}")
     return " - ".join(partes) + "."
+
+
+def _tem_fatura(dados_extraidos: dict) -> bool:
+    return any(
+        "FATURA" in str(nota.get("Tipo", "") or "").upper()
+        for nota in dados_extraidos.get("Notas Fiscais", []) or []
+    )
 
 
 def _clicar_aba_dados_pagamento(pagina) -> None:
@@ -285,6 +297,117 @@ def _preencher_lf_modal(pagina, lf_numero: str) -> bool:
                     return true;
                 }""",
                 lf_numero,
+            )
+        )
+    except Exception:
+        return False
+
+
+def _preencher_favorecido_lista_pagamento(pagina, cnpj: str) -> bool:
+    """Preenche o Favorecido na Lista de Favorecidos antes de abrir o Pré-Doc."""
+    cnpj_limpo = re.sub(r"\D", "", str(cnpj or ""))
+    if not cnpj_limpo:
+        return False
+    try:
+        return bool(
+            pagina.evaluate(
+                """(cnpj) => {
+                    const visivel = (el) => {
+                        if (!el) return false;
+                        const r = el.getBoundingClientRect();
+                        const s = window.getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                    };
+                    const setVal = (inp, val) => {
+                        if (!inp || !visivel(inp)) return false;
+                        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                        inp.focus();
+                        if (setter) setter.call(inp, val); else inp.value = val;
+                        inp.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                        inp.blur();
+                        return true;
+                    };
+
+                    const tabelas = Array.from(document.querySelectorAll('table')).filter((table) => {
+                        const texto = (table.closest('section, div, form')?.textContent || table.textContent || '');
+                        return /lista\\s+de\\s+favorecidos/i.test(texto);
+                    });
+                    for (const table of tabelas) {
+                        const headers = Array.from(table.querySelectorAll('th, thead td'));
+                        const favIndex = headers.findIndex((h) => /favorecido/i.test(h.textContent || ''));
+                        const linhas = Array.from(table.querySelectorAll('tbody tr, tr')).filter(visivel);
+                        for (const tr of linhas) {
+                            const cells = Array.from(tr.children || []);
+                            const celula = favIndex >= 0 ? cells[favIndex] : cells.find((td) => /favorecido/i.test(td.textContent || '')) || cells[0];
+                            const input = celula?.querySelector?.('input[type="text"], input:not([type])');
+                            if (setVal(input, cnpj)) return true;
+                        }
+                    }
+
+                    const candidatos = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'))
+                        .filter((inp) => {
+                            if (!visivel(inp)) return false;
+                            const ctx = [
+                                inp.id || '',
+                                inp.name || '',
+                                inp.placeholder || '',
+                                inp.closest('td, div, label')?.textContent || '',
+                                inp.closest('table, section, form, div')?.textContent || '',
+                            ].join(' ');
+                            return /favorecido|credor|cnpj|lista\\s+de\\s+favorecidos/i.test(ctx)
+                                && !/pré.?doc|pre.?doc|pagador|banco|ag[eê]ncia|conta/i.test(ctx);
+                        });
+                    return setVal(candidatos[0], cnpj);
+                }""",
+                cnpj_limpo,
+            )
+        )
+    except Exception:
+        return False
+
+
+def _preencher_banco_pagador_modal(pagina, banco: str) -> bool:
+    banco = str(banco or "").strip()
+    if not banco:
+        return False
+    try:
+        return bool(
+            pagina.evaluate(
+                """(banco) => {
+                    const visivel = (el) => {
+                        if (!el) return false;
+                        const r = el.getBoundingClientRect();
+                        const s = window.getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                    };
+                    const setVal = (inp, val) => {
+                        if (!inp || !visivel(inp)) return false;
+                        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                        inp.focus();
+                        if (setter) setter.call(inp, val); else inp.value = val;
+                        inp.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                        inp.blur();
+                        return true;
+                    };
+
+                    const ids = ['bancoPagador', 'sfpredocbancopagador', 'sfpredoccodbancopagador', 'codbancopagador'];
+                    for (const id of ids) {
+                        const el = document.getElementById(id);
+                        if (setVal(el, banco)) return true;
+                    }
+
+                    const labels = Array.from(document.querySelectorAll('td, th, label, span, div, strong'))
+                        .filter((el) => visivel(el) && /banco/i.test(el.textContent || '') && /pagador/i.test(el.closest('table, fieldset, div')?.textContent || ''));
+                    for (const label of labels) {
+                        const raiz = label.closest('tr, div.form-group, div.row, table, fieldset, div') || label.parentElement;
+                        const input = raiz?.querySelector?.('input[type="text"], input:not([type])');
+                        if (setVal(input, banco)) return true;
+                    }
+                    return false;
+                }""",
+                banco,
             )
         )
     except Exception:
@@ -578,6 +701,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
             dados_extraidos.get("_vencimento_documento", "") or data_vencimento_usuario or ""
         ).strip()
         lf_numero = str(dados_extraidos.get("_lf_numero", "") or "").strip()
+        fatura_com_lf = _tem_fatura(dados_extraidos) and bool(lf_numero)
 
         _clicar_aba_dados_pagamento(pagina)
         _esperar_dados_pagamento_prontos(pagina)
@@ -589,7 +713,12 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
             erros.append(f"Erro ao preencher Data de Pagamento: {e}")
 
         print("[2] Validando favorecido e valor...")
-        cnpj_pdf = re.sub(r"\D", "", str(dados_extraidos.get("CNPJ", "") or ""))
+        cnpj_pdf = _BANCO_BRASIL_CNPJ if fatura_com_lf else re.sub(r"\D", "", str(dados_extraidos.get("CNPJ", "") or ""))
+
+        if fatura_com_lf:
+            print(f"  Fatura com LF: alterando favorecido para Banco do Brasil ({_BANCO_BRASIL_CNPJ_FORMATADO})")
+            if not _preencher_favorecido_lista_pagamento(pagina, _BANCO_BRASIL_CNPJ):
+                erros.append("Não foi possível alterar o favorecido para Banco do Brasil antes do Pré-Doc.")
 
         # Valor liquido esperado = soma das NFs - soma das deducoes
         # O portal exibe o valor liquido na Lista de Favorecidos, nunca o bruto da NF.
@@ -678,10 +807,11 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
         ):
             print("  Aviso: campo Processo do modal nÃ£o foi localizado.")
 
-        if lf_numero:
+        if fatura_com_lf:
             print(f"[6] LF informada: {lf_numero}")
             _selecionar_tipo_ob_modal(pagina, "OB Fatura")
             _preencher_lf_modal(pagina, lf_numero)
+            _preencher_banco_pagador_modal(pagina, _OB_FATURA_BANCO)
 
         # Domicílio Bancário do Favorecido — sempre preenche:
         #   usar_conta_pdf=True  → usa valores do PDF (Banco/Agência/Conta extraídos)
@@ -689,7 +819,13 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
         # O portal não pré-preenche esses campos; deixá-los vazios causa erro de validação.
         usar_conta_pdf_ativo = bool(usar_conta_pdf)
 
-        if usar_conta_pdf_ativo:
+        if fatura_com_lf:
+            banco_fav = _OB_FATURA_BANCO
+            agencia_fav = _OB_FATURA_AGENCIA
+            conta_fav = ""
+            print(f"[7] Preenchendo domicílio bancário do favorecido (OB Fatura): "
+                  f"banco={banco_fav} ag={agencia_fav}")
+        elif usar_conta_pdf_ativo:
             banco_fav   = str(dados_extraidos.get("Banco",   "") or "").strip()
             agencia_fav = str(dados_extraidos.get("Agência", dados_extraidos.get("AgÃªncia", "")) or "").strip()
             conta_fav   = str(dados_extraidos.get("Conta",   "") or "").strip()

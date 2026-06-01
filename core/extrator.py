@@ -496,7 +496,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
                     continue
 
                 m_fatura = re.match(
-                    r"Fatura\s+([\d.]+)\s+([\d-]+)\s+([\d-]+)\s+([\d,.]+)$",
+                    r"Fatura\s+([\d./-]+)\s+([\d-]+)\s+([\d-]+)\s+([\d,.]+)$",
                     linha,
                     re.IGNORECASE,
                 )
@@ -531,7 +531,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
                 adicionar_bolsa(numero_remessa, bolsa[1], bolsa[2], bolsa[3])
 
             faturas_encontradas = re.findall(
-                r"Fatura\s+([\d.]+)\s+([\d-]+)\s+([\d-]+)\s+([\d,\.]+)",
+                r"Fatura\s+([\d./-]+)\s+([\d-]+)\s+([\d-]+)\s+([\d,\.]+)",
                 texto,
                 re.IGNORECASE,
             )

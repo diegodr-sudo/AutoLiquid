@@ -12,6 +12,8 @@ from comprasnet.principal_helpers import (
     _verificar_empenho,
     _verificar_interrupcao,
     _preencher_contas_a_pagar,
+    _campo_empenho_atual,
+    _preencher_campo_empenho_por_prefixo,
 )
 
 
@@ -26,11 +28,19 @@ def _preencher_situacao_201(
     _verificar_empenho(pagina, num_empenho_pdf, erros)
 
     try:
-        campo_cbm = pagina.locator(
-            "xpath=//*[contains(normalize-space(text()),'Conta de Bens')]"
-            "/following::input[1]"
-        ).first
+        campo_cbm = _campo_empenho_atual(pagina, "Conta de Bens")
+        try:
+            campo_cbm.wait_for(state="visible", timeout=1200)
+        except Exception:
+            campo_cbm = pagina.locator(
+                "xpath=//*[contains(normalize-space(text()),'Conta de Bens')]"
+                "/following::input[1]"
+            ).first
         val = campo_cbm.input_value().strip()
+        if not val:
+            val = _preencher_campo_empenho_por_prefixo(pagina, "numclassa", "1.2.3.1.1.08.01")
+        if not val:
+            val = campo_cbm.input_value().strip()
         if not val:
             campo_cbm.click()
             time.sleep(0.5)

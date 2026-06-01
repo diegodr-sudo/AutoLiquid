@@ -68,6 +68,20 @@ const DIFFICULTY_OPTIONS: { value: number; label: string; short: string; color: 
   { value: 5, label: "Complexo",   short: "5", color: "text-rose-700",    bg: "bg-rose-500/10 hover:bg-rose-500/20",     ring: "ring-rose-500/40" },
 ];
 
+function formatarDataComBarras(valor: string) {
+  const texto = String(valor || "").trim();
+  const iso = texto.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
+
+  const comSeparador = texto.match(/^(\d{2})[-/.](\d{2})[-/.](\d{4})$/);
+  if (comSeparador) return `${comSeparador[1]}/${comSeparador[2]}/${comSeparador[3]}`;
+
+  const digitos = texto.replace(/\D/g, "").slice(0, 8);
+  if (digitos.length <= 2) return digitos;
+  if (digitos.length <= 4) return `${digitos.slice(0, 2)}/${digitos.slice(2)}`;
+  return `${digitos.slice(0, 2)}/${digitos.slice(2, 4)}/${digitos.slice(4)}`;
+}
+
 function DifficultyPicker({
   value,
   onChange,
@@ -125,6 +139,9 @@ function ConferenciaPageContent() {
   const execucaoAbortControllerRef = useRef<AbortController | null>(null);
   const remessaInputRef = useRef<HTMLInputElement | null>(null);
   const registroPendenteRemotoRef = useRef("");
+  const conclusaoNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const conclusaoEncaminhamentoCopiadoKeyRef = useRef("");
+  const conclusaoEncaminhamentoCopyingRef = useRef(false);
   // Ref para proteger polling: não sobrescreve pendências enquanto um toggle está em voo
   const pendenciaToggleInFlightRef = useRef(false);
   // Ref para bloquear chamadas tardias de registrarLiquidacaoPendente após a finalização
@@ -192,6 +209,7 @@ function ConferenciaPageContent() {
   const [conclusaoDificuldade, setConclusaoDificuldade] = useState<number | null>(null);
   const [conclusaoSaving, setConclusaoSaving] = useState(false);
   const [conclusaoErro, setConclusaoErro] = useState("");
+  const [conclusaoNotice, setConclusaoNotice] = useState("");
   const precisaLF = deducoes.some((deducao) => deducao.siafi === "DOB001");
   const precisaUGR = requiresCentroCusto;
   const _temPendenciaVpd = pendencias.some(
@@ -210,6 +228,14 @@ function ConferenciaPageContent() {
     contaBanco.trim() && contaAgencia.trim() && contaConta.trim()
   );
   const dadosBancariosResolvidos = usarContaPdf ? contaPdfDisponivel : contaManualCompleta;
+
+  useEffect(() => {
+    return () => {
+      if (conclusaoNoticeTimerRef.current) {
+        clearTimeout(conclusaoNoticeTimerRef.current);
+      }
+    };
+  }, []);
 
   const aplicarPayload = (payload: DocumentoProcessado) => {
     setDocumento(payload.documento);
@@ -235,7 +261,7 @@ function ConferenciaPageContent() {
     );
     setLfNumero(payload.lfNumero ?? "");
     setUgrNumero(payload.ugrNumero ?? "");
-    setVencimentoDocumento(payload.vencimentoDocumento ?? "");
+    setVencimentoDocumento(formatarDataComBarras(payload.vencimentoDocumento ?? ""));
     setVpd(payload.vpd ?? "");
     setRequiresCentroCusto(Boolean(payload.requiresCentroCusto));
     if (payload.documento.codigoOperacional === "01" || payload.documento.codigoOperacional === "03") {
@@ -358,8 +384,77 @@ function ConferenciaPageContent() {
     setConclusaoTipo("NP");
     setConclusaoDificuldade(null);
     setConclusaoErro("");
+    setConclusaoNotice("");
+    conclusaoEncaminhamentoCopiadoKeyRef.current = "";
     setConclusaoAberta(true);
   };
+
+  const montarTextoEncaminhamentoConclusao = () =>
+    `Para conformidade, ${conclusaoTipo} ${conclusaoNumero.trim()}.`;
+
+  const copiarTextoParaAreaTransferencia = async (texto: string) => {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(texto);
+      return;
+    }
+    if (typeof document === "undefined") return;
+    const textarea = document.createElement("textarea");
+    textarea.value = texto;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copiado = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    if (!copiado) {
+      throw new Error("O navegador recusou a cópia automática.");
+    }
+  };
+
+  const mostrarConclusaoNotice = (mensagem: string, durationMs = 1500) => {
+    setConclusaoNotice(mensagem);
+    if (conclusaoNoticeTimerRef.current) {
+      clearTimeout(conclusaoNoticeTimerRef.current);
+    }
+    conclusaoNoticeTimerRef.current = setTimeout(() => {
+      setConclusaoNotice("");
+      conclusaoNoticeTimerRef.current = null;
+    }, durationMs);
+  };
+
+  useEffect(() => {
+    if (!conclusaoAberta || conclusaoSaving) return;
+    const numero = conclusaoNumero.trim();
+    if (!numero || !conclusaoDificuldade) return;
+
+    const copyKey = `${conclusaoTipo}:${numero}:${conclusaoDificuldade}`;
+    if (
+      conclusaoEncaminhamentoCopiadoKeyRef.current === copyKey
+      || conclusaoEncaminhamentoCopyingRef.current
+    ) {
+      return;
+    }
+
+    conclusaoEncaminhamentoCopyingRef.current = true;
+    copiarTextoParaAreaTransferencia(montarTextoEncaminhamentoConclusao())
+      .then(() => {
+        conclusaoEncaminhamentoCopiadoKeyRef.current = copyKey;
+        mostrarConclusaoNotice("Encaminhamento copiado", 1500);
+      })
+      .catch((error) => {
+        console.warn("Não foi possível copiar o encaminhamento automaticamente.", error);
+      })
+      .finally(() => {
+        conclusaoEncaminhamentoCopyingRef.current = false;
+      });
+  }, [
+    conclusaoAberta,
+    conclusaoSaving,
+    conclusaoTipo,
+    conclusaoNumero,
+    conclusaoDificuldade,
+  ]);
 
   const handleConcluirComRegistro = async (finalizada: boolean) => {
     if (conclusaoSaving) return;
@@ -373,7 +468,17 @@ function ConferenciaPageContent() {
     }
     setConclusaoErro("");
     setConclusaoSaving(true);
+    const encaminhamentoKey = `${conclusaoTipo}:${conclusaoNumero.trim()}:${conclusaoDificuldade ?? ""}`;
     try {
+      if (finalizada && conclusaoEncaminhamentoCopiadoKeyRef.current !== encaminhamentoKey) {
+        try {
+          await copiarTextoParaAreaTransferencia(montarTextoEncaminhamentoConclusao());
+          conclusaoEncaminhamentoCopiadoKeyRef.current = encaminhamentoKey;
+          mostrarConclusaoNotice("Encaminhamento copiado", 1500);
+        } catch (error) {
+          console.warn("Não foi possível copiar o encaminhamento automaticamente.", error);
+        }
+      }
       await registrarLiquidacao({
         documentoId: documentoId ?? "",
         numeroProcesso: documento.processo ?? "",
@@ -630,7 +735,7 @@ function ConferenciaPageContent() {
   }, [documentoId, isExecutando]);
 
   const executeAll = async (
-    lfInformada = lfNumero,
+    lfInformada = temFatura && !faturaTemLf ? "" : lfNumero,
     ugrInformada = ugrNumero,
     vencimentoInformado = vencimentoDocumento,
     usarPdf = usarContaPdf,
@@ -686,7 +791,7 @@ function ConferenciaPageContent() {
 
   const executeEtapa = async (
     etapa: EtapaExecucao,
-    lfInformada = lfNumero,
+    lfInformada = temFatura && !faturaTemLf ? "" : lfNumero,
     ugrInformada = ugrNumero,
     vencimentoInformado = vencimentoDocumento,
     usarPdf = usarContaPdf,
@@ -1855,7 +1960,7 @@ function ConferenciaPageContent() {
                                     onFocus={() => setTocouFatura(true)}
                                     onChange={(event) => {
                                       setTocouFatura(true);
-                                      setVencimentoDocumento(event.target.value);
+                                      setVencimentoDocumento(formatarDataComBarras(event.target.value));
                                     }}
                                   />
                                 </div>
@@ -2220,6 +2325,17 @@ function ConferenciaPageContent() {
                 <p className="rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                   {conclusaoErro}
                 </p>
+              )}
+
+              {conclusaoNotice && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="inline-flex w-fit items-center gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-700 shadow-sm"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  {conclusaoNotice}
+                </div>
               )}
             </div>
 
