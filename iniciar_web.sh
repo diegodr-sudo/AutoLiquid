@@ -99,7 +99,7 @@ garantir_python() {
         exit 1
     fi
 
-    if ! "$PYTHON_BIN" -c "import fastapi, uvicorn, multipart, pandas" >/dev/null 2>&1; then
+    if ! "$PYTHON_BIN" -c "import fastapi, uvicorn, multipart, pandas, watchfiles" >/dev/null 2>&1; then
         echo "[py] Instalando dependencias Python..."
         "$PYTHON_BIN" -m pip install -r requirements.txt
     else
@@ -170,7 +170,26 @@ subir_api() {
     echo "[api] Iniciando FastAPI em http://$API_HOST:$API_PORT"
     : > "$API_LOG"
 
-    "$PYTHON_BIN" -m uvicorn api:app --host "$API_HOST" --port "$API_PORT" >"$API_LOG" 2>&1 &
+    # Recarga automática: o backend reinicia sozinho ao salvar qualquer .py
+    # (inclui api.py). O documento anexado fica salvo em SQLite, então não é
+    # preciso reanexar. Desative com AUTO_LIQUID_RELOAD=0 se atrapalhar.
+    RELOAD_ARGS=()
+    if [ "${AUTO_LIQUID_RELOAD:-1}" = "1" ]; then
+        echo "[api] Recarga automatica ATIVA (codigo Python recarrega ao salvar)."
+        RELOAD_ARGS=(
+            --reload
+            --reload-dir "$ROOT_DIR"
+            --reload-include "*.py"
+            --reload-exclude "$ROOT_DIR/.venv/*"
+            --reload-exclude "$ROOT_DIR/.venv-win/*"
+            --reload-exclude "$ROOT_DIR/frontend/*"
+            --reload-exclude "$ROOT_DIR/build/*"
+            --reload-exclude "$ROOT_DIR/dist/*"
+            --reload-exclude "*/__pycache__/*"
+        )
+    fi
+
+    "$PYTHON_BIN" -m uvicorn api:app --host "$API_HOST" --port "$API_PORT" "${RELOAD_ARGS[@]}" >"$API_LOG" 2>&1 &
     API_PID=$!
 
     for tentativa in $(seq 1 20); do

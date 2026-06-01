@@ -13,6 +13,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { fetchDashboardHistorico, type HistoricoDashboardData } from "@/lib/data";
+import { SimpleTooltip } from "@/components/ui/simple-tooltip";
 
 function fmtBRL(value: number): string {
   return value.toLocaleString("pt-BR", {
@@ -153,9 +154,11 @@ function DistributionList({
               <div key={item.key} className="group">
                 <div className="mb-1.5 flex items-baseline justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-foreground" title={item.label}>
-                      {item.label || "Sem identificação"}
-                    </p>
+                    <SimpleTooltip content={item.label} side="top" className="text-left">
+                      <p className="truncate text-sm font-medium text-foreground">
+                        {item.label || "Sem identificação"}
+                      </p>
+                    </SimpleTooltip>
                     <p className="text-[11px] text-muted-foreground">
                       {item.count} processo(s){item.helper ? ` · ${item.helper}` : ""}
                     </p>
@@ -212,11 +215,12 @@ function MonthlyBars({ data }: { data: HistoricoDashboardData["porMes"] }) {
           return (
             <div key={item.mes} className="flex min-w-12 flex-1 flex-col items-center gap-2">
               <div className="flex h-32 w-full items-end rounded-xl bg-secondary/28 px-1.5">
-                <div
-                  title={`${fmtMes(item.mes)} · ${fmtBRL(item.valor)} · ${item.count} processo(s)`}
-                  className="w-full rounded-t-lg bg-gradient-to-t from-primary/75 to-primary/35 transition-all duration-500 hover:from-primary hover:to-primary/55"
-                  style={{ height: `${height}%` }}
-                />
+                <SimpleTooltip content={`${fmtMes(item.mes)} · ${fmtBRL(item.valor)} · ${item.count} processo(s)`} side="top">
+                  <div
+                    className="w-full rounded-t-lg bg-gradient-to-t from-primary/75 to-primary/35 transition-all duration-500 hover:from-primary hover:to-primary/55"
+                    style={{ height: `${height}%` }}
+                  />
+                </SimpleTooltip>
               </div>
               <span className="text-[10px] text-muted-foreground">{fmtMes(item.mes)}</span>
             </div>

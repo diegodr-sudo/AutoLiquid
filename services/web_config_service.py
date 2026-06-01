@@ -159,6 +159,72 @@ UORG_PADRAO = [
     ("157465", "423109", "DEPARTAMENTO DE GESTAO DE BENS PERMANT."),
 ]
 
+NCM_PADRAO: list[tuple[str, ...]] = [
+    # (ncm, descricao, codigo, obs)
+    ("0201...", "Carne e produtos origem animal", "8767", ""),
+    ("0202....", "Carne e produtos origem animal", "8767", ""),
+    ("0203...", "Carne e produtos origem animal", "8767", ""),
+    ("0204...", "Carne e produtos origem animal", "8767", ""),
+    ("0207...", "Carne e produtos origem animal", "8767", ""),
+    ("0209...", "Carne e produtos origem animal", "8767", ""),
+    ("0302...", "Peixes (exceto 03029000)", "8767", ""),
+    ("0303...", "Peixes", "8767", ""),
+    ("0304...", "Peixes", "8767", ""),
+    ("02102000", "Charque", "8767", ""),
+    ("04012010", "Leite UHT", "8767", ""),
+    ("04014020", "Creme de Leite", "6147", ""),
+    ("04015021", "Creme de Leite", "6147", ""),
+    ("04032000", "Iogurte Natural", "8767", ""),
+    ("0407...", "Ovos", "8767", ""),
+    ("0511...", "Sementes", "8767", ""),
+    ("07...", "Horticolas e frutas", "8767", ""),
+    ("08...", "Horticolas e frutas", "8767", ""),
+    ("0901...", "Cafe", "8767", ""),
+    ("100620...", "Arroz", "8767", ""),
+    ("100630...", "Arroz", "8767", ""),
+    ("110220...", "Farinha", "8767", ""),
+    ("110313...", "Semolas", "8767", ""),
+    ("110419...", "Graos de milho", "8767", ""),
+    ("11042300", "Canjica branca", "6147", ""),
+    ("110620..", "Farinhas", "8767", ""),
+    ("12119090", "Manjericao", "6147", ""),
+    ("1507...", "Oleo de Soja", "8767", ""),
+    ("15092000", "Azeite de Oliva", "8767", ""),
+    ("1508...", "Oleo vegetal", "8767", ""),
+    ("1514...", "Oleo vegetal", "8767", ""),
+    ("16010000", "Linguica", "6147", ""),
+    ("16023220", "Frango Empanado", "6147", ""),
+    ("16025000", "Almondega", "6147", ""),
+    ("16041390", "Peixe Empanado", "6147", ""),
+    ("17011400", "Acucar", "8767", ""),
+    ("17019900", "Acucar", "8767", ""),
+    ("18069000", "Bombom", "6147", ""),
+    ("19021900", "Massa", "8767", ""),
+    ("19059090", "Pao", "8767", ""),
+    ("19051090", "Pao com especiarias", "8767", ""),
+    ("20029000", "Extrato de tomate", "6147", ""),
+    ("20054000", "Ervilha em lata", "6147", ""),
+    ("20058000", "Milho em lata", "6147", ""),
+    ("20087010", "Pessego em lata", "6147", ""),
+    ("20091200", "Suco de Laranja", "6147", ""),
+    ("21011...", "Cafe", "8767", ""),
+    ("21032090", "Catchup", "6147", ""),
+    ("21033021", "Mostarda", "6147", ""),
+    ("21039091", "Molho Barbecue", "6147", ""),
+    ("21069029", "Gelatina", "6147", ""),
+    ("22029900", "Leite de Aveia", "6147", ""),
+    ("2203...", "Cerveja", "8767", ""),
+    ("22071090", "Alcool", "6147", ""),
+    ("22072019", "Alcool", "6147", ""),
+    ("22090000", "Vinagre branco alcool", "6147", ""),
+    ("25010020", "Sal", "6147", ""),
+    ("30039099", "Clorexidina", "6147", ""),
+    ("31052000", "Fertilizantes", "8767", ""),
+    ("39269040", "Artigos laboratorio/farmacia", "8767", ""),
+    ("49019900", "Livros", "8767", ""),
+    ("40151...", "Luvas", "8767", "Se vier da saude. Se nao, codigo 6147"),
+]
+
 TABLE_DEFINITIONS: dict[str, dict[str, Any]] = {
     "contratos": {
         "label": "Contratos",
@@ -232,6 +298,17 @@ TABLE_DEFINITIONS: dict[str, dict[str, Any]] = {
             {"key": "dia", "label": "Dia de Venc.", "editable": True},
             {"key": "apuracao", "label": "Regra de Apuracao", "editable": True},
             {"key": "lf", "label": "Pede LF?", "editable": True},
+        ],
+    },
+    "ncm": {
+        "label": "NCM",
+        "description": "Codigos NCM e seus respectivos codigos de retencao (DARF). Usado na conferencia de impostos sobre produtos.",
+        "search_placeholder": "Buscar por NCM, descricao ou codigo DARF...",
+        "columns": [
+            {"key": "ncm", "label": "NCM", "editable": True},
+            {"key": "descricao", "label": "Descricao", "editable": True},
+            {"key": "codigo", "label": "Codigo DARF", "editable": True},
+            {"key": "obs", "label": "Observacao", "editable": True},
         ],
     },
 }
@@ -454,6 +531,12 @@ def _carregar_tabela_local(table_key: str) -> list[dict[str, str]]:
             ["fonteRecurso", "descricao"],
             FONTES_RECURSO_PADRAO,
         )
+    elif table_key == "ncm":
+        rows = _rows_from_config(
+            "ncm_lista",
+            ["ncm", "descricao", "codigo", "obs"],
+            NCM_PADRAO,
+        )
     else:
         rows = _load_datas_impostos_rows()
     return _normalize_table_rows(table_key, rows)
@@ -476,6 +559,8 @@ def _salvar_tabela_local(table_key: str, rows: list[dict[str, Any]]) -> None:
         _save_rows_to_config("nat_rendimento_lista", ["codigo", "naturezaRendimento", "codigoDarf"], rows)
     elif table_key == "fontes-recurso":
         _save_rows_to_config("fontes_recurso_lista", ["fonteRecurso", "descricao"], rows)
+    elif table_key == "ncm":
+        _save_rows_to_config("ncm_lista", ["ncm", "descricao", "codigo", "obs"], rows)
     else:
         _save_datas_impostos_rows(rows)
 

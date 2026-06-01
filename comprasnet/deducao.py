@@ -2530,10 +2530,10 @@ def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
         try:
             # Verifica pelo TEXTO da opção selecionada (value é código numérico)
             _texto_sit = pagina.evaluate(
-                f"() => {{ const el = document.getElementById(‘sfdeducaocodsit{did}’); "
-                f"if (!el) return ‘’; "
+                f"() => {{ const el = document.getElementById('sfdeducaocodsit{did}'); "
+                f"if (!el) return ''; "
                 f"const op = el.options[el.selectedIndex]; "
-                f"return op ? op.text.trim() : ‘’; }}"
+                f"return op ? op.text.trim() : ''; }}"
             )
             if "DDR001" in str(_texto_sit or "").upper():
                 _situacao_ok = True
@@ -3026,6 +3026,514 @@ def _preencher_deducao_darf_total(
     return _confirmar_com_datas_atomico(pagina, did, data_venc, erros)
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOCALIZADOR COMPARTILHADO DO BOTÃO "+" DO PRÉ-DOC
+# ─────────────────────────────────────────────────────────────────────────────
+# Mesma estratégia (0–4) usada inline por _abrir_predoc_resiliente
+# (DDR001/DDF050/DDF055). Extraída como constante para que o DOB001 use o MESMO
+# localizador comprovado, em vez de uma reimplementação divergente baseada em
+# texto "+" — que NÃO encontra o ícone CSS (<i class="fa fa-plus">) do portal.
+# Retorna a string da estratégia vencedora, ou '' se nenhum botão foi clicado.
+# OBS: espelha o JS inline de _abrir_predoc_resiliente; mantenha os dois em sincronia.
+_JS_CLICAR_MAIS_PREDOC = r"""(deducaoId) => {
+    const visivel = (el) => !!el && (!!el.offsetParent || el.getClientRects().length > 0);
+    const normalizar = (txt) =>
+        String(txt || '')
+            .normalize('NFD')
+            .replace(/[̀-ͯ]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+
+    const clicar = (el) => {
+        const alvo = el?.closest?.('button, a, [role="button"]') || el;
+        if (!alvo || !visivel(alvo)) return false;
+        alvo.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' });
+        try { alvo.click(); }
+        catch (_) {
+            alvo.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        }
+        return true;
+    };
+
+    const candidatos = Array.from(
+        document.querySelectorAll('button, a, span, i, [role="button"]')
+    );
+
+    // Estratégia 0 (mais segura): botão Pré-Doc DENTRO do container do did.
+    {
+        const ancora = document.getElementById(`confirma-dados-deducao-${deducaoId}`)
+            || document.getElementById(`aba-deducao${deducaoId}`);
+        if (ancora) {
+            let nivel = ancora;
+            for (let lvl = 0; lvl < 12; lvl++) {
+                nivel = nivel.parentElement;
+                if (!nivel) break;
+                const btn = Array.from(
+                    nivel.querySelectorAll('button, a, span, i, [role="button"]')
+                ).find((el) => {
+                    if (!visivel(el)) return false;
+                    const classe  = normalizar(el.className || '');
+                    const onclick = normalizar(el.getAttribute?.('onclick') || '');
+                    const titulo  = normalizar(el.getAttribute?.('title') || el.getAttribute?.('aria-label') || '');
+                    return classe.includes('predoc') || onclick.includes('predoc') || titulo.includes('predoc');
+                });
+                if (btn && clicar(btn)) return 'container-predoc-v2';
+            }
+        }
+    }
+
+    // Estratégia 1: onclick contém "predoc"
+    const porOnclickPredoc = candidatos.find(
+        (el) => visivel(el) && normalizar(el.getAttribute('onclick') || '').includes('predoc')
+    );
+    if (clicar(porOnclickPredoc)) return 'onclick-predoc';
+
+    // Estratégia 2: onclick contém o did exato
+    const porOnclick = candidatos.find(
+        (el) => visivel(el) && String(el.getAttribute('onclick') || '').includes(deducaoId)
+    );
+    if (clicar(porOnclick)) return 'onclick-did';
+
+    // Estratégia 3: cabeçalho "Pré-Doc" -> botão "+" vizinho
+    const cabecalhosPredoc = Array.from(
+        document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,td,th,label,strong,p,caption')
+    ).filter((el) => {
+        if (!visivel(el)) return false;
+        const txt = normalizar(el.textContent || el.getAttribute('title') || '');
+        return /^pr[eé].?doc$/i.test(txt) || txt === 'pré-doc' || txt === 'pre-doc';
+    });
+    for (const cab of cabecalhosPredoc.reverse()) {
+        let bloco = cab;
+        for (let i = 0; i < 4; i++) {
+            bloco = bloco.parentElement;
+            if (!bloco) break;
+            const btnMais = Array.from(
+                bloco.querySelectorAll('button, a, span, i, [role="button"]')
+            ).find((el) => {
+                const txt = normalizar(el.textContent || '');
+                return visivel(el) && (
+                    txt === '+'
+                    || el.querySelector?.('.fa-plus, .glyphicon-plus, [class*="plus"]')
+                    || normalizar(el.getAttribute?.('onclick') || '').includes('predoc')
+                    || normalizar(el.className || '').includes('predoc')
+                );
+            });
+            if (btnMais && clicar(btnMais)) return 'predoc-header';
+        }
+    }
+
+    // Estratégia 4 (fallback): último "+" que NÃO esteja dentro de "recolhedor"
+    const botoesMais = candidatos.filter((el) => {
+        if (!visivel(el)) return false;
+        const txt = normalizar(el.textContent || '');
+        if (txt !== '+') return false;
+        let pai = el.parentElement;
+        for (let i = 0; i < 6 && pai; i++) {
+            const paiTxt = normalizar(pai.textContent || '');
+            if (paiTxt.includes('recolhedor') && !paiTxt.includes('predoc')) return false;
+            pai = pai.parentElement;
+        }
+        return true;
+    });
+    const ultimo = botoesMais.pop();
+    if (clicar(ultimo)) return 'global-mais';
+
+    return '';
+}"""
+
+
+# Localizador PRINCIPAL do '+' do Pré-Doc do DOB001: sobe a partir da âncora do
+# did e clica no botão que tenha atributo "predoc" OU ícone de "+" (fa-plus etc.)
+# OU seja um <a href="#"> anônimo (padrão do Contratos.gov.br: ícone CSS/jQuery,
+# sem texto e sem onclick). Exclui botões de outras ações (nova dedução, confirmar,
+# recolhedor, acréscimo, apropriar, preencher). É o que abre o DOB001 de forma
+# confiável — por isso é tentado ANTES dos demais localizadores.
+_JS_PREDOC_DOB001_CONTAINER = r"""(did) => {
+    const v = (el) => !!el && (!!el.offsetParent || el.getClientRects().length > 0);
+    const n = (t) => String(t || '').normalize('NFD')
+        .replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const click = (el) => {
+        if (!el || !v(el)) return false;
+        el.scrollIntoView({ block: 'center', behavior: 'auto' });
+        try { el.click(); }
+        catch (_) { el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); }
+        return true;
+    };
+    const ancora = document.getElementById('confirma-dados-deducao-' + did)
+        || document.getElementById('aba-deducao' + did);
+    if (!ancora) return '';
+    let nivel = ancora;
+    for (let i = 0; i < 12; i++) {
+        nivel = nivel.parentElement;
+        if (!nivel) break;
+        const els = Array.from(nivel.querySelectorAll('button,a,span,i,[role="button"]'));
+        for (const el of els) {
+            if (!v(el)) continue;
+            const id = el.id || '';
+            const cls = n(el.className || '');
+            const onc = n(el.getAttribute('onclick') || '');
+            const tit = n(el.getAttribute('title') || el.getAttribute('aria-label') || '');
+            const txt = n(el.textContent || '');
+            const href = (el.getAttribute('href') || '').toLowerCase();
+            const ico = !!el.querySelector('.fa-plus,.glyphicon-plus,[class*="plus"],[class*="add"]');
+            if (id.startsWith('nova-aba-situacao-deducao')) continue;
+            if (id.startsWith('confirma-dados-deducao')) continue;
+            if (id.startsWith('novo-acrescimo')) continue;
+            if (id.startsWith('novo-recolhedor')) continue;
+            if (id.startsWith('btnPreencher')) continue;
+            if (txt.includes('relacionamento')) continue;
+            if (txt.includes('confirmar')) continue;
+            if (txt.includes('apropriar')) continue;
+            if (txt.includes('preencher')) continue;
+            if (cls.includes('predoc') || onc.includes('predoc') || tit.includes('predoc'))
+                return click(el) ? 'predoc-attr' : '';
+            if (ico) return click(el) ? 'icon-plus' : '';
+            if (txt === '+') return click(el) ? 'text-plus' : '';
+            if (txt === '' && el.tagName === 'A' && !id && (href === '#' || href.endsWith('#')))
+                return click(el) ? 'anon-href-hash' : '';
+        }
+    }
+    return '';
+}"""
+
+
+def _dob001_predoc_aberto(pagina, did: str) -> bool:
+    """True se algum campo específico do Pré-Doc DOB001 já está VISÍVEL.
+
+    Evita reclicar no '+' quando a seção já foi expandida (um segundo clique
+    poderia colapsar ou duplicar o Pré-Doc).
+    """
+    try:
+        return bool(pagina.evaluate(
+            r"""(did) => {
+                const v = (el) => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 && r.height === 0) return false;
+                    const s = window.getComputedStyle(el);
+                    return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+                };
+                return ['codcredordevedorpredoc','codnumlista','codtipoob',
+                        'bancoFavorecido','agenciaFavorecido','contaFavorecido',
+                        'txtprocesso','obser'].some((p) => v(document.getElementById(p + did)));
+            }""",
+            did,
+        ))
+    except Exception:
+        return False
+
+
+def _abrir_predoc_dob001(pagina, did: str, erros: list) -> bool:
+    """Abre o Pré-Doc de uma dedução DOB001 clicando no '+' e aguarda os
+    campos específicos do DOB001 ficarem visíveis.
+
+    Usa múltiplas estratégias Playwright nativas antes de cair no evaluate JS.
+    """
+    import re as _re
+
+    def _aguardar_campos(timeout_ms: int = 15000) -> bool:
+        try:
+            pagina.wait_for_function(
+                """(did) => {
+                    const v = el => {
+                        if (!el) return false;
+                        const r = el.getBoundingClientRect();
+                        if (r.width === 0 && r.height === 0) return false;
+                        const s = window.getComputedStyle(el);
+                        return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+                    };
+                    return ['codcredordevedorpredoc','codnumlista','codtipoob',
+                            'bancoFavorecido','agenciaFavorecido','contaFavorecido',
+                            'txtprocesso','obser'].some(p => v(document.getElementById(p + did)));
+                }""",
+                arg=did,
+                timeout=timeout_ms,
+            )
+            print(f"      pré-doc DOB001 aberto ✓")
+            return True
+        except Exception:
+            return False
+
+    def _tentar(loc, desc: str) -> bool:
+        try:
+            if loc.count() == 0:
+                return False
+            el = loc.first
+            if not el.is_visible(timeout=800):
+                return False
+            el.scroll_into_view_if_needed(timeout=2000)
+            el.click(timeout=3000)
+            if _aguardar_campos(3000):
+                print(f"      [DOB001] Pré-Doc clicado: {desc}")
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _tentar_js(js: str, desc: str, verify_ms: int) -> bool:
+        """Executa um localizador JS do '+' do Pré-Doc e confirma a abertura
+        pelos campos do DOB001. Retorna True só se os campos aparecerem."""
+        try:
+            est = pagina.evaluate(js, did)
+        except Exception as e:
+            print(f"      [DOB001] {desc} erro: {e}")
+            return False
+        if not est:
+            return False
+        print(f"      [DOB001] Pré-Doc '+' clicado ({desc}: {est})")
+        return _aguardar_campos(verify_ms)
+
+    # ── 0. Já aberto? não reclica (evita colapsar/duplicar a seção) ──────
+    if _dob001_predoc_aberto(pagina, did):
+        print("      pré-doc DOB001 já aberto ✓ (sem reclicar)")
+        return True
+
+    # ── 1 (PREFERENCIAL): botão Pré-Doc no container do did ──────────────
+    # No Contratos.gov.br o '+' é um ícone CSS / <a href="#"> anônimo, SEM
+    # texto. Este localizador é o que abre o DOB001 de forma confiável, então
+    # roda PRIMEIRO — antes era a última estratégia (B), e só era alcançado
+    # depois de ~25 s de timeouts dos localizadores que não acham ícone.
+    if _tentar_js(_JS_PREDOC_DOB001_CONTAINER, "container", 10000):
+        return True
+
+    # ── 2 (fallback): localizador resiliente (mesmo das demais deduções) ─
+    if _tentar_js(_JS_CLICAR_MAIS_PREDOC, "resiliente", 4000):
+        return True
+
+    # ── A: botão com texto exato "+" (mais comum) ────────────────────────
+    if _tentar(
+        pagina.locator("button, a").filter(has_text=_re.compile(r"^\s*\+\s*$")).last,
+        "button/a com texto +"
+    ):
+        return True
+
+    # ── B: dentro do container da dedução — qualquer <a href="...#"> anônimo ──
+    # (padrão do Contratos.gov.br: ícone CSS + jQuery, sem onclick/texto)
+    try:
+        confirmar = pagina.locator(f"#confirma-dados-deducao-{did}")
+        if confirmar.count() > 0 and confirmar.is_visible(timeout=500):
+            # Sobe pelo DOM via JS e clica no <a href="#"> anônimo da seção Pré-Doc
+            clicou_b = pagina.evaluate(
+                """(did) => {
+                    const v = el => !!el && (!!el.offsetParent || el.getClientRects().length > 0);
+                    const n = t => String(t||'').normalize('NFD')
+                        .replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+                    const click = el => {
+                        if (!el || !v(el)) return false;
+                        el.scrollIntoView({ block:'center', behavior:'auto' });
+                        try { el.click(); }
+                        catch(_) { el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window})); }
+                        return true;
+                    };
+
+                    const ancora = document.getElementById('confirma-dados-deducao-' + did)
+                                || document.getElementById('aba-deducao' + did);
+                    if (!ancora) return '';
+
+                    let nivel = ancora;
+                    for (let i = 0; i < 12; i++) {
+                        nivel = nivel.parentElement;
+                        if (!nivel) break;
+
+                        const els = Array.from(nivel.querySelectorAll('button,a,span,i,[role="button"]'));
+                        for (const el of els) {
+                            if (!v(el)) continue;
+                            const id   = el.id || '';
+                            const cls  = n(el.className||'');
+                            const onc  = n(el.getAttribute('onclick')||'');
+                            const tit  = n(el.getAttribute('title')||el.getAttribute('aria-label')||'');
+                            const txt  = n(el.textContent||'');
+                            const href = (el.getAttribute('href')||'').toLowerCase();
+                            const ico  = !!el.querySelector('.fa-plus,.glyphicon-plus,[class*="plus"],[class*="add"]');
+
+                            // Exclusões
+                            if (id.startsWith('nova-aba-situacao-deducao')) continue;
+                            if (id.startsWith('confirma-dados-deducao'))    continue;
+                            if (id.startsWith('novo-acrescimo'))             continue;
+                            if (id.startsWith('btnPreencher'))               continue;
+                            if (txt.includes('relacionamento'))              continue;
+                            if (txt.includes('confirmar'))                   continue;
+                            if (txt.includes('apropriar'))                   continue;
+                            if (txt.includes('preencher'))                   continue;
+
+                            // Condições positivas
+                            if (cls.includes('predoc') || onc.includes('predoc') || tit.includes('predoc'))
+                                return click(el) ? 'predoc-attr' : '';
+                            if (ico)
+                                return click(el) ? 'icon-plus' : '';
+                            if (txt === '+')
+                                return click(el) ? 'text-plus' : '';
+                            // Link anônimo href="#" (ícone CSS, jQuery)
+                            if (txt === '' && el.tagName === 'A' && !id
+                                && (href === '#' || href.endsWith('#')))
+                                return click(el) ? 'anon-href-hash' : '';
+                        }
+                    }
+                    return '';
+                }""",
+                did,
+            )
+            if clicou_b:
+                print(f"      [DOB001] Pré-Doc clicado via JS container: {clicou_b}")
+                if _aguardar_campos(4000):
+                    return True
+    except Exception as e:
+        print(f"      [DOB001] Estratégia B erro: {e}")
+
+    # ── C: cabeçalho "Pré-Doc" → primeiro botão/link no mesmo bloco ─────
+    try:
+        import re as _re2
+        cabs = pagina.locator(
+            "caption, th, td, div, span, h1, h2, h3, h4, h5, h6, strong, p"
+        ).filter(has_text=_re2.compile(r"^pré-?doc$", _re2.IGNORECASE))
+        n_cabs = cabs.count()
+        for idx in range(n_cabs - 1, -1, -1):
+            cab = cabs.nth(idx)
+            if not cab.is_visible(timeout=400):
+                continue
+            for xp in ["../..", "../../..", "../../../..", "../../../../.."]:
+                bloco = cab.locator(f"xpath={xp}")
+                if bloco.count() == 0:
+                    continue
+                btn = bloco.locator("button, a").filter(
+                    has_text=_re2.compile(r"^\s*\+\s*$")
+                ).first
+                if _tentar(btn, f"predoc-heading-idx{idx}"):
+                    return True
+            break
+    except Exception as e:
+        print(f"      [DOB001] Estratégia C erro: {e}")
+
+    erros.append("DOB001/Pré-Doc: botão '+' não encontrado após todas as estratégias.")
+    return False
+
+
+def calcular_dv_nup(base15: str) -> str:
+    """Calcula os 2 dígitos verificadores do NUP-17 (Número Único de Protocolo),
+    conforme a Portaria Interministerial MJSP/ME nº 11/2019.
+
+    Módulo 11 com pesos da direita para a esquerda, progressão de razão 1
+    começando em 2: DV1 sobre os 15 dígitos da base (pesos 2..16) e DV2 sobre os
+    16 dígitos já com o DV1 (pesos 2..17). Para cada dígito verificador, usa a
+    unidade do resultado de 11 - (soma % 11): resto 0 vira 1, resto 1 vira 0.
+
+    Recebe os 15 dígitos da base (com ou sem pontuação) e retorna 'DD'.
+    Ex.: '23080.017645/2026' -> '81'  (NUP completo: 23080.017645/2026-81)
+    """
+    import re as _re_nup
+    d = _re_nup.sub(r"\D", "", str(base15 or ""))
+    if len(d) != 15:
+        raise ValueError(f"NUP base deve ter 15 dígitos; recebido {len(d)}")
+    s1 = sum(int(d[i]) * (16 - i) for i in range(15))
+    r1 = s1 % 11
+    dv1 = (11 - r1) % 10
+    d2 = d + str(dv1)
+    s2 = sum(int(d2[i]) * (17 - i) for i in range(16))
+    r2 = s2 % 11
+    dv2 = (11 - r2) % 10
+    return f"{dv1}{dv2}"
+
+
+def _formatar_processo_nup(processo: str) -> str:
+    """Normaliza o nº do processo para o NUP-17 exigido pela máscara do portal:
+    NNNNN.NNNNNN/AAAA-DD.
+
+    O PDF traz o NUP SEM os 2 dígitos verificadores (15 dígitos), mas a máscara
+    do campo Processo exige os 17 — por isso o campo ficava com '-__' em branco.
+    Aqui calculamos o DV e devolvemos o número completo e pontuado. Se já vierem
+    17 dígitos, usa como está. Em qualquer outro caso (formato fora do padrão
+    NUP), devolve o valor original sem alterar — nunca inventa dígitos.
+    """
+    import re as _re_nup
+    bruto = str(processo or "").strip()
+    d = _re_nup.sub(r"\D", "", bruto)
+    if len(d) == 15:
+        try:
+            processo_historico = _buscar_processo_completo_no_historico_fila(d)
+            if processo_historico:
+                return processo_historico
+            d = d + calcular_dv_nup(d)
+        except Exception:
+            return bruto
+    if len(d) != 17:
+        return bruto  # formato inesperado — não mexe
+    return f"{d[0:5]}.{d[5:11]}/{d[11:15]}-{d[15:17]}"
+
+
+def _buscar_processo_completo_no_historico_fila(base15: str) -> str:
+    """Tenta resolver o NUP completo usando o Protocolo da fila/histórico.
+
+    A coluna "Número Processo" da fila pode guardar só o sequencial curto
+    (ex.: 025771), enquanto o JSON "Protocolo" traz o processo oficial completo.
+    Quando o PDF vem sem DV, o Protocolo registrado é uma fonte melhor que
+    recalcular, principalmente para processos que não seguem a base esperada.
+    """
+    import re as _re_nup
+
+    base = _re_nup.sub(r"\D", "", str(base15 or ""))
+    if len(base) != 15:
+        return ""
+
+    def _formatar_candidato(valor: object) -> str:
+        texto = str(valor or "").strip()
+        digitos = _re_nup.sub(r"\D", "", texto)
+        if len(digitos) >= 17 and digitos[:15] == base:
+            d = digitos[:17]
+            return f"{d[0:5]}.{d[5:11]}/{d[11:15]}-{d[15:17]}"
+        return ""
+
+    # 1) Snapshot local da fila atual: rápido e sem rede.
+    try:
+        from services import local_cache_service as _local_cache
+
+        snapshot = _local_cache.obter_fila_processos_snapshot()
+        for row in snapshot.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            for chave in ("Protocolo", "protocolo", "processoSolar", "Processo"):
+                achado = _formatar_candidato(row.get(chave))
+                if achado:
+                    return achado
+    except Exception:
+        pass
+
+    # 2) Histórico remoto/local persistido no Turso, quando configurado.
+    try:
+        from services import turso_service as _turso
+
+        if not _turso.turso_configurado():
+            return ""
+        like_prefix = f"{base}%"
+        sql = """
+            select protocolo
+            from (
+              select json_extract(dados, '$.Protocolo') as protocolo, atualizado_em as ordem
+              from fila_processos_atual
+              union all
+              select json_extract(dados, '$.Protocolo') as protocolo, ultimo_visto_em as ordem
+              from fila_processos_historico
+              union all
+              select numero_processo as protocolo, atualizado_em as ordem
+              from processos
+            )
+            where protocolo is not null
+              and replace(replace(replace(protocolo, '.', ''), '/', ''), '-', '') like ?
+            order by ordem desc
+            limit 1
+        """
+        result = _turso.executar(sql, [like_prefix], timeout=3)
+        for row in _turso._rows(result):
+            achado = _formatar_candidato(row.get("protocolo"))
+            if achado:
+                return achado
+    except Exception:
+        pass
+
+    return ""
+
+
 def _preencher_dob001_total(
     pagina,
     ded: dict,
@@ -3060,21 +3568,67 @@ def _preencher_dob001_total(
         return False
     print(f"    did={did}")
 
-    _select(pagina, f"sfdeducaocodsit{did}", "DOB001", erros, "Situação")
+    # ── Aguarda o formulário estabilizar ANTES de selecionar DOB001 ──────
+    # O select sfdeducaocodsit{did} aparece no DOM imediatamente mas as
+    # opções AJAX só chegam depois — selecionar antes disso sempre falha.
+    try:
+        _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=15000)
+    except Exception:
+        pass
+
+    # Espera adicional para as opções do select de Situação carregarem
+    try:
+        pagina.wait_for_function(
+            """(did) => {
+                const sel = document.getElementById('sfdeducaocodsit' + did);
+                return sel && sel.options.length > 1;
+            }""",
+            arg=did,
+            timeout=10000,
+        )
+    except Exception:
+        pass  # Tenta selecionar mesmo assim
+
+    # Seleciona DOB001 com retry caso o primeiro `_select` falhe por timing
+    for _tentativa_sel in range(3):
+        ok = pagina.evaluate(
+            """([fid, texto]) => {
+                const sel = document.getElementById(fid);
+                if (!sel || sel.options.length <= 1) return false;
+                const norm = (s) => s.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase().trim();
+                const op = Array.from(sel.options).find(o =>
+                    norm(o.value) === norm(texto) ||
+                    norm(o.text).includes(norm(texto))
+                );
+                if (!op) return false;
+                sel.value = op.value;
+                sel.dispatchEvent(new Event('change', { bubbles: true }));
+                if (typeof $ !== 'undefined') $(sel).trigger('change');
+                return true;
+            }""",
+            [f"sfdeducaocodsit{did}", "DOB001"],
+        )
+        if ok:
+            print(f"    [DOB001] Situação selecionada ✓ (tentativa {_tentativa_sel + 1})")
+            break
+        time.sleep(0.6)
+    else:
+        erros.append(f"DOB001: opção 'DOB001' não encontrada no select Situação após 3 tentativas.")
+
+    # Aguarda o formulário re-estabilizar após a seleção de DOB001 (dispara AJAX)
     try:
         _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=15000)
     except Exception:
         pass
     _verificar_interrupcao(deve_parar)
 
-    # ── PRÉ-EXPANSÃO: abre pré-doc DOB001 antes de preencher qualquer campo ──
-    print(f"    [Pré-expansão DOB001] Abrindo pré-doc antes de preencher...")
-    pdid_expandido: str = ""
-    try:
-        pdid_expandido = _abrir_predoc_resiliente(pagina, did, erros)
-        print(f"      pré-doc aberto: pdid={pdid_expandido}")
-    except Exception as ex_pdid:
-        print(f"      pré-doc: falhou ao pré-abrir ({ex_pdid})")
+    # ── Abre o Pré-Doc DOB001 clicando no '+' ───────────────────────────
+    # _abrir_predoc_dob001 aguarda campos DOB001-específicos (não sfpredoc*),
+    # evitando o timeout de 15 s que causava falha silenciosa da dedução DOB001.
+    print(f"    [DOB001] Abrindo pré-doc...")
+    predoc_aberto = _abrir_predoc_dob001(pagina, did, erros)
+    if not predoc_aberto:
+        print(f"    [DOB001] Aviso: pré-doc pode não ter aberto corretamente; tentando preencher assim mesmo.")
     time.sleep(0.8)
 
     _fill_if_different(pagina, f"sfdeducaocodugpgto{did}", _UG_TOMADORA, erros, "UG Pagadora")
@@ -3085,7 +3639,7 @@ def _preencher_dob001_total(
     try:
         opcoes_reais = pagina.evaluate(
             "(id) => { const s = document.getElementById(id); "
-            "return s ? Array.from(s.options).map(o => o.value + ‘|’ + o.text) : [‘NAO_ENCONTRADO’]; }",
+            "return s ? Array.from(s.options).map(o => o.value + '|' + o.text) : ['NAO_ENCONTRADO']; }",
             f"codtipoob{did}",
         )
         print(f"    [Tipo de OB] opções disponíveis: {opcoes_reais}")
@@ -3100,10 +3654,16 @@ def _preencher_dob001_total(
         "Pré-Doc/Tipo de OB",
     )
 
+    # Processo: o PDF traz o NUP sem os 2 dígitos verificadores; a máscara do
+    # campo exige os 17. Completa com o DV (módulo 11) antes de preencher.
+    processo_fmt = _formatar_processo_nup(processo)
+    if processo_fmt != processo:
+        print(f"    [DOB001] Processo NUP completado com DV: {processo} -> {processo_fmt}")
+
     # ── Batch fill: todos os campos de texto do Pré-Doc DOB001 (1 round-trip) ─
     campos_dob001 = {
         f"codcredordevedorpredoc{did}": favorecido["cnpj"],
-        f"txtprocesso{did}": processo,
+        f"txtprocesso{did}": processo_fmt,
         f"taxacambio{did}": "0",
         f"codnumlista{did}": lf_numero,
         f"bancoFavorecido{did}": favorecido["banco_favorecido"],

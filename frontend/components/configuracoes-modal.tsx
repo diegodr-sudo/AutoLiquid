@@ -71,6 +71,7 @@ import {
 } from "@/lib/data";
 import { useAuth } from "@/lib/auth-context";
 import { parseDbTimestamp } from "@/lib/utils";
+import { SimpleTooltip } from "@/components/ui/simple-tooltip";
 
 interface ConfiguracoesModalProps {
   isOpen: boolean;
@@ -356,7 +357,9 @@ export function ConfiguracoesModal({
         if (ativo) setErroBugs(err instanceof Error ? err.message : "Erro ao carregar bugs.");
       })
       .finally(() => {
-        if (ativo) setCarregandoBugs(false);
+        // Não guarda por `ativo`: se o efeito foi limpo antes da request terminar,
+        // setCarregandoBugs(true) já tinha sido chamado e o spinner ficaria preso.
+        setCarregandoBugs(false);
       });
     return () => { ativo = false; };
   }, [isOpen, abaAtiva, isModerator]);
@@ -845,7 +848,6 @@ export function ConfiguracoesModal({
                 type="button"
                 onClick={handleTituloClick}
                 className="text-left text-lg font-semibold text-foreground outline-none"
-                title={isModerator && sistemaDesbloqueado ? "Sistema" : undefined}
               >
                 Configurações
               </button>
@@ -1606,7 +1608,7 @@ export function ConfiguracoesModal({
                                         }}
                                         onBlur={(event) => void handleAtualizarUsuario(usuario, { senha: event.currentTarget.value })}
                                         className="min-w-0 flex-1 rounded-xl border border-glass-border bg-background px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary"
-                                        title="Senha"
+                                        placeholder="Senha"
                                       />
                                       <Tooltip>
                                         <TooltipTrigger asChild>
@@ -1969,24 +1971,26 @@ export function ConfiguracoesModal({
                           {(carregandoBugs || exportandoBugs) && (
                             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                           )}
-                          <button
-                            type="button"
-                            onClick={() => void handleExportarBugs()}
-                            disabled={exportandoBugs || carregandoBugs}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40"
-                            title="Exportar relatório CSV"
-                          >
-                            <FileDown className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleRecarregarBugs}
-                            disabled={carregandoBugs}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40"
-                            title="Recarregar"
-                          >
-                            <RefreshCw className="h-3.5 w-3.5" />
-                          </button>
+                          <SimpleTooltip content="Exportar relatório CSV" side="top">
+                            <button
+                              type="button"
+                              onClick={() => void handleExportarBugs()}
+                              disabled={exportandoBugs || carregandoBugs}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40"
+                            >
+                              <FileDown className="h-3.5 w-3.5" />
+                            </button>
+                          </SimpleTooltip>
+                          <SimpleTooltip content="Recarregar" side="top">
+                            <button
+                              type="button"
+                              onClick={handleRecarregarBugs}
+                              disabled={carregandoBugs}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground disabled:opacity-40"
+                            >
+                              <RefreshCw className="h-3.5 w-3.5" />
+                            </button>
+                          </SimpleTooltip>
                         </div>
                       </div>
 
@@ -2047,12 +2051,12 @@ export function ConfiguracoesModal({
                                     )}
                                     Resolvido
                                   </GlassButton>
+                                  <SimpleTooltip content="Excluir" side="top">
                                   <GlassButton
                                     variant="ghost"
                                     size="sm"
                                     className="text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                                     disabled={excluindo === bug.id || resolvendo === bug.id}
-                                    title="Excluir"
                                     onClick={() => {
                                       setExcluindo(bug.id);
                                       deletarBugReport(bug.id)
@@ -2067,6 +2071,7 @@ export function ConfiguracoesModal({
                                       <Trash2 className="h-3.5 w-3.5" />
                                     )}
                                   </GlassButton>
+                                  </SimpleTooltip>
                                 </div>
                               </div>
                             </div>

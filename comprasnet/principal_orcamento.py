@@ -27,6 +27,8 @@ from comprasnet.principal_helpers import (
     ExecucaoInterrompida,
     _verificar_interrupcao,
     _preencher_campo_com_retry,
+    _capturar_empenhos_web,
+    _comparar_empenhos_pdf_web,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -321,6 +323,28 @@ def executar(dados_extraidos, deve_parar=None, *, pagina=None, playwright=None):
                 erros.append(f"Erro ao confirmar Principal Com Orçamento: {e}")
 
         if erros:
+            # Ao falhar, monta um comparativo PDF × IC de cada empenho (capturando
+            # o valor de cada barra na web) para que o painel exiba o quadro de
+            # "Conferência manual necessária", em vez de só a mensagem técnica.
+            try:
+                empenhos_pdf = dados_extraidos.get("Empenhos", [])
+                empenhos_web = _capturar_empenhos_web(pagina)
+                linhas_cmp = _comparar_empenhos_pdf_web(empenhos_pdf, empenhos_web)
+            except Exception as exc:
+                print(f"  Aviso: comparativo de empenhos falhou ({exc}).")
+                linhas_cmp = []
+
+            # status "alerta": sinaliza divergência SEM parar a automação. A
+            # etapa é marcada como "divergencia" (nem concluída, nem erro) e o
+            # quadro de conferência manual aparece nas pendências.
+            if linhas_cmp:
+                partes = ["Principal com Orçamento requer conferência manual:"]
+                partes.extend(linhas_cmp)
+                partes.append("")
+                partes.append("Motivo técnico:")
+                partes.extend(erros)
+                return {"status": "alerta", "mensagem": "\n".join(partes)}
+
             return {"status": "alerta", "mensagem": "\n".join(erros)}
         return {"status": "sucesso", "mensagem": "Principal Com Orçamento preenchido!"}
 

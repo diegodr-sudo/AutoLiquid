@@ -107,10 +107,10 @@ def salvar_documento(doc_id: str, payload: dict) -> None:
         conn.execute(
             """
             insert into documentos_processados (id, payload, atualizado_em)
-            values (?, ?, datetime('now', 'localtime'))
+            values (?, ?, datetime('now'))
             on conflict(id) do update set
               payload = excluded.payload,
-              atualizado_em = datetime('now', 'localtime')
+              atualizado_em = datetime('now')
             """,
             (doc_id, data)
         )
@@ -125,6 +125,61 @@ def obter_documento(doc_id: str) -> dict | None:
     except Exception:
         pass
     return None
+
+
+def resetar_execucoes_travadas() -> int:
+    """Libera execuções que ficaram presas após um encerramento abrupto da API.
+
+    Um processo recém-iniciado não pode ter nenhuma execução legitimamente em
+    andamento. Se um run anterior morreu antes de rodar o bloco `finally` que
+    zera `is_running`, a flag permanece `True` no cache e TODA nova execução é
+    bloqueada com HTTP 409 ("Execução já em andamento") — sem feedback visível,
+    o que faz parecer que "nada acontece no Chrome".
+
+    Esta função roda no startup: para cada documento, zera `is_running` e
+    `cancel_requested` e converte qualquer etapa com status "executando" de
+    volta para "aguardando", para que o usuário possa reexecutar.
+
+    Retorna a quantidade de documentos corrigidos.
+    """
+    corrigidos = 0
+    try:
+        with _connect() as conn:
+            linhas = conn.execute(
+                "select id, payload from documentos_processados"
+            ).fetchall()
+            for linha in linhas:
+                try:
+                    doc = json.loads(linha["payload"])
+                except Exception:
+                    continue
+
+                mudou = False
+                if doc.get("is_running"):
+                    doc["is_running"] = False
+                    mudou = True
+                if doc.get("cancel_requested"):
+                    doc["cancel_requested"] = False
+                    mudou = True
+                for etapa in doc.get("etapas") or []:
+                    if isinstance(etapa, dict) and etapa.get("status") == "executando":
+                        etapa["status"] = "aguardando"
+                        mudou = True
+
+                if mudou:
+                    conn.execute(
+                        """
+                        update documentos_processados
+                           set payload = ?, atualizado_em = datetime('now')
+                         where id = ?
+                        """,
+                        (json.dumps(doc, ensure_ascii=False), linha["id"]),
+                    )
+                    corrigidos += 1
+    except Exception:
+        # Nunca deixar o startup falhar por causa do reset.
+        return corrigidos
+    return corrigidos
 
 
 def _normalizar_texto(valor: Any) -> str:
@@ -292,7 +347,7 @@ def salvar_registro_liquidacao(payload: dict[str, Any], *, sincronizado: bool = 
         conn.execute(
             """
             insert into liquidacao_registros_pendentes (documento_id, payload, sincronizado, atualizado_em)
-            values (?, ?, ?, datetime('now', 'localtime'))
+            values (?, ?, ?, datetime('now'))
             on conflict(documento_id) do update set
               payload = excluded.payload,
               sincronizado = excluded.sincronizado,

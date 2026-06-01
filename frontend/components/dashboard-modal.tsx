@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { X, TrendingUp, Users, Building2, CheckCircle2, Clock, Award, BarChart3 } from "lucide-react";
+import { SimpleTooltip } from "@/components/ui/simple-tooltip";
 
 // ── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -83,9 +84,11 @@ function HBar({ label, value, max, color, sub }: {
   const pct = max > 0 ? Math.max(4, (value / max) * 100) : 4;
   return (
     <div className="group flex items-center gap-3">
-      <div className="w-24 shrink-0 truncate text-right text-[11px] text-muted-foreground" title={label}>
-        {label}
-      </div>
+      <SimpleTooltip content={label} side="left">
+        <div className="w-24 shrink-0 truncate text-right text-[11px] text-muted-foreground">
+          {label}
+        </div>
+      </SimpleTooltip>
       <div className="relative flex-1 overflow-hidden rounded-full bg-secondary/40" style={{ height: 8 }}>
         <div
           className="absolute left-0 top-0 h-full rounded-full transition-all duration-700"
@@ -263,7 +266,9 @@ export function DashboardModal({ open, onClose, rows }: DashboardModalProps) {
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="truncate text-[12px] text-foreground" title={cr.name}>{cr.name}</span>
+                      <SimpleTooltip content={cr.name} side="top">
+                        <span className="truncate text-[12px] text-foreground">{cr.name}</span>
+                      </SimpleTooltip>
                       <span className="shrink-0 text-[11px] font-semibold tabular-nums text-foreground">{fmtBRL(cr.valor)}</span>
                     </div>
                     <div className="mt-1 overflow-hidden rounded-full bg-secondary/40" style={{ height: 4 }}>
@@ -298,7 +303,6 @@ export function DashboardModal({ open, onClose, rows }: DashboardModalProps) {
                         <div
                           className="w-full rounded-t-sm bg-primary/40 transition-all duration-700 group-hover:bg-primary/70"
                           style={{ height: `${Math.max(4, pct)}%` }}
-                          title={`${comp.label}: ${fmtBRL(comp.valor)}`}
                         />
                       </div>
                       <span className="mt-1 text-[9px] text-muted-foreground/70 truncate w-full text-center">

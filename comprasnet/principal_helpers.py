@@ -422,6 +422,113 @@ def _expandir_barra_empenho(pagina, num_empenho_pdf: str, erros: list) -> bool:
     return False
 
 
+def _formatar_numero_empenho(num: str) -> str:
+    """Normaliza '2026000136' → '2026NE000136' (mantém se já vier formatado)."""
+    n = str(num or "").strip().upper().replace(" ", "")
+    return re.sub(r"^(\d{4})(\d{6})$", r"\1NE\2", n)
+
+
+def _capturar_empenhos_web(pagina) -> list[dict]:
+    """Lê as barras (azuis) de empenho da aba Principal Com Orçamento.
+
+    Cada barra exibe algo como:
+        'Nº do Empenho: 2022NE002642  Subelemento: 24  Liquidado: SIM  R$: 149,40'
+
+    Retorna uma lista de dicts: {numero, valor, subelemento, liquidado}.
+    Falha silenciosa (retorna []) — é usada apenas para enriquecer a
+    conferência manual, nunca deve quebrar o fluxo.
+    """
+    try:
+        dados = pagina.evaluate(
+            r"""() => {
+                const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+                const visivel = (el) => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    const s = window.getComputedStyle(el);
+                    return r.width > 0 && r.height > 0
+                        && s.visibility !== 'hidden' && s.display !== 'none';
+                };
+                const seletores = '.row.pointer-hand, .box-header, .count-poo-item, '
+                    + '[data-count-poo-item], .title-item-acordion, .box.box-solid';
+                const resultados = [];
+                const vistos = new Set();
+                for (const el of Array.from(document.querySelectorAll(seletores))) {
+                    if (!visivel(el)) continue;
+                    const txt = norm(el.innerText || el.textContent);
+                    const up = txt.toUpperCase();
+                    if (!up.includes('EMPENHO')) continue;
+                    const mNum = up.match(/(\d{4}NE\d{6})/);
+                    if (!mNum) continue;
+                    const numero = mNum[1];
+                    if (vistos.has(numero)) continue;
+                    vistos.add(numero);
+                    const mVal = txt.match(/R\$\s*:?\s*([\d.]+,\d{2})/);
+                    const mSub = txt.match(/Subelemento:\s*(\d+)/i);
+                    const mLiq = txt.match(/Liquidado:\s*([A-Za-zÃÇ]+)/i);
+                    resultados.push({
+                        numero,
+                        valor: mVal ? mVal[1] : '',
+                        subelemento: mSub ? mSub[1] : '',
+                        liquidado: mLiq ? mLiq[1] : '',
+                    });
+                }
+                return resultados;
+            }"""
+        )
+        return dados or []
+    except Exception as exc:
+        print(f"    Aviso: não foi possível capturar empenhos da web ({exc}).")
+        return []
+
+
+def _comparar_empenhos_pdf_web(empenhos_pdf: list, empenhos_web: list) -> list[str]:
+    """Gera linhas de comparação (PDF × IC) por empenho, no formato que o
+    painel de conferência sabe renderizar.
+
+    Linhas possíveis:
+        Empenho 2026NE000136 — Valor: Web=149.40 | PDF=51683.15
+        Empenho ausente no IC: 2026NE000136=51683.15
+        Empenho exclusivo no IC: 2022NE002642=149.40
+    """
+    from comprasnet.base import normalizar_valor
+
+    linhas: list[str] = []
+
+    pdf = []
+    for e in (empenhos_pdf or []):
+        numero = _formatar_numero_empenho(e.get("Empenho", ""))
+        if not numero:
+            continue
+        pdf.append({"numero": numero, "valor": normalizar_valor(e.get("Valor", ""))})
+
+    web = []
+    for e in (empenhos_web or []):
+        numero = _formatar_numero_empenho(e.get("numero", ""))
+        if not numero:
+            continue
+        web.append({"numero": numero, "valor": normalizar_valor(e.get("valor", ""))})
+
+    web_por_num = {e["numero"]: e for e in web}
+    nums_pdf = {e["numero"] for e in pdf}
+
+    for e in pdf:
+        w = web_por_num.get(e["numero"])
+        if w is None:
+            linhas.append(f"Empenho ausente no IC: {e['numero']}={e['valor'] or '—'}")
+            continue
+        linhas.append(
+            f"Empenho {e['numero']} — Valor: "
+            f"Web={w['valor'] or '—'} | PDF={e['valor'] or '—'}"
+        )
+
+    for e in web:
+        if e["numero"] not in nums_pdf:
+            linhas.append(f"Empenho exclusivo no IC: {e['numero']}={e['valor'] or '—'}")
+
+    return linhas
+
+
 def _verificar_empenho(pagina, num_empenho_pdf: str, erros: list):
     """Confere se o número do empenho visível bate com o do PDF."""
     num_fmt = re.sub(r"^(\d{4})(\d{6})$", r"\1NE\2", num_empenho_pdf)
@@ -574,7 +681,10 @@ def _preencher_campo_mascarado_com_retry(
 
             val_atual = locator.input_value().strip()
             val_digitos = re.sub(r"\D+", "", val_atual)
-            if val_atual and (not esperado or val_digitos.endswith(esperado)):
+            # A máscara pode completar segmentos APÓS os dígitos digitados
+            # (ex.: "02" vira "8.1.2.3.1.02.01"), então os dígitos esperados
+            # não ficam no final. Aceita se aparecerem em qualquer posição.
+            if val_atual and (not esperado or esperado in val_digitos):
                 print(f"    {descricao} → '{val_atual}' (tentativa {t})")
                 return val_atual
 

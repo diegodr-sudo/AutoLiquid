@@ -29,6 +29,7 @@ export interface Documento {
   codigoIG: string
   tipoLiquidacao: string
   tipoOperacional?: "comprasnet" | "bolsa" | string
+  codigoOperacional?: "01" | "03" | string
   bolsas?: BolsaLiquidacao[]
   optanteSimples?: boolean
   alertas?: string[]
@@ -130,7 +131,7 @@ export interface Deducao {
 export interface EtapaExecucao {
   id: number
   nome: string
-  status: "aguardando" | "executando" | "concluido" | "erro"
+  status: "aguardando" | "executando" | "concluido" | "erro" | "divergencia"
   icone: string
 }
 
@@ -157,6 +158,7 @@ export type TableKey =
   | "nat-rendimento"
   | "fontes-recurso"
   | "datas-impostos"
+  | "ncm"
 
 export interface TableColumn {
   key: string
@@ -1236,6 +1238,7 @@ export async function executarTodas(
     contaAgencia?: string
     contaConta?: string
     vpd?: string
+    codigoOperacional?: string
   } = {}
 ): Promise<DocumentoProcessado> {
   return apiFetch<DocumentoProcessado>(
@@ -1254,6 +1257,7 @@ export async function executarTodas(
         contaAgencia: options.contaAgencia ?? "",
         contaConta: options.contaConta ?? "",
         vpd: options.vpd ?? "",
+        codigoOperacional: options.codigoOperacional ?? "",
       }),
     },
     {
@@ -1276,6 +1280,7 @@ export async function executarEtapa(
     contaAgencia?: string
     contaConta?: string
     vpd?: string
+    codigoOperacional?: string
   } = {}
 ): Promise<DocumentoProcessado> {
   return apiFetch<DocumentoProcessado>(
@@ -1294,6 +1299,7 @@ export async function executarEtapa(
         contaAgencia: options.contaAgencia ?? "",
         contaConta: options.contaConta ?? "",
         vpd: options.vpd ?? "",
+        codigoOperacional: options.codigoOperacional ?? "",
       }),
     },
     {
@@ -1366,6 +1372,7 @@ export async function salvarPreenchimentoDocumento(
     contaAgencia?: string
     contaConta?: string
     vpd?: string
+    codigoOperacional?: string
   } = {}
 ): Promise<DocumentoProcessado> {
   return apiFetch<DocumentoProcessado>(
@@ -1382,6 +1389,7 @@ export async function salvarPreenchimentoDocumento(
         contaAgencia: options.contaAgencia ?? "",
         contaConta: options.contaConta ?? "",
         vpd: options.vpd ?? "",
+        codigoOperacional: options.codigoOperacional ?? "",
       }),
     },
     { timeoutMs: SAVE_PREENCHIMENTO_TIMEOUT_MS }

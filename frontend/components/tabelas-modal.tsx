@@ -5,6 +5,7 @@ import { Plus, Save, Search, Trash2, Upload, X } from "lucide-react";
 import { GlassButton, GlassCard } from "./glass-card";
 import { GlobalScopeIcon } from "./global-scope-icon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { SimpleTooltip } from "@/components/ui/simple-tooltip";
 import {
   fetchTabela,
   saveTabela,
@@ -28,6 +29,7 @@ const DEFAULT_TABS: TableKey[] = [
   "uorg",
   "nat-rendimento",
   "fontes-recurso",
+  "ncm",
 ];
 
 const TAB_LABELS: Record<TableKey, string> = {
@@ -38,6 +40,7 @@ const TAB_LABELS: Record<TableKey, string> = {
   "nat-rendimento": "Nat. Rendimento",
   "fontes-recurso": "Fontes Recurso",
   "datas-impostos": "Datas",
+  ncm: "NCM",
 };
 
 function matchesSearch(row: TableRow, query: string) {
@@ -238,8 +241,8 @@ export function TabelasModal({
 
       <div className="relative flex min-h-full items-center justify-center p-2">
       <GlassCard
-        className="relative z-10 pointer-events-auto flex flex-col w-full max-w-[min(1120px,calc(100vw-16px))] max-h-[calc(100dvh-16px)] [overflow:clip] border-white/50"
-        contentClassName="flex min-h-0 flex-1 flex-col"
+        className="relative z-10 pointer-events-auto w-full max-w-[min(1120px,calc(100vw-16px))] overflow-hidden border-white/50"
+        contentClassName="flex max-h-[calc(100dvh-16px)] min-h-0 flex-col"
       >
         <div className="shrink-0 flex items-center justify-between border-b border-glass-border px-4 py-2.5">
           <div className="min-w-0">
@@ -319,9 +322,11 @@ export function TabelasModal({
 
         {currentDataset?.description && activeTab === "datas-impostos" ? (
           <div className="shrink-0 border-b border-glass-border/70 px-5 py-2">
-            <p className="line-clamp-2 text-sm text-muted-foreground" title={`${activeTabLabel}: ${currentDataset.description}`}>
-              {currentDataset.description}
-            </p>
+            <SimpleTooltip content={`${activeTabLabel}: ${currentDataset.description}`} side="bottom" className="text-left">
+              <p className="line-clamp-2 text-sm text-muted-foreground">
+                {currentDataset.description}
+              </p>
+            </SimpleTooltip>
               <div className="mt-2 rounded-2xl border border-sky-500/20 bg-sky-500/10 px-4 py-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   Como editar
@@ -352,7 +357,7 @@ export function TabelasModal({
           null
         )}
 
-        <div className="flex min-h-0 flex-1 flex-col px-4 py-2.5">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-2.5">
           {!currentDataset && isActiveTabLoading ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               Carregando tabela...
@@ -362,19 +367,16 @@ export function TabelasModal({
               {erro}
             </div>
           ) : currentDataset ? (
-            <div className="relative min-h-0 flex-1 rounded-2xl border border-glass-border bg-background/65" style={{ contain: "paint" }}>
+            <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-glass-border bg-background/65">
               {isActiveTabLoading ? (
                 <div className="pointer-events-none absolute right-3 top-3 z-20 rounded-full border border-glass-border bg-background px-3 py-1 text-xs font-medium text-muted-foreground shadow-sm">
                   Atualizando...
                 </div>
               ) : null}
-            <div className="scrollable-surface table-scroll-surface min-h-0 h-full overflow-x-auto overflow-y-scroll overscroll-contain [touch-action:pan-y]">
+            <div className="scrollable-surface table-scroll-surface min-h-0 flex-1 overflow-x-auto overflow-y-scroll overscroll-contain [touch-action:pan-y]">
               <table className="min-w-[1120px]">
                 <thead className="sticky top-0 z-10 bg-background">
                   <tr className="border-b border-glass-border">
-                    <th className="w-12 px-3 py-2 text-left text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                      #
-                    </th>
                     {currentDataset.columns.map((column) => (
                       <th
                         key={column.key}
@@ -406,9 +408,6 @@ export function TabelasModal({
                               : "hover:bg-secondary/45"
                           )}
                         >
-                          <td className="px-3 py-1.5 text-sm text-muted-foreground">
-                            {index + 1}
-                          </td>
                           {currentDataset.columns.map((column) => {
                             const editable = column.editable;
                             const value = row[column.key] ?? "";
@@ -438,7 +437,7 @@ export function TabelasModal({
                   ) : (
                     <tr>
                       <td
-                        colSpan={currentDataset.columns.length + 1}
+                        colSpan={currentDataset.columns.length}
                         className="px-4 py-12 text-center text-sm text-muted-foreground"
                       >
                         Nenhum registro encontrado para o filtro atual.

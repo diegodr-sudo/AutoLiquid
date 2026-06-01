@@ -368,11 +368,11 @@ export function NotasFiscaisTable({
           empenhos.length > 0 ? (
             <GlassTable
               compact
-              headers={["#", "Empenho", "Sit.", "Natureza", "Rec.", "Valor"]}
-              headerTitles={["", "Número do Empenho", "Situação", "Natureza da Despesa", "Recurso", "Valor Liquidado"]}
+              headers={["Empenho", "Sit.", "Natureza", "Rec.", "Valor"]}
+              headerTitles={["Número do Empenho", "Situação", "Natureza da Despesa", "Recurso", "Valor Liquidado"]}
               className="overflow-x-auto"
             >
-              {empenhos.map((empenho, index) => {
+              {empenhos.map((empenho) => {
                 // Usa o valor individual extraído do PDF; se ausente, divide o bruto igualmente
                 const valorEmpenho = (empenho.valor && empenho.valor > 0)
                   ? empenho.valor
@@ -386,10 +386,6 @@ export function NotasFiscaisTable({
                 const temSaldo = totalRef > 0;
                 return (
                   <GlassTableRow key={empenho.id}>
-                    {/* # */}
-                    <GlassTableCell compact className="w-5 text-center text-xs text-muted-foreground">
-                      {index + 1}
-                    </GlassTableCell>
                     {/* Empenho — tabular nums, não quebra */}
                     <GlassTableCell compact className="whitespace-nowrap font-mono text-xs font-medium">
                       {empenho.numero}

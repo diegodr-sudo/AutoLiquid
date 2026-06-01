@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { SimpleTooltip } from "@/components/ui/simple-tooltip";
 import { toast } from "@/hooks/use-toast";
 import {
   fetchAusencias, criarAusencia, deletarAusencia,
@@ -443,14 +444,15 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
 
                   <div className="flex items-center gap-1">
                     {(viewMonth !== today.getMonth() || viewYear !== today.getFullYear()) && (
-                      <button
-                        type="button"
-                        onClick={goToToday}
-                        className="rounded-lg border border-glass-border px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors"
-                        title="Voltar para o mês atual"
-                      >
-                        Hoje
-                      </button>
+                      <SimpleTooltip content="Voltar para o mês atual" side="top">
+                        <button
+                          type="button"
+                          onClick={goToToday}
+                          className="rounded-lg border border-glass-border px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors"
+                        >
+                          Hoje
+                        </button>
+                      </SimpleTooltip>
                     )}
                     <button type="button" onClick={nextMonth} className="rounded-lg p-1.5 text-muted-foreground hover:bg-secondary/60">
                       <ChevronRight className="h-4 w-4" />
@@ -492,9 +494,9 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                     ].filter(Boolean).join(" · ");
 
                     return (
+                      <SimpleTooltip content={tooltip || undefined} side="top">
                       <div
                         key={ymd}
-                        title={tooltip}
                         className={`relative flex flex-col items-center rounded-lg py-1 transition-colors ${isToday ? "bg-primary/15 ring-1 ring-primary/40" : feriado ? "bg-red-500/6" : ""}`}
                         style={{ minHeight: 40 }}
                       >
@@ -514,14 +516,14 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                             {ausDia.slice(0, 4).map((a) => {
                               const cor = corMap[a.servidor] ?? "#94a3b8";
                               return (
-                                <span
-                                  key={a.id}
-                                  className="flex items-center justify-center rounded-full font-bold text-white"
-                                  style={{ width: 13, height: 13, fontSize: 6, background: cor, opacity: 0.92 }}
-                                  title={`${a.servidor} · ${TIPO_CONFIG[a.tipo].label}`}
-                                >
-                                  {initials(a.servidor).slice(0, 1)}
-                                </span>
+                                <SimpleTooltip key={a.id} content={`${a.servidor} · ${TIPO_CONFIG[a.tipo].label}`} side="top">
+                                  <span
+                                    className="flex items-center justify-center rounded-full font-bold text-white"
+                                    style={{ width: 13, height: 13, fontSize: 6, background: cor, opacity: 0.92 }}
+                                  >
+                                    {initials(a.servidor).slice(0, 1)}
+                                  </span>
+                                </SimpleTooltip>
                               );
                             })}
                             {ausDia.length > 4 && (
@@ -535,6 +537,7 @@ export function FeriasModal({ open, onClose }: AusenciasModalProps) {
                           </div>
                         )}
                       </div>
+                      </SimpleTooltip>
                     );
                   })}
                 </div>

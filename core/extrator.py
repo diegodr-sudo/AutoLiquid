@@ -362,7 +362,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
             # Dados Orçamentários: EMPENHO SITUACAO CLASSIF1 CLASSIF2 NATUREZA SALDO VALOR [FONTE]
             # Ex: "2026000968 DSP001 3323__00 213110400 339039.79 16,968.12 13,031.08 1000000000"
             match_empenho_nat = re.search(
-                r"(\d{10,})\s+(DSP\d+)\s+\S+\s+\d{7,9}\s+(\d{6}[.,]\d{2})\s+([\d,.]+)\s+([\d,.]+)",
+                r"(\d{10,})\s+(DSP\d+)\s+\S+\s+\S+\s+(\d{6}[.,]\d{2})\s+([\d,.]+)\s+([\d,.]+)",
                 linha_limpa,
                 re.IGNORECASE,
             )

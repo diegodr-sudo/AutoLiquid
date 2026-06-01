@@ -1,8 +1,24 @@
 "use client";
 
-import { AlertTriangle, BadgeCheck, ShieldAlert } from "lucide-react";
+import { AlertTriangle, BadgeCheck, Loader2, ShieldAlert } from "lucide-react";
+import { useState } from "react";
 import { GlassCard, GlassPanel } from "./glass-card";
+import { SimpleTooltip } from "@/components/ui/simple-tooltip";
 import type { Documento, ResumoFinanceiro } from "@/lib/data";
+
+const API = "http://127.0.0.1:8000";
+
+async function gerarPdfSimples(cnpjLimpo: string): Promise<void> {
+  const res = await fetch(`${API}/api/simples/gerar-pdf`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cnpj: cnpjLimpo, downloadOnly: false }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { detail?: string }).detail || "Erro ao gerar PDF.");
+  }
+}
 
 interface DocumentoPanelProps {
   documento: Documento;
@@ -30,13 +46,30 @@ function InfoRow({ label, value, highlight = false }: { label: string; value: st
 }
 
 export function DocumentoPanel({ documento, resumo: _resumo, hideOptanteSimples = false }: DocumentoPanelProps) {
+  const [gerandoPdf, setGerandoPdf] = useState(false);
+  const [pdfErro, setPdfErro] = useState("");
+
   const alertasExibidos = (documento.alertas ?? []).filter(
     (alerta) => !String(alerta).toLowerCase().includes("simples nacional")
   );
   const processo = documento.processo?.trim() || "—";
   const cnpj = formatCnpj(documento.cnpj || "—");
+  const cnpjLimpo = String(documento.cnpj || "").replace(/\D/g, "");
   const solPagamento = documento.solPagamento?.trim() || "—";
   const contrato = documento.contrato?.trim() || "—";
+
+  const handleGerarPdf = async () => {
+    if (cnpjLimpo.length !== 14 || gerandoPdf) return;
+    setGerandoPdf(true);
+    setPdfErro("");
+    try {
+      await gerarPdfSimples(cnpjLimpo);
+    } catch (e) {
+      setPdfErro(e instanceof Error ? e.message : "Erro ao gerar PDF.");
+    } finally {
+      setGerandoPdf(false);
+    }
+  };
 
   return (
     <GlassCard className="p-6 md:p-7">
@@ -50,20 +83,37 @@ export function DocumentoPanel({ documento, resumo: _resumo, hideOptanteSimples 
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs uppercase tracking-wider text-muted-foreground">CNPJ</span>
             {!hideOptanteSimples && (
-              <span
-                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+              <SimpleTooltip
+                content={
                   documento.optanteSimples
-                    ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700"
-                    : "border-amber-500/25 bg-amber-500/10 text-amber-700"
-                }`}
+                    ? "Optante pelo Simples Nacional"
+                    : "Não optante pelo Simples Nacional — clique para gerar PDF da Receita"
+                }
+                side="top"
               >
-                {documento.optanteSimples ? (
-                  <BadgeCheck className="h-3 w-3" />
-                ) : (
-                  <ShieldAlert className="h-3 w-3" />
-                )}
-                {documento.optanteSimples ? "Optante" : "Não optante"}
-              </span>
+                <button
+                  type="button"
+                  onClick={() => void handleGerarPdf()}
+                  disabled={gerandoPdf || cnpjLimpo.length !== 14}
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-60 ${
+                    documento.optanteSimples
+                      ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700"
+                      : "border-amber-500/25 bg-amber-500/10 text-amber-700"
+                  }`}
+                >
+                  {gerandoPdf ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : documento.optanteSimples ? (
+                    <BadgeCheck className="h-3 w-3" />
+                  ) : (
+                    <ShieldAlert className="h-3 w-3" />
+                  )}
+                  {documento.optanteSimples ? "Optante" : "Não optante"}
+                </button>
+              </SimpleTooltip>
+            )}
+            {pdfErro && (
+              <span className="text-[10px] text-destructive">{pdfErro}</span>
             )}
           </div>
           <p className="mt-1 break-all text-sm leading-6 text-foreground">{cnpj}</p>

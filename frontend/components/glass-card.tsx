@@ -3,6 +3,7 @@
 import { cn } from "@/lib/utils";
 import { forwardRef } from "react";
 import type { ReactNode } from "react";
+import { SimpleTooltip } from "@/components/ui/simple-tooltip";
 
 interface GlassCardProps {
   children: ReactNode;
@@ -134,13 +135,13 @@ export function GlassTable({ headers, headerTitles, children, className, compact
         <thead>
           <tr className="border-b border-glass-border">
             {headers.map((header, index) => (
-              <th
-                key={index}
-                title={headerTitles?.[index]}
-                className={cn(thPad, "text-left text-xs font-medium uppercase tracking-wider text-muted-foreground", headerTitles?.[index] ? "cursor-default" : "")}
-              >
-                {header}
-              </th>
+              <SimpleTooltip key={index} content={headerTitles?.[index]} side="top">
+                <th
+                  className={cn(thPad, "text-left text-xs font-medium uppercase tracking-wider text-muted-foreground", headerTitles?.[index] ? "cursor-default" : "")}
+                >
+                  {header}
+                </th>
+              </SimpleTooltip>
             ))}
           </tr>
         </thead>

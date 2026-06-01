@@ -6,12 +6,12 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
- * Converte timestamps do banco (SQLite `current_timestamp` = UTC, sem sufixo de fuso)
- * para objetos Date corretamente interpretados como UTC.
+ * Converte timestamps do banco para objetos Date.
  *
- * Strings com espaço como separador ("2026-05-29 14:30:00") são normalizadas
- * para ISO 8601 com "Z" antes de serem parseadas, evitando que o browser
- * as trate como horário local e exiba 3h adiantado no fuso Brasil (UTC-3).
+ * O banco armazena timestamps no horário local de Brasília (sem sufixo de fuso).
+ * Strings sem fuso são normalizadas apenas trocando o espaço por "T", para que
+ * o browser as interprete como horário local — sem adicionar "Z" (que causaria
+ * a subtração de 3h pelo toLocaleString em pt-BR).
  *
  * Strings que já contêm indicação de fuso (Z, +, -) são passadas diretamente.
  */
@@ -22,7 +22,7 @@ export function parseDbTimestamp(value: string | null | undefined): Date | null 
   const jaTemFuso = s.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(s)
   const normalized = jaTemFuso
     ? s
-    : s.replace(" ", "T") + "Z"
+    : s.replace(" ", "T") // sem "Z" → browser interpreta como horário local
   const d = new Date(normalized)
   return Number.isNaN(d.getTime()) ? null : d
 }

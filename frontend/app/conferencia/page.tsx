@@ -10,6 +10,9 @@ import { FilaExecucao } from "@/components/fila-execucao";
 import { LogExecucaoPanel } from "@/components/log-execucao-panel";
 import { StatusOverview } from "@/components/status-overview";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
+import { TabelasModal } from "@/components/tabelas-modal";
+import { FeriasModal } from "@/components/ferias-modal";
+import { PendenciasPanel } from "@/components/pendencias-panel";
 import { GlassButton } from "@/components/glass-card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -39,6 +42,7 @@ import {
   type EtapaExecucao,
   type ProcessDates,
   type StatusGeralDocumento,
+  type TableKey,
   executarTodas,
   executarEtapa,
   executarDeducao,
@@ -52,6 +56,7 @@ import {
 } from "@/lib/data";
 import { readStoredAuthSession } from "@/lib/auth-store";
 import { useAuth } from "@/lib/auth-context";
+import { SimpleTooltip } from "@/components/ui/simple-tooltip";
 
 // ── Pontuação de Dificuldade ─────────────────────────────────────────────────
 
@@ -137,7 +142,13 @@ function ConferenciaPageContent() {
   const [uploadingRemessa, setUploadingRemessa] = useState(false);
   /** Código operacional da bolsa: 01 = Outros, 03 = Pesquisa e/ou Extensão */
   const [codigoOperacional, setCodigoOperacional] = useState<"01" | "03">("01");
+  const [bolsaTabAtiva, setBolsaTabAtiva] = useState<"pendencias" | "remessas" | "empenhos">("pendencias");
+  const [remessaAbertaNumero, setRemessaAbertaNumero] = useState<string | null>(null);
   const [isConfiguracoesOpen, setIsConfiguracoesOpen] = useState(false);
+  const [isTabelasOpen, setIsTabelasOpen] = useState(false);
+  const [tabelasInitialTab, setTabelasInitialTab] = useState<TableKey>("contratos");
+  const [tabelasVisibleTabs, setTabelasVisibleTabs] = useState<TableKey[] | undefined>(undefined);
+  const [isFeriasOpen, setIsFeriasOpen] = useState(false);
   const [isExecutando, setIsExecutando] = useState(false);
   const [paradaSolicitada, setParadaSolicitada] = useState(false);
   const [etapaAtivaId, setEtapaAtivaId] = useState<number | null>(null);
@@ -227,21 +238,40 @@ function ConferenciaPageContent() {
     setVencimentoDocumento(payload.vencimentoDocumento ?? "");
     setVpd(payload.vpd ?? "");
     setRequiresCentroCusto(Boolean(payload.requiresCentroCusto));
+    if (payload.documento.codigoOperacional === "01" || payload.documento.codigoOperacional === "03") {
+      setCodigoOperacional(payload.documento.codigoOperacional);
+    }
     setIsExecutando(Boolean(payload.isRunning));
     setParadaSolicitada(Boolean(payload.cancelRequested));
-    setEtapaAtivaId(
-      payload.etapas.find((etapa) => etapa.status === "executando")?.id ?? null
-    );
+    // Só atualiza etapaAtivaId se o backend já confirmou qual etapa está rodando,
+    // ou se a execução terminou. Evita flickering quando o backend ainda não
+    // marcou o status como "executando" no primeiro polling após o click.
+    const etapaEmExecucaoId =
+      payload.etapas.find((etapa) => etapa.status === "executando")?.id ?? null;
+    if (etapaEmExecucaoId !== null || !payload.isRunning) {
+      setEtapaAtivaId(etapaEmExecucaoId);
+    }
+
+    const deducaoEmExecucaoId =
+      payload.deducoes.find((deducao) => deducao.status === "executando")?.id ?? null;
+    if (deducaoEmExecucaoId !== null || !payload.isRunning) {
+      setDeducaoAtivaId(deducaoEmExecucaoId);
+    }
 
     if (payload.isRunning) {
       const etapaEmExecucao = payload.etapas.find(
         (etapa) => etapa.status === "executando"
+      );
+      const deducaoEmExecucao = payload.deducoes.find(
+        (deducao) => deducao.status === "executando"
       );
       setStatusMensagem(
         payload.cancelRequested
           ? "Parada solicitada. A etapa atual será concluída antes da interrupção."
           : etapaEmExecucao
             ? `Executando ${etapaEmExecucao.nome}...`
+            : deducaoEmExecucao
+              ? `Executando dedução ${deducaoEmExecucao.tipo || deducaoEmExecucao.siafi}...`
             : "Execução em andamento..."
       );
     }
@@ -429,6 +459,10 @@ function ConferenciaPageContent() {
       return "Execução interrompida com erro.";
     }
 
+    if (payload.etapas.some((etapa) => etapa.status === "divergencia")) {
+      return "Execução concluída — há divergências a conferir.";
+    }
+
     return mensagemSucesso;
   };
 
@@ -587,7 +621,7 @@ function ConferenciaPageContent() {
         if (!ativo) return;
         console.error("Erro ao atualizar andamento da execução:", error);
       }
-    }, 2500);
+    }, 1500);
 
     return () => {
       ativo = false;
@@ -781,7 +815,7 @@ function ConferenciaPageContent() {
     setErro("");
     try {
       const datasOverride = datasDeducoes[deducao.id];
-      const payload = await executarDeducao(documentoId, deducao.id, {
+      await executarDeducao(documentoId, deducao.id, {
         signal: controller.signal,
         lfNumero,
         ugrNumero,
@@ -789,25 +823,21 @@ function ConferenciaPageContent() {
         dataApuracao: datasOverride?.apuracao || "",
         dataVencimento: datasOverride?.vencimento || "",
       });
-      aplicarPayload(payload);
-      setStatusMensagem(`Dedução ${deducao.tipo || deducao.siafi} concluída.`);
     } catch (error) {
       console.error("Erro ao executar dedução:", error);
       if (controller.signal.aborted) {
-        setStatusMensagem("Parada solicitada.");
+        setStatusMensagem("Parada solicitada. Atualizando andamento da automação...");
       } else {
         setErro(
           error instanceof Error ? error.message : "Erro ao executar a dedução."
         );
         setStatusMensagem(`Falha na dedução ${deducao.tipo || deducao.siafi}.`);
+        setIsExecutando(false);
+        setDeducaoAtivaId(null);
       }
     } finally {
       if (execucaoAbortControllerRef.current === controller) {
         execucaoAbortControllerRef.current = null;
-      }
-      if (!controller.signal.aborted) {
-        setIsExecutando(false);
-        setDeducaoAtivaId(null);
       }
     }
   };
@@ -846,6 +876,7 @@ function ConferenciaPageContent() {
         contaAgencia,
         contaConta,
         vpd,
+        codigoOperacional,
       });
       setPendencias(payload.pendencias ?? []);
       setPendenciasExpanded(false);
@@ -1009,6 +1040,30 @@ function ConferenciaPageContent() {
   const remessasEsperadas = new Set(bolsasLiquidacao.map((bolsa) => bolsa.numeroRemessa).filter(Boolean));
   const remessasRecebidas = new Set(remessasBolsa.map((remessa) => remessa.numeroRemessa).filter(Boolean));
   const remessasPendentes = [...remessasEsperadas].filter((numero) => !remessasRecebidas.has(numero));
+  const remessasPorNumero = new Map(remessasBolsa.map((remessa) => [remessa.numeroRemessa, remessa]));
+  const remessasDocumentos = [
+    ...bolsasLiquidacao.map((bolsa) => {
+      const remessa = remessasPorNumero.get(bolsa.numeroRemessa);
+      return {
+        numero: bolsa.numeroRemessa,
+        nome: `Remessa ${bolsa.numeroRemessa}`,
+        detalhe: `Ateste ${bolsa.ateste || "—"}`,
+        valor: remessa?.totais.valorNumerico ?? bolsa.valor,
+        carregada: Boolean(remessa),
+        remessa,
+      };
+    }),
+    ...remessasBolsa
+      .filter((remessa) => !remessasEsperadas.has(remessa.numeroRemessa))
+      .map((remessa) => ({
+        numero: remessa.numeroRemessa,
+        nome: `Remessa ${remessa.numeroRemessa}`,
+        detalhe: remessa.nomeArquivo,
+        valor: remessa.totais.valorNumerico,
+        carregada: true,
+        remessa,
+      })),
+  ];
 
   const pendenciasAtivasVisiveis = pendenciasVisiveis.filter((pendencia) => !pendencia.resolvida);
   const bloqueiosAtivos = pendenciasAtivasVisiveis.filter((pendencia) => pendencia.tipo === "bloqueio");
@@ -1051,10 +1106,16 @@ function ConferenciaPageContent() {
       <Header
         chromeStatus={chromeStatus}
         browserName={browserName}
+        onOpenTabelas={() => {
+          setTabelasInitialTab("contratos");
+          setTabelasVisibleTabs(undefined);
+          setIsTabelasOpen(true);
+        }}
         onOpenConfiguracoes={() => setIsConfiguracoesOpen(true)}
         onOpenChrome={handleAbrirChrome}
         chromeActionDisabled={abrindoChrome}
         onOpenFilaTrabalho={() => void abrirUrl(FILA_TRABALHO_URL)}
+        onOpenFerias={() => setIsFeriasOpen(true)}
         bugReportContexto={{
           processo: documento.processo,
           solPagamento: documento.solPagamento,
@@ -1122,11 +1183,316 @@ function ConferenciaPageContent() {
           <div className="min-w-0 space-y-6">
             {documentoBolsa ? (
               <div className="space-y-5">
+                <div className="overflow-hidden rounded-2xl border border-glass-border/70 bg-background/65">
+                  <div className="flex overflow-x-auto border-b border-glass-border">
+                    {([
+                      { id: "pendencias", label: `Pendências (${pendenciasVisiveis.length})` },
+                      { id: "remessas", label: `Remessas (${Math.max(bolsasLiquidacao.length, remessasBolsa.length)})` },
+                      { id: "empenhos", label: `Empenhos (${empenhos.length})` },
+                    ] as const).map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setBolsaTabAtiva(tab.id)}
+                        className={`shrink-0 border-b-2 px-5 py-3 text-sm font-medium transition-colors ${
+                          bolsaTabAtiva === tab.id
+                            ? "border-primary text-foreground"
+                            : "border-transparent text-muted-foreground hover:bg-secondary/35 hover:text-foreground"
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="p-4">
+                    {bolsaTabAtiva === "pendencias" && (
+                      <div className="space-y-4">
+                        <div className="rounded-2xl border border-glass-border/70 bg-background/55 px-5 py-4">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                              Preenchimento Operacional
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setPendenciasExpanded((current) => !current)}
+                                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-glass-border bg-background/75 text-muted-foreground transition-colors hover:text-foreground"
+                                aria-label={pendenciasExpanded ? "Recolher preenchimento operacional" : "Expandir preenchimento operacional"}
+                              >
+                                {pendenciasExpanded ? (
+                                  <ChevronDown className="h-4 w-4" />
+                                ) : (
+                                  <ChevronRight className="h-4 w-4" />
+                                )}
+                              </button>
+                              <GlassButton
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => void handleSalvarPreenchimento()}
+                                disabled={salvandoPendencias || isExecutando}
+                                className="shrink-0"
+                              >
+                                {salvandoPendencias ? "Salvando..." : "Salvar"}
+                              </GlassButton>
+                            </div>
+                          </div>
+
+                          {pendenciasExpanded ? (
+                            <div className="mt-5 space-y-5">
+                              <div className="grid gap-x-6 gap-y-5 lg:grid-cols-2">
+                                <div className="space-y-3">
+                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                                  Centro de Custo
+                                </p>
+                                <div className="space-y-2">
+                                  <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                    UGR
+                                  </label>
+                                  <Input
+                                    value={ugrNumero}
+                                    maxLength={6}
+                                    placeholder="Ex.: 153424"
+                                    onFocus={() => setTocouUgr(true)}
+                                    onChange={(event) => {
+                                      setTocouUgr(true);
+                                      setUgrNumero(event.target.value);
+                                    }}
+                                  />
+                                </div>
+                                </div>
+
+                                <div className="space-y-3">
+                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                                  Código Operacional
+                                </p>
+                                <div className="grid min-h-11 grid-cols-2 overflow-hidden rounded-xl border border-glass-border bg-secondary/20 p-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => setCodigoOperacional("01")}
+                                    className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${
+                                      codigoOperacional === "01"
+                                        ? "bg-background text-foreground shadow-sm"
+                                        : "text-muted-foreground hover:bg-background/45 hover:text-foreground"
+                                    }`}
+                                  >
+                                    Outros (01)
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setCodigoOperacional("03")}
+                                    className={`rounded-lg px-3 py-2 text-sm font-semibold leading-snug transition-colors ${
+                                      codigoOperacional === "03"
+                                        ? "bg-background text-primary shadow-sm"
+                                        : "text-muted-foreground hover:bg-background/45 hover:text-foreground"
+                                    }`}
+                                  >
+                                    Pesquisa/Extensão (03)
+                                  </button>
+                                </div>
+                                </div>
+                              </div>
+
+                              <div
+                                className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-7 text-center transition-colors ${
+                                  uploadingRemessa
+                                    ? "border-primary/40 bg-primary/5"
+                                    : "border-glass-border bg-background/60 hover:border-primary/40 hover:bg-primary/5"
+                                }`}
+                                onClick={() => !uploadingRemessa && remessaInputRef.current?.click()}
+                                onDragOver={(e) => { e.preventDefault(); }}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  const file = e.dataTransfer.files?.[0] ?? null;
+                                  if (file) void handleRemessaBolsaInput(file);
+                                }}
+                              >
+                                <input
+                                  ref={remessaInputRef}
+                                  type="file"
+                                  accept=".pdf,application/pdf"
+                                  className="hidden"
+                                  onChange={(event) => void handleRemessaBolsaInput(event.target.files?.[0] ?? null)}
+                                />
+                                {uploadingRemessa ? (
+                                  <Loader2 className="h-7 w-7 animate-spin text-primary" />
+                                ) : (
+                                  <Upload className="h-7 w-7 text-muted-foreground" />
+                                )}
+                                <p className="text-sm font-medium text-foreground">
+                                  {uploadingRemessa ? "Extraindo remessa..." : "Arraste o PDF da remessa aqui"}
+                                </p>
+                                {!uploadingRemessa && (
+                                  <p className="text-xs text-muted-foreground">ou clique para selecionar</p>
+                                )}
+                              </div>
+
+                              <div className="space-y-2">
+                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                                  Remessas esperadas
+                                </p>
+                                <div className="space-y-1.5">
+                                  {remessasDocumentos.map((doc) => (
+                                    <button
+                                      key={doc.numero}
+                                      type="button"
+                                      disabled={!doc.carregada}
+                                      onClick={() => {
+                                        if (!doc.carregada) return;
+                                        setRemessaAbertaNumero(doc.numero);
+                                        setBolsaTabAtiva("remessas");
+                                      }}
+                                      className={`grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition-colors ${
+                                        doc.carregada
+                                          ? "border-glass-border bg-background/70 hover:border-primary/35 hover:bg-primary/5"
+                                          : "cursor-default border-glass-border/60 bg-secondary/20 text-muted-foreground opacity-70"
+                                      }`}
+                                    >
+                                      <span className="min-w-0">
+                                        <span className={`block truncate font-semibold ${doc.carregada ? "text-foreground" : "text-muted-foreground"}`}>{doc.nome}</span>
+                                        <span className="block truncate text-xs text-muted-foreground">{doc.detalhe}</span>
+                                      </span>
+                                      <span className={`whitespace-nowrap text-xs font-semibold tabular-nums ${doc.carregada ? "text-foreground" : "text-muted-foreground"}`}>
+                                        {formatCurrency(doc.valor)}
+                                      </span>
+                                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                        doc.carregada
+                                          ? "bg-emerald-500/10 text-emerald-700"
+                                          : "bg-secondary/60 text-muted-foreground"
+                                      }`}>
+                                        {doc.carregada ? "Carregada" : "Pendente"}
+                                      </span>
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="mt-3 text-sm text-muted-foreground">
+                              As definições operacionais estão recolhidas. Expanda se quiser revisar ou alterar os campos antes da execução.
+                            </p>
+                          )}
+                        </div>
+
+                        <PendenciasPanel
+                          pendencias={pendenciasVisiveis}
+                          onToggleResolvida={handleTogglePendenciaResolvida}
+                          togglingPendenciaId={pendenciaToggleId}
+                        />
+                      </div>
+                    )}
+
+                    {bolsaTabAtiva === "remessas" && (
+                      <div className="space-y-5">
+                        <section className="overflow-hidden rounded-2xl border border-glass-border/70 bg-background/65">
+                          <div className="border-b border-glass-border bg-secondary/25 px-5 py-4">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                              Documentos
+                            </p>
+                            <h2 className="mt-1 text-lg font-semibold text-foreground">
+                              Remessas
+                            </h2>
+                          </div>
+
+                          {remessasDocumentos.length > 0 ? (
+                            <div className="divide-y divide-glass-border/60">
+                              {remessasDocumentos.map((doc) => {
+                                const aberto = remessaAbertaNumero === doc.numero;
+                                return (
+                                  <div key={doc.numero}>
+                                    <button
+                                      type="button"
+                                      disabled={!doc.carregada}
+                                      onClick={() => {
+                                        if (!doc.carregada) return;
+                                        setRemessaAbertaNumero(aberto ? null : doc.numero);
+                                      }}
+                                      className={`grid w-full gap-3 px-5 py-4 text-left transition-colors sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center ${
+                                        doc.carregada
+                                          ? "hover:bg-secondary/25"
+                                          : "cursor-default bg-secondary/10 text-muted-foreground opacity-75"
+                                      }`}
+                                    >
+                                      <span className="min-w-0">
+                                        <span className={`block truncate text-sm font-semibold ${doc.carregada ? "text-foreground" : "text-muted-foreground"}`}>{doc.nome}</span>
+                                        <span className="block truncate text-xs text-muted-foreground">{doc.detalhe}</span>
+                                      </span>
+                                      <span className={`whitespace-nowrap text-sm font-semibold tabular-nums ${doc.carregada ? "text-foreground" : "text-muted-foreground"}`}>
+                                        {formatCurrency(doc.valor)}
+                                      </span>
+                                      <span className={`w-fit rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                        doc.carregada
+                                          ? "bg-emerald-500/10 text-emerald-700"
+                                          : "bg-secondary/60 text-muted-foreground"
+                                      }`}>
+                                        {doc.carregada ? "Carregada" : "Pendente"}
+                                      </span>
+                                    </button>
+
+                                    {aberto && doc.remessa ? (
+                                      <div className="border-t border-glass-border/60 bg-background/45 px-5 pb-5 pt-4">
+                                        <div className="mb-3 flex flex-wrap gap-2 text-sm">
+                                          <span className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border bg-background px-2.5 py-1.5 font-semibold text-foreground">
+                                            <Users className="h-3.5 w-3.5 text-muted-foreground" />
+                                            {doc.remessa.totais.quantidade} bolsistas
+                                          </span>
+                                          <span className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border bg-background px-2.5 py-1.5 font-semibold text-emerald-700">
+                                            <Banknote className="h-3.5 w-3.5" />
+                                            {formatCurrency(doc.remessa.totais.valorNumerico)}
+                                          </span>
+                                        </div>
+
+                                        <div className="table-scroll-surface max-h-[420px] overflow-auto rounded-xl border border-glass-border/70">
+                                          <table className="min-w-[900px] w-full text-sm">
+                                            <thead className="sticky top-0 z-10 bg-muted">
+                                              <tr className="border-b border-glass-border text-left text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                                                <th className="px-4 py-3">Nome</th>
+                                                <th className="px-4 py-3">CPF</th>
+                                                <th className="px-4 py-3">Banco</th>
+                                                <th className="px-4 py-3">Agência</th>
+                                                <th className="px-4 py-3">Conta</th>
+                                                <th className="px-4 py-3 text-right">Valor</th>
+                                                <th className="px-4 py-3">LC</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {doc.remessa.bolsistas.map((bolsista) => (
+                                                <tr key={`${doc.remessa?.numeroRemessa}-${bolsista.cpf}`} className="border-b border-glass-border/60 last:border-0 odd:bg-background/35 even:bg-background/10">
+                                                  <td className="max-w-[320px] truncate px-4 py-3 font-medium text-foreground">
+                                                    <SimpleTooltip content={bolsista.nome} side="top">
+                                                      <span className="block truncate">{bolsista.nome}</span>
+                                                    </SimpleTooltip>
+                                                  </td>
+                                                  <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{bolsista.cpf}</td>
+                                                  <td className="px-4 py-3">{bolsista.banco}</td>
+                                                  <td className="px-4 py-3">{bolsista.agencia}</td>
+                                                  <td className="px-4 py-3 font-mono text-xs">{bolsista.conta}</td>
+                                                  <td className="px-4 py-3 text-right font-semibold text-foreground">{formatCurrency(bolsista.valorNumerico)}</td>
+                                                  <td className="px-4 py-3 text-muted-foreground">{[bolsista.situacaoLc, bolsista.lc].filter(Boolean).join(" ") || "—"}</td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="flex h-32 items-center justify-center px-5 text-sm text-muted-foreground">
+                              Nenhuma remessa prevista.
+                            </div>
+                          )}
+                        </section>
+                        {false && (
+                          <>
                 <section className="rounded-2xl border border-glass-border/70 bg-background/65 p-5">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                     <div className="min-w-0">
                       <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-                        Bolsa SIAFI
+                        Documentos
                       </p>
                       <h2 className="mt-1 text-xl font-semibold text-foreground">
                         Remessas de bolsistas
@@ -1147,24 +1513,6 @@ function ConferenciaPageContent() {
                       </div>
                     </div>
                   </div>
-
-                  {/* Switch código operacional — largura total da section */}
-                  <button
-                    role="switch"
-                    aria-checked={codigoOperacional === "03"}
-                    onClick={() => setCodigoOperacional(codigoOperacional === "01" ? "03" : "01")}
-                    className="mt-4 flex w-full cursor-pointer items-center gap-4 rounded-xl border border-glass-border bg-secondary/20 px-5 py-3 transition-colors hover:bg-secondary/40"
-                  >
-                    <span className={`flex-1 text-left text-sm font-semibold transition-colors ${codigoOperacional === "01" ? "text-foreground" : "text-muted-foreground"}`}>
-                      Outros (01)
-                    </span>
-                    <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${codigoOperacional === "03" ? "bg-primary" : "bg-muted-foreground/30"}`}>
-                      <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-all duration-200 ${codigoOperacional === "03" ? "right-1" : "left-1"}`} />
-                    </span>
-                    <span className={`flex-1 text-right text-sm font-semibold transition-colors ${codigoOperacional === "03" ? "text-primary" : "text-muted-foreground"}`}>
-                      Pesquisa / Extensão (03)
-                    </span>
-                  </button>
 
                   {bolsasLiquidacao.length > 0 ? (
                     <div className="mt-5 rounded-xl border border-glass-border bg-secondary/20">
@@ -1298,7 +1646,11 @@ function ConferenciaPageContent() {
                             <tbody>
                               {remessa.bolsistas.map((bolsista) => (
                                 <tr key={`${remessa.numeroRemessa}-${bolsista.cpf}`} className="border-b border-glass-border/60 last:border-0 odd:bg-background/35 even:bg-background/10">
-                                  <td className="max-w-[320px] truncate px-4 py-3 font-medium text-foreground" title={bolsista.nome}>{bolsista.nome}</td>
+                                  <td className="max-w-[320px] truncate px-4 py-3 font-medium text-foreground">
+                                    <SimpleTooltip content={bolsista.nome} side="top">
+                                      <span className="block truncate">{bolsista.nome}</span>
+                                    </SimpleTooltip>
+                                  </td>
                                   <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{bolsista.cpf}</td>
                                   <td className="px-4 py-3">{bolsista.banco}</td>
                                   <td className="px-4 py-3">{bolsista.agencia}</td>
@@ -1314,6 +1666,97 @@ function ConferenciaPageContent() {
                     ))}
                   </div>
                 )}
+
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {bolsaTabAtiva === "empenhos" && (
+                <section className="overflow-hidden rounded-2xl border border-glass-border/70 bg-background/65">
+                  <div className="border-b border-glass-border bg-secondary/25 px-5 py-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                      Empenhos
+                    </p>
+                    <h2 className="mt-1 text-lg font-semibold text-foreground">
+                      Documentos de orçamento
+                    </h2>
+                  </div>
+
+                  {empenhos.length > 0 ? (
+                    <div className="table-scroll-surface overflow-auto">
+                      <table className="w-full table-fixed text-sm">
+                        <colgroup>
+                          <col className="w-[150px]" />
+                          <col className="w-[90px]" />
+                          <col className="w-[115px]" />
+                          <col className="w-[64px]" />
+                          <col />
+                        </colgroup>
+                        <thead className="bg-muted">
+                          <tr className="border-b border-glass-border text-left text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                            <th className="px-3 py-3">Empenho</th>
+                            <th className="px-3 py-3">Sit.</th>
+                            <th className="px-3 py-3">Natureza</th>
+                            <th className="px-2 py-3 text-center">Rec.</th>
+                            <th className="px-3 py-3 text-right">Valor</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {empenhos.map((empenho) => {
+                            const valorEmpenho = empenho.valor && empenho.valor > 0
+                              ? empenho.valor
+                              : empenhos.length === 1
+                                ? resumo.bruto
+                                : resumo.bruto / empenhos.length;
+                            const saldoEmpenho = empenho.saldo ?? 0;
+                            const totalRef = valorEmpenho + saldoEmpenho;
+                            const pctUso = totalRef > 0 ? Math.min((valorEmpenho / totalRef) * 100, 100) : 0;
+                            const temSaldo = totalRef > 0;
+
+                            return (
+                              <tr key={empenho.id} className="border-b border-glass-border/60 last:border-0 odd:bg-background/35 even:bg-background/10">
+                                <td className="truncate px-3 py-3 font-mono text-xs font-medium text-foreground">{empenho.numero}</td>
+                                <td className="truncate px-3 py-3 text-xs text-muted-foreground">{empenho.situacao}</td>
+                                <td className="truncate px-3 py-3 text-xs tabular-nums text-muted-foreground">{empenho.natureza || "—"}</td>
+                                <td className="px-2 py-3 text-center text-xs text-muted-foreground">{empenho.recurso}</td>
+                                <td className="px-3 py-3 text-right">
+                                  <div className="flex flex-col items-end gap-0.5">
+                                    <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-red-600">
+                                      {valorEmpenho > 0 ? formatCurrency(valorEmpenho) : "—"}
+                                    </span>
+                                    {temSaldo && (
+                                      <div className="group/bar relative w-full min-w-[60px]">
+                                        <div className="h-[3px] w-full overflow-hidden rounded-full bg-emerald-500/45">
+                                          <div
+                                            className="h-full rounded-full bg-red-500/75 transition-all"
+                                            style={{ width: `${pctUso}%` }}
+                                          />
+                                        </div>
+                                        <div className="pointer-events-none absolute bottom-full right-0 z-10 mb-1.5 hidden whitespace-nowrap rounded-md border border-glass-border bg-background/95 px-2 py-1 text-[11px] text-muted-foreground shadow-lg group-hover/bar:block">
+                                          Consumido: <span className="font-semibold text-red-600">{formatCurrency(valorEmpenho)}</span>
+                                          {" · "}
+                                          Remanescente: <span className="font-semibold text-emerald-700">{formatCurrency(saldoEmpenho)}</span>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="flex h-32 items-center justify-center px-5 text-sm text-muted-foreground">
+                      Nenhum empenho cadastrado
+                    </div>
+                  )}
+                </section>
+                    )}
+                  </div>
+                </div>
               </div>
             ) : (
             <NotasFiscaisTable
@@ -1829,6 +2272,21 @@ function ConferenciaPageContent() {
             setChromeStatus("erro");
           }
         }}
+      />
+
+      <TabelasModal
+        isOpen={isTabelasOpen}
+        onClose={() => {
+          setIsTabelasOpen(false);
+          setTabelasVisibleTabs(undefined);
+        }}
+        initialTab={tabelasInitialTab}
+        visibleTabs={tabelasVisibleTabs}
+      />
+
+      <FeriasModal
+        open={isFeriasOpen}
+        onClose={() => setIsFeriasOpen(false)}
       />
 
     </div>

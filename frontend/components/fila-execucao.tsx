@@ -27,6 +27,8 @@ const EXECUTION_GREEN_BADGE_CLASS =
   "border-[color:color-mix(in_oklch,var(--success)_22%,transparent)] bg-[color:color-mix(in_oklch,var(--success)_16%,transparent)] text-[color:oklch(0.38_0.08_160)]";
 const EXECUTION_ERROR_BADGE_CLASS =
   "border-destructive/30 bg-destructive/12 text-[color:oklch(0.42_0.15_25)]";
+const EXECUTION_DIVERGENCIA_BADGE_CLASS =
+  "border-amber-400/35 bg-amber-500/12 text-amber-700 dark:text-amber-300";
 const EXECUTION_SIAFI_OUTLINE_CLASS =
   "border-[color:oklch(0.72_0.12_85)] bg-transparent text-[color:oklch(0.48_0.09_85)] hover:bg-[color:color-mix(in_oklch,oklch(0.72_0.12_85)_10%,white)]";
 
@@ -63,6 +65,8 @@ function getStepCircleClass(status: EtapaExecucao["status"], isAtiva: boolean) {
   switch (status) {
     case "concluido":
       return "bg-[color:oklch(0.58_0.12_160)] text-white";
+    case "divergencia":
+      return "bg-amber-500 text-white";
     case "erro":
       return "bg-destructive text-white";
     default:
@@ -78,6 +82,8 @@ function getStatusLabel(status: EtapaExecucao["status"], isAtiva: boolean) {
   switch (status) {
     case "concluido":
       return "Concluída"
+    case "divergencia":
+      return "Divergência"
     case "erro":
       return "Com erro"
     default:
@@ -93,6 +99,8 @@ function getStatusBadgeClass(status: EtapaExecucao["status"], isAtiva: boolean) 
   switch (status) {
     case "concluido":
       return EXECUTION_GREEN_BADGE_CLASS
+    case "divergencia":
+      return EXECUTION_DIVERGENCIA_BADGE_CLASS
     case "erro":
       return EXECUTION_ERROR_BADGE_CLASS
     default:

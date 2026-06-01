@@ -232,26 +232,62 @@ ISS_PORTAIS_CONFIG: dict[str, dict[str, str]] = {
         "url": "https://e-gov.betha.com.br/livroeletronico2/02022-064/login.faces?lastUrl=/contribuinte/main.faces",
         "login": "g.santana",
         "senha": "ufsc2025",
+        "codigo": "8093",
     },
     "ararangua": {
         "nome": "Araranguá",
         "url": "https://ararangua.atende.net/autoatendimento/servicos/nfse",
         "login": "83899526000182",
         "senha": "dcf*UFSC2025",
+        "codigo": "8027",
     },
     "barra-do-sul": {
         "nome": "Balneário Barra do Sul",
         "url": "https://nfse-balneariobarradosul.atende.net/autoatendimento/servicos/nfse?redirected=1",
         "login": "83899526000182",
         "senha": "Ufsc*2025",
+        "codigo": "5549",
     },
     "gov-celso-ramos": {
         "nome": "Gov. Celso Ramos",
         "url": "https://www.prefeituramoderna.com.br/",
         "login": "1009",
         "senha": "dcfufsc1009",
+        "codigo": "8465",
     },
 }
+
+_ISS_PORTAIS_CONFIG_KEY = "iss-portais-config"
+
+
+def _carregar_portais_iss_config() -> dict[str, dict[str, str]]:
+    """Carrega a configuração dos portais ISS do Turso; cai de volta para o padrão se não houver dados."""
+    try:
+        turso = _turso_service()
+        rows = turso.obter_tabela_operacional(_ISS_PORTAIS_CONFIG_KEY)
+        if rows:
+            config = {
+                item["id"]: {k: v for k, v in item.items() if k != "id"}
+                for item in rows
+                if item.get("id") and item.get("id") != "global"
+            }
+            # Preenche o campo 'codigo' a partir dos defaults para portais que ainda não o têm
+            for pid, dados in config.items():
+                if not str(dados.get("codigo", "") or "").strip():
+                    default_codigo = ISS_PORTAIS_CONFIG.get(pid, {}).get("codigo", "")
+                    if default_codigo:
+                        dados["codigo"] = default_codigo
+            return config
+    except Exception:
+        pass
+    return {k: dict(v) for k, v in ISS_PORTAIS_CONFIG.items()}
+
+
+def _salvar_portais_iss_config(config: dict[str, dict[str, str]]) -> None:
+    """Persiste a configuração dos portais ISS no Turso."""
+    turso = _turso_service()
+    rows = [{"id": k, **v} for k, v in config.items()]
+    turso.salvar_tabela_operacional(_ISS_PORTAIS_CONFIG_KEY, rows)
 
 
 def _fonte_dados_habilitada(tabela: str, provedor: str) -> bool:
@@ -1238,6 +1274,7 @@ class ExecucaoPayload(BaseModel):
     vpd: str = ""
     dataApuracao: str = ""
     dataVencimento: str = ""
+    codigoOperacional: str = ""
 
 
 class PendenciaResolvidaPayload(BaseModel):
@@ -1501,6 +1538,12 @@ def _detalhar_erro_execucao(nome: str, exc: Exception | str) -> str:
     if not bruto:
         return f"{nome}: erro sem detalhe retornado pela automação."
 
+    # Mensagens de conferência manual já vêm formatadas com as linhas de
+    # comparação PDF × IC que o painel sabe renderizar. Não reescrever (mesmo
+    # que o "motivo técnico" contenha expressões como "não encontrado").
+    if "requer conferencia manual" in normalizado:
+        return f"{nome}: {bruto}"
+
     if "confirmar dados de pagamento" in normalizado and "nao encontrado" in normalizado:
         return (
             f"{nome}: o botão de confirmação final dos dados de pagamento não apareceu na tela. "
@@ -1653,17 +1696,24 @@ def _montar_pendencias_documento(
         adicionar(
             "bloqueio",
             "UGR não informada",
-            "Informe a UGR no painel abaixo para liberar o Centro de Custo.",
+            "Necessário para preencher o Centro de Custo. O número da UGR está na solicitação de pagamento.",
             "configuracao",
         )
 
     if any(str(ded.get("siafi", "") or "") == "DOB001" for ded in deducoes) and not str(
         dados.get("lf_numero", "") or ""
     ).strip():
+        _dob001_codes = sorted({
+            str(ded.get("codigo", "") or "").strip()
+            for ded in deducoes
+            if str(ded.get("siafi", "") or "") == "DOB001"
+            and str(ded.get("codigo", "") or "").strip() not in ("", "—", "0")
+        })
+        _codes_str = f" Códigos municipais: {', '.join(_dob001_codes)}." if _dob001_codes else ""
         adicionar(
             "bloqueio",
             "LF obrigatória para a OB",
-            "Há dedução DOB001 no documento e o número da LF ainda não foi preenchido.",
+            f"Há dedução DOB001 no documento e o número da LF ainda não foi preenchido.{_codes_str}",
             "configuracao",
         )
 
@@ -1864,9 +1914,19 @@ def _montar_pendencias_documento(
         if not mensagem_txt:
             continue
         if "requer conferencia manual" in mensagem_norm:
+            # Extrai a etapa (ex.: "Dados Básicos", "Principal com Orçamento")
+            # para que divergências de etapas diferentes não colidam no mesmo
+            # título e sejam descartadas pela deduplicação (tipo, título).
+            m_etapa = re.match(r"^[⚠✗✓\s]*([^:]+?):", mensagem_txt)
+            etapa_nome = m_etapa.group(1).strip() if m_etapa else ""
+            titulo = (
+                f"Conferência manual necessária — {etapa_nome}"
+                if etapa_nome
+                else "Conferência manual necessária"
+            )
             adicionar(
                 "divergencia",
-                "Conferência manual necessária",
+                titulo,
                 mensagem_txt,
                 "portal",
             )
@@ -2062,6 +2122,7 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
             "codigoIG": _valor_ou_traco(d.get("IG", "")),
             "tipoLiquidacao": tipo_liquidacao,
             "tipoOperacional": tipo_operacional,
+            "codigoOperacional": str(dados.get("codigo_operacional", "") or "01"),
             "bolsas": bolsas_liquidacao,
             "optanteSimples": bool(dados.get("optante_simples", False)),
             "alertas": dados.get("alertas",[]),
@@ -2159,7 +2220,10 @@ def _executar_uma_etapa(
         current = _local_cache_service().obter_documento(doc_id)
         return bool(current.get("cancel_requested", False)) if current else False
 
+    houve_divergencia = False
+
     def _verificar_resultado(resultado: Any, nome: str) -> None:
+        nonlocal houve_divergencia
         if not isinstance(resultado, dict):
             return
         status = resultado.get("status", "")
@@ -2169,6 +2233,8 @@ def _executar_uma_etapa(
         if status == "interrompido":
             raise ExecucaoInterrompida(mensagem or f"{nome} interrompido.")
         if status == "alerta" and mensagem:
+            # Divergência: sinaliza mas NÃO interrompe a automação.
+            houve_divergencia = True
             _log(doc_id, f"⚠ {_detalhar_erro_execucao(nome, mensagem)}")
 
     _ETAPAS_NOMES = {
@@ -2233,8 +2299,15 @@ def _executar_uma_etapa(
         else:
             raise ValueError(f"Etapa desconhecida: {etapa_id}")
 
-        _atualizar_etapa(doc_id, etapa_id, "concluido")
-        _log(doc_id, f"✓ Etapa {etapa_id} concluída.")
+        # "divergencia": etapa terminou (não para a automação) porém com
+        # divergências a conferir. Caso contrário, "concluido" normal.
+        _atualizar_etapa(doc_id, etapa_id, "divergencia" if houve_divergencia else "concluido")
+        if houve_divergencia:
+            # Evita as palavras "diverg"/"requer conferência manual" para não
+            # gerar um card de pendência genérico — as tabelas já cobrem isso.
+            _log(doc_id, f"⚠ Etapa {etapa_id} concluída — confira as pendências.")
+        else:
+            _log(doc_id, f"✓ Etapa {etapa_id} concluída.")
         for msg in _gerar_logs_etapa_sucesso(dados, etapa_id, venc):
             _log_s(doc_id, msg)
 
@@ -4065,16 +4138,16 @@ def _preencher_login_iss_pagina(pagina: Any, login: str, senha: str) -> dict[str
           && !el.disabled
           && !el.readOnly;
       };
-      const setValue = (el, value) => {
+      const setValue = (el, value, dispatchBlur) => {
         const proto = el instanceof HTMLTextAreaElement
           ? HTMLTextAreaElement.prototype
           : HTMLInputElement.prototype;
         const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
         if (setter) setter.call(el, value);
         else el.value = value;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("input",  { bubbles: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
-        el.dispatchEvent(new Event("blur", { bubbles: true }));
+        if (dispatchBlur) el.dispatchEvent(new Event("blur", { bubbles: true }));
       };
       const inputs = Array.from(document.querySelectorAll("input, textarea"))
         .filter((el) => visible(el));
@@ -4106,28 +4179,36 @@ def _preencher_login_iss_pagina(pagina: Any, login: str, senha: str) -> dict[str
         .map((el) => ({ el, score: scoreLogin(el) }))
         .sort((a, b) => b.score - a.score)[0]?.el;
 
-      if (username) {
-        username.focus();
-        setValue(username, login);
-      }
-      if (password) {
-        password.focus();
-        setValue(password, senha);
-      }
-
       const buttons = Array.from(document.querySelectorAll("button, input[type='submit'], input[type='button'], a"))
         .filter((el) => visible(el));
       const submit = buttons.find((el) => /entrar|acessar|login|logar|conectar|prosseguir/.test(norm(`${el.textContent || ""} ${el.value || ""} ${el.title || ""} ${el.id || ""} ${el.className || ""}`)));
-      if (username && password && submit) {
-        setTimeout(() => submit.click(), 250);
-      } else if (password) {
-        setTimeout(() => password.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })), 250);
+
+      // Preenche usuário SEM blur para evitar re-render JSF antes de preencher a senha
+      if (username) {
+        username.focus();
+        setValue(username, login, false);
       }
+
+      // Preenche senha após breve delay (aguarda possível atualização JSF do usuário)
+      // e clica em submeter logo após
+      setTimeout(() => {
+        if (password) {
+          password.focus();
+          setValue(password, senha, true);
+        }
+        setTimeout(() => {
+          if (submit) {
+            submit.click();
+          } else if (password) {
+            password.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+          }
+        }, 300);
+      }, 400);
 
       return {
         loginPreenchido: Boolean(username),
         senhaPreenchida: Boolean(password),
-        submitClicado: Boolean(username && password && submit),
+        submitClicado: Boolean(submit),
       };
     }
     """
@@ -4144,10 +4225,49 @@ def _preencher_login_iss_pagina(pagina: Any, login: str, senha: str) -> dict[str
     return melhor
 
 
+@app.get("/api/iss/portais")
+def obter_portais_iss() -> dict[str, Any]:
+    config = _carregar_portais_iss_config()
+    # Materializa no Turso caso ainda seja o padrão
+    try:
+        turso = _turso_service()
+        if not turso.obter_tabela_operacional(_ISS_PORTAIS_CONFIG_KEY):
+            _salvar_portais_iss_config(config)
+    except Exception:
+        pass
+    portais = [{"id": k, **v} for k, v in config.items()]
+    return {"portais": portais}
+
+
+@app.put("/api/iss/portais")
+def salvar_portais_iss(body: dict[str, Any]) -> dict[str, Any]:
+    portais_raw = body.get("portais") or []
+    config: dict[str, dict[str, str]] = {}
+    for item in portais_raw:
+        pid = str(item.get("id", "") or "").strip()
+        if not pid:
+            continue
+        config[pid] = {
+            "nome": str(item.get("nome", "") or "").strip(),
+            "url": str(item.get("url", "") or "").strip(),
+            "login": str(item.get("login", "") or "").strip(),
+            "senha": str(item.get("senha", "") or "").strip(),
+        }
+    try:
+        _salvar_portais_iss_config(config)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Não foi possível salvar as configurações dos portais ISS: {exc}",
+        ) from exc
+    return {"success": True}
+
+
 @app.post("/api/iss/abrir")
 def abrir_portal_iss(body: dict[str, Any]) -> dict[str, Any]:
     portal_id = str(body.get("portal") or "").strip()
-    portal = ISS_PORTAIS_CONFIG.get(portal_id)
+    config = _carregar_portais_iss_config()
+    portal = config.get(portal_id)
     if not portal:
         raise HTTPException(status_code=404, detail="Portal ISS não cadastrado.")
 
@@ -4166,13 +4286,146 @@ def abrir_portal_iss(body: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
         time.sleep(0.8)
-        preenchimento = _preencher_login_iss_pagina(pagina, portal["login"], portal["senha"])
+
+        # Primeira passagem: JS preenche campos genéricos (funciona bem para usuário
+        # em portais como Betha/JSF; senha pode não ser preenchida em portais com
+        # teclado virtual — a segunda passagem cobre isso via keystrokes).
+        _preencher_login_iss_pagina(pagina, portal["login"], portal["senha"])
+        time.sleep(1.0)
+
+        login_valor = portal["login"]
+        senha_valor = portal["senha"]
+        senha_preenchida = False
+        submit_clicado   = False
+
+        _SENHA_SELS = [
+            'input[type="password"]:visible',
+            'input[type="password"]',
+        ]
+        _LOGIN_SELS = [
+            'input[type="text"]:visible',
+            'input[type="email"]:visible',
+            'input[type="number"]:visible',
+        ]
+        _SUBMIT_SELS = [
+            'input[type="submit"]:visible',
+            'button[type="submit"]:visible',
+            'button:visible',
+            'input[type="submit"]',
+        ]
+
+        def _clicar_submit() -> bool:
+            for sel in _SUBMIT_SELS:
+                try:
+                    loc = pagina.locator(sel).first
+                    if loc.count() and loc.is_visible(timeout=1000):
+                        loc.click(timeout=3000)
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        def _tentar_fill_nativo() -> tuple[bool, bool]:
+            """Preenche login+senha via keystrokes reais e clica submit.
+            Se os campos já estiverem preenchidos (autofill), vai direto ao submit.
+            Retorna (senha_ok, submit_ok)."""
+            _s_ok = False
+
+            # Verifica se a senha já está preenchida (autofill ou passagem anterior)
+            _senha_ja_preenchida = False
+            for sel in _SENHA_SELS:
+                try:
+                    loc = pagina.locator(sel).first
+                    if loc.count() and loc.is_visible(timeout=500):
+                        val = loc.input_value(timeout=500)
+                        if val:
+                            _senha_ja_preenchida = True
+                        break
+                except Exception:
+                    continue
+
+            if _senha_ja_preenchida:
+                # Campos já preenchidos — apenas clica submit
+                time.sleep(0.2)
+                return True, _clicar_submit()
+
+            # Campos vazios — preenche login via keystrokes
+            for sel in _LOGIN_SELS:
+                try:
+                    loc = pagina.locator(sel).first
+                    if loc.count() and loc.is_visible(timeout=500):
+                        loc.triple_click(timeout=2000)
+                        pagina.keyboard.type(login_valor, delay=30)
+                        break
+                except Exception:
+                    continue
+
+            # Preenche senha via keystrokes
+            for sel in _SENHA_SELS:
+                try:
+                    loc = pagina.locator(sel).first
+                    if loc.count() and loc.is_visible(timeout=1000):
+                        loc.triple_click(timeout=2000)
+                        pagina.keyboard.type(senha_valor, delay=40)
+                        _s_ok = True
+                        break
+                except Exception:
+                    continue
+
+            if _s_ok:
+                time.sleep(0.3)
+                return True, _clicar_submit()
+
+            return _s_ok, False
+
+        senha_preenchida, submit_clicado = _tentar_fill_nativo()
+
+        # Alguns portais (ex: Prefeitura Moderna / Gov. Celso Ramos) fazem redirect
+        # após o primeiro submit e recarregam o formulário limpo — é necessário
+        # preencher e submeter uma segunda vez.
+        if submit_clicado:
+            try:
+                pagina.wait_for_load_state("domcontentloaded", timeout=8000)
+            except Exception:
+                pass
+            time.sleep(0.8)
+
+            # Verifica se ainda há formulário de login visível (campo senha vazio = reset)
+            _ainda_no_login = False
+            for sel in _SENHA_SELS:
+                try:
+                    loc = pagina.locator(sel).first
+                    if loc.count() and loc.is_visible(timeout=1000):
+                        val = loc.input_value(timeout=1000)
+                        if val == "":
+                            _ainda_no_login = True
+                        break
+                except Exception:
+                    continue
+
+            if _ainda_no_login:
+                # Preenche também o campo de login (pode ter sido limpo)
+                for sel in _LOGIN_SELS:
+                    try:
+                        loc = pagina.locator(sel).first
+                        if loc.count() and loc.is_visible(timeout=1000):
+                            cur = loc.input_value(timeout=500)
+                            if cur == "":
+                                loc.fill(login_valor, timeout=3000)
+                            break
+                    except Exception:
+                        continue
+                time.sleep(0.3)
+                s2, sub2 = _tentar_fill_nativo()
+                senha_preenchida = senha_preenchida or s2
+                submit_clicado   = submit_clicado   or sub2
+
         return {
             "ok": True,
             "portal": portal["nome"],
-            "loginPreenchido": bool(preenchimento.get("loginPreenchido")),
-            "senhaPreenchida": bool(preenchimento.get("senhaPreenchida")),
-            "submitClicado": bool(preenchimento.get("submitClicado")),
+            "loginPreenchido": True,
+            "senhaPreenchida": senha_preenchida,
+            "submitClicado": submit_clicado,
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Não foi possível abrir o portal ISS: {exc}") from exc
@@ -4384,6 +4637,8 @@ def salvar_preenchimento_documento(doc_id: str, payload: ExecucaoPayload, backgr
     doc["conta_agencia"] = payload.contaAgencia
     doc["conta_conta"] = payload.contaConta
     doc["vpd_manual"] = payload.vpd
+    if payload.codigoOperacional:
+        doc["codigo_operacional"] = payload.codigoOperacional
     
     _local_cache_service().salvar_documento(doc_id, doc)
     background_tasks.add_task(_sincronizar_documento_remoto, doc_id, doc)
@@ -4833,24 +5088,27 @@ def notificacoes_rocket_chat() -> dict[str, Any]:
     }
 
 
+# Módulos de entrada da automação (nomes "dotted" reais, como estão em
+# sys.modules). São reimportados explicitamente para que erros de sintaxe
+# apareçam na resposta do botão.
 _MODULOS_AUTOMACAO =[
-    "comprasnet_base",
-    "comprasnet_apropriar",
-    "comprasnet_deducao",
-    "comprasnet_deducao_ddr001",
-    "comprasnet_deducao_dob001",
-    "comprasnet_deducao_ddf050",
-    "comprasnet_deducao_ddf055",
-    "comprasnet_dados_basicos",
-    "comprasnet_dados_pagamento",
-    "comprasnet_principal_orcamento",
-    "comprasnet_centro_custo",
-    "comprasnet_finalizar",
-    "datas_impostos",
-    "extrator",
-    "de_para_contratos",
-    "consulta_cnpj",
+    "comprasnet.base",
+    "comprasnet.apropriar",
+    "comprasnet.principal_helpers",
+    "comprasnet.dados_basicos",
+    "comprasnet.dados_pagamento",
+    "comprasnet.principal_orcamento",
+    "comprasnet.deducao",
+    "comprasnet.centro_custo",
+    "comprasnet.finalizar",
+    "core.datas_impostos",
+    "core.extrator",
 ]
+
+# Prefixos cujos submódulos são todos purgados do cache antes de reimportar.
+# Cobre comprasnet.situacoes.*, comprasnet.deducao_*, core.*, etc., para que
+# os 'from x import y' nos handlers passem a enxergar o código novo.
+_PREFIXOS_RECARREGAVEIS = ("comprasnet.", "core.")
 
 
 @app.post("/api/recarregar")
@@ -4858,9 +5116,12 @@ def recarregar_modulos() -> dict[str, Any]:
     recarregados: list[str] = []
     erros: dict[str, str] = {}
 
-    for nome in _MODULOS_AUTOMACAO:
-        sys.modules.pop(nome, None)
+    # 1) Purga TODO submódulo recarregável do cache de importação.
+    for nome in list(sys.modules):
+        if nome.startswith(_PREFIXOS_RECARREGAVEIS):
+            sys.modules.pop(nome, None)
 
+    # 2) Reimporta os módulos de entrada (e, por consequência, suas dependências).
     for nome in _MODULOS_AUTOMACAO:
         try:
             importlib.import_module(nome)
@@ -4868,13 +5129,17 @@ def recarregar_modulos() -> dict[str, Any]:
         except Exception as exc:
             erros[nome] = str(exc)
 
+    # Importante: este endpoint NÃO recarrega o próprio api.py (o servidor em
+    # execução). Mudanças no api.py exigem reiniciar o backend — o que o modo
+    # de recarga automática (AUTO_LIQUID_RELOAD=1) faz sozinho ao salvar.
+    nota_api = " Mudanças no api.py exigem reiniciar o backend."
     return {
         "recarregados": recarregados,
         "erros": erros,
         "mensagem": (
-            f"{len(recarregados)} módulo(s) recarregado(s) com sucesso."
+            f"{len(recarregados)} módulo(s) de automação recarregado(s) com sucesso." + nota_api
             if not erros
-            else f"{len(recarregados)} recarregado(s), {len(erros)} com erro."
+            else f"{len(recarregados)} recarregado(s), {len(erros)} com erro." + nota_api
         ),
     }
 
@@ -5269,7 +5534,7 @@ def migrar_turso() -> dict[str, Any]:
     except Exception as exc:
         resultado["avisos"].append(f"Histórico não migrado: {exc}")
 
-    for table_key in ("contratos", "vpd", "vpd-especiais", "uorg", "nat-rendimento", "datas-impostos"):
+    for table_key in ("contratos", "vpd", "vpd-especiais", "uorg", "nat-rendimento", "datas-impostos", "ncm"):
         try:
             rows = _postgres_service().obter_tabela_operacional(table_key)
             if rows is None:
@@ -5625,7 +5890,11 @@ def _baixar_pdf_oficial_receita(pagina: Any, destino: Path) -> str:
             if botao.count() <= 0:
                 continue
             destino.parent.mkdir(parents=True, exist_ok=True)
-            _configurar_download_receita(pagina, destino)
+            # NÃO chamar _configurar_download_receita antes do expect_download:
+            # setDownloadBehavior:allow faz o browser salvar com o nome original
+            # (ConsultaOptantes.pdf) enquanto save_as() cria um segundo arquivo
+            # com o nome correto mas 0 bytes (stream já consumido).
+            # O expect_download intercepta o download antes de tocar o disco.
             snapshot = _snapshot_pdfs(destino.parent)
             paginas_antes = set(pagina.context.pages)
             elemento = botao.first
@@ -5638,11 +5907,16 @@ def _baixar_pdf_oficial_receita(pagina: Any, destino: Path) -> str:
                 with pagina.expect_download(timeout=8000) as download_info:
                     elemento.click(timeout=5000)
                 download = download_info.value
+                destino.parent.mkdir(parents=True, exist_ok=True)
                 download.save_as(str(destino))
-                return "download"
+                # Garante que o arquivo foi salvo com conteúdo
+                if destino.exists() and destino.stat().st_size > 0:
+                    return "download"
             except Exception as exc:
                 ultimo_erro = exc
 
+            # Fallback: usa CDP para monitorar downloads que já caíram no disco
+            _configurar_download_receita(pagina, destino)
             baixado = _aguardar_pdf_baixado(destino.parent, snapshot, destino, timeout_s=10)
             if baixado is not None:
                 return "download"
@@ -6172,6 +6446,23 @@ def _warmup_turso_schema() -> None:
             log.info("Warmup do schema Turso concluido em %.0fms.", (time.monotonic() - started_at) * 1000)
     except Exception:
         log.debug("Warmup do schema Turso falhou (não crítico).", exc_info=True)
+
+def _resetar_execucoes_travadas_startup() -> None:
+    """Libera, no startup, qualquer execução que ficou presa com is_running=True
+    após um encerramento abrupto da API. Sem isso, a flag presa bloqueia toda
+    nova execução com HTTP 409 e a fila parece "não fazer nada no Chrome"."""
+    try:
+        corrigidos = _local_cache_service().resetar_execucoes_travadas()
+        if corrigidos:
+            log.info(
+                "Reset de execuções travadas: %d documento(s) liberado(s) no startup.",
+                corrigidos,
+            )
+    except Exception:
+        log.debug("Reset de execuções travadas falhou (não crítico).", exc_info=True)
+
+
+_resetar_execucoes_travadas_startup()
 
 Thread(target=_warmup_turso_schema, name="turso-warmup", daemon=True).start()
 

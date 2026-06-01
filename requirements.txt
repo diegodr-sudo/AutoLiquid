@@ -8,6 +8,7 @@ pandas
 openpyxl>=3.1.0
 fastapi>=0.115.0
 uvicorn>=0.30.0
+watchfiles>=0.21.0
 python-multipart>=0.0.9
 psycopg[binary]>=3.2
 python-dotenv>=1.0.0

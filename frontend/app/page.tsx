@@ -2,7 +2,7 @@
 
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowDownToLine, ArrowUp, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, FileUp, Info, Loader2, MessageSquare, Minus, Pencil, Plus, RefreshCw, Settings2, Table, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowDownToLine, ArrowUp, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, FileUp, Info, Loader2, MessageSquare, Minus, Pencil, Plus, RefreshCw, Save, Settings2, Table, Trash2, X } from "lucide-react";
 import { Header } from "@/components/header";
 import { DateFields } from "@/components/date-fields";
 import { UploadZone } from "@/components/upload-zone";
@@ -14,6 +14,7 @@ import { FeriasModal } from "@/components/ferias-modal";
 import { DashboardHistorico } from "@/components/dashboard-historico";
 import { GlassButton } from "@/components/glass-card";
 import { GlobalScopeIcon } from "@/components/global-scope-icon";
+import { SimpleTooltip } from "@/components/ui/simple-tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Dialog,
@@ -48,6 +49,7 @@ import {
   saveAppSettings,
   fetchProcessDates,
   fetchDatasGlobais,
+  saveDatasGlobais,
   fetchSimplesBatch,
   fetchContratosIcLookup,
   deleteFilaAlerta,
@@ -1325,6 +1327,16 @@ function DifficultySlider({
   );
 }
 
+/** Converte DD/MM/AAAA → YYYY-MM-DD para uso em <input type="date"> */
+function dateToISO(value: string): string {
+  if (!value) return value;
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const br = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (br) return `${br[3]}-${br[2]}-${br[1]}`;
+  return trimmed;
+}
+
 /** Normaliza datas vindas do Turso/SSE (que podem estar em YYYY-MM-DD) para DD/MM/AAAA */
 function normalizeDateToBR(value: string): string {
   if (!value) return value;
@@ -1401,6 +1413,11 @@ export default function HomePage() {
   const [queueColumnWidths, setQueueColumnWidths] = useState<Partial<Record<keyof QueueDisplayRow, number>>>(() => loadQueueColumnWidths());
   const [queueSettingsOpen, setQueueSettingsOpen] = useState(false);
   const [registroSettingsOpen, setRegistroSettingsOpen] = useState(false);
+  const [datasGlobais, setDatasGlobais] = useState<ProcessDates>({ apuracao: "", vencimento: "" });
+  const [carregandoDatasGlobais, setCarregandoDatasGlobais] = useState(false);
+  const [salvandoDatasGlobais, setSalvandoDatasGlobais] = useState(false);
+  const [erroDatasGlobais, setErroDatasGlobais] = useState("");
+  const [mensagemDatasGlobais, setMensagemDatasGlobais] = useState("");
   const [mostrarTipoBadges, setMostrarTipoBadges] = useState(() => loadQueueMostrarTipoBadges());
   const [mostrarSimples, setMostrarSimples] = useState(() => loadQueueMostrarSimples());
   const [queueViewedRows, setQueueViewedRows] = useState<Record<string, boolean>>(() => loadQueueViewedRows());
@@ -3362,12 +3379,10 @@ export default function HomePage() {
     };
   }, [startupConcluido, apiDisponivel, activeMainTab]);
 
-  // Quando o usuário abre a aba Registro e as datas estão vazias,
-  // re-busca as datas globais do Turso. Garante que mesmo que o startup
-  // tenha falhado (schema ainda criando), as datas apareçam quando disponíveis.
+  // Sempre que o usuário abre a aba Registro, re-busca as datas globais do
+  // Turso para garantir que configurações atualizadas reflitam imediatamente.
   useEffect(() => {
     if (activeMainTab !== "registro" || !apiDisponivel || !startupConcluido) return;
-    if (dates.vencimento || dates.apuracao) return;
     void fetchDatasGlobais()
       .then((remote) => {
         const normalized = normalizeDatesForDisplay(remote);
@@ -3378,6 +3393,41 @@ export default function HomePage() {
       })
       .catch(() => {});
   }, [activeMainTab, apiDisponivel, startupConcluido]);
+
+  // Carrega datas globais quando o painel de ajustes do registro é aberto
+  useEffect(() => {
+    if (!registroSettingsOpen) return;
+    let ativo = true;
+    setCarregandoDatasGlobais(true);
+    setErroDatasGlobais("");
+    setMensagemDatasGlobais("");
+    fetchDatasGlobais()
+      .then((dates) => {
+        if (ativo) setDatasGlobais({ apuracao: dateToISO(dates.apuracao), vencimento: dateToISO(dates.vencimento) });
+      })
+      .catch((error: unknown) => {
+        if (ativo) setErroDatasGlobais(error instanceof Error ? error.message : "Não foi possível carregar as datas globais.");
+      })
+      .finally(() => {
+        if (ativo) setCarregandoDatasGlobais(false);
+      });
+    return () => { ativo = false; };
+  }, [registroSettingsOpen]);
+
+  const handleSalvarDatasGlobais = async () => {
+    setSalvandoDatasGlobais(true);
+    setErroDatasGlobais("");
+    setMensagemDatasGlobais("");
+    try {
+      const saved = await saveDatasGlobais(datasGlobais);
+      setDatasGlobais(saved);
+      setMensagemDatasGlobais("Datas globais atualizadas para todos os usuários.");
+    } catch (error) {
+      setErroDatasGlobais(error instanceof Error ? error.message : "Não foi possível salvar as datas globais.");
+    } finally {
+      setSalvandoDatasGlobais(false);
+    }
+  };
 
   const handleFileSelect = (file: File | null, source: "drop" | "input" | "clear") => {
     setErro("");
@@ -3657,7 +3707,6 @@ export default function HomePage() {
                 }
                 onBlur={() => void persistNfServicoAlertSetting()}
                 className="w-20 rounded-xl border border-glass-border bg-background px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary"
-                title="Quantidade de dias úteis antes do vencimento para destacar na fila"
               />
               <span>dias úteis antes</span>
             </label>
@@ -3675,22 +3724,24 @@ export default function HomePage() {
             >
               {renderRuleContent(defaultRule, "padrão")}
               <div className="flex items-center gap-1 lg:justify-end">
-                <button
-                  type="button"
-                  onClick={() => openEditAlertaServicoRule(defaultRule)}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:text-foreground"
-                  title="Editar alerta padrão"
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  disabled
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground/35 opacity-60"
-                  title="O alerta padrão não pode ser excluído"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                <SimpleTooltip content="Editar alerta padrão" side="top">
+                  <button
+                    type="button"
+                    onClick={() => openEditAlertaServicoRule(defaultRule)}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                </SimpleTooltip>
+                <SimpleTooltip content="O alerta padrão não pode ser excluído" side="top">
+                  <button
+                    type="button"
+                    disabled
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground/35 opacity-60"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </SimpleTooltip>
               </div>
             </div>
 
@@ -3701,22 +3752,24 @@ export default function HomePage() {
               >
                 {renderRuleContent(rule, "exceção")}
                 <div className="flex items-center gap-1 lg:justify-end">
-                <button
-                  type="button"
-                  onClick={() => openEditAlertaServicoRule(rule)}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:text-foreground"
-                  title="Editar exceção"
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => removeAlertaServicoRule(rule.id)}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:border-red-500/40 hover:text-red-600"
-                  title="Excluir exceção"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                <SimpleTooltip content="Editar exceção" side="top">
+                  <button
+                    type="button"
+                    onClick={() => openEditAlertaServicoRule(rule)}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                </SimpleTooltip>
+                <SimpleTooltip content="Excluir exceção" side="top">
+                  <button
+                    type="button"
+                    onClick={() => removeAlertaServicoRule(rule.id)}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:border-red-500/40 hover:text-red-600"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </SimpleTooltip>
                 </div>
               </div>
             ))}
@@ -4255,13 +4308,14 @@ export default function HomePage() {
                               className={`group relative select-none whitespace-nowrap border-b border-glass-border text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground ${compactQueueColumns ? "px-2 py-2" : "px-3 py-2.5"}`}
                             >
                               {column.label}
-                              <span
-                                role="separator"
-                                aria-orientation="vertical"
-                                title="Arraste para redimensionar"
-                                onMouseDown={(event) => beginResizeQueueColumn(column.key, event)}
-                                className="absolute right-0 top-0 h-full w-3 cursor-col-resize opacity-0 group-hover:opacity-100 after:absolute after:right-1 after:top-1/2 after:h-4 after:w-0.5 after:-translate-y-1/2 after:rounded-full after:bg-primary/40 after:content-['']"
-                              />
+                              <SimpleTooltip content="Arraste para redimensionar" side="top">
+                                <span
+                                  role="separator"
+                                  aria-orientation="vertical"
+                                  onMouseDown={(event) => beginResizeQueueColumn(column.key, event)}
+                                  className="absolute right-0 top-0 h-full w-3 cursor-col-resize opacity-0 group-hover:opacity-100 after:absolute after:right-1 after:top-1/2 after:h-4 after:w-0.5 after:-translate-y-1/2 after:rounded-full after:bg-primary/40 after:content-['']"
+                                />
+                              </SimpleTooltip>
                             </th>
                           ))}
                         </tr>
@@ -4288,23 +4342,27 @@ export default function HomePage() {
                                 {column.key === "responsavel" ? (
                                   <div className={queueColumnWidths[column.key] ? "w-full min-w-0 overflow-hidden" : compactQueueColumns ? "min-w-[132px]" : "min-w-[180px]"}>
                                     <div className="flex min-w-0 items-center gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => void toggleQueueConclusao(row)}
-                                        title={
+                                      <SimpleTooltip
+                                        content={
                                           row.concluido
                                             ? `Concluído${row.concluidoPor ? ` por ${row.concluidoPor}` : ""}`
                                             : "Marcar processo como concluído"
                                         }
-                                        className={[
-                                          "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors disabled:opacity-50",
-                                          row.concluido
-                                            ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-700"
-                                            : "border-glass-border bg-transparent text-muted-foreground hover:border-emerald-500/40 hover:text-emerald-700",
-                                        ].join(" ")}
+                                        side="top"
                                       >
-                                        <CheckCircle2 className="h-3.5 w-3.5" />
-                                      </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => void toggleQueueConclusao(row)}
+                                          className={[
+                                            "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors disabled:opacity-50",
+                                            row.concluido
+                                              ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-700"
+                                              : "border-glass-border bg-transparent text-muted-foreground hover:border-emerald-500/40 hover:text-emerald-700",
+                                          ].join(" ")}
+                                        >
+                                          <CheckCircle2 className="h-3.5 w-3.5" />
+                                        </button>
+                                      </SimpleTooltip>
                                       <input
                                         type="text"
                                         value={queueResponsavelDrafts[row.rowKey] ?? row.responsavel}
@@ -4320,21 +4378,22 @@ export default function HomePage() {
                                         className="min-w-0 flex-1 truncate rounded-md border border-transparent bg-transparent px-1.5 py-1 text-sm text-foreground outline-none transition-colors focus:border-primary focus:bg-background/80"
                                       />
                                       {row.responsavelAlterado ? (
-                                        <span
-                                          title={formatResponsavelTooltip(
+                                        <SimpleTooltip
+                                          content={formatResponsavelTooltip(
                                             row.responsavelAlteradoPor,
                                             row.responsavelAlteradoEm,
                                           )}
-                                          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-[11px] font-semibold text-amber-700"
+                                          side="top"
                                         >
-                                          !
-                                        </span>
+                                          <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-[11px] font-semibold text-amber-700">
+                                            !
+                                          </span>
+                                        </SimpleTooltip>
                                       ) : null}
                                       <Popover>
                                         <PopoverTrigger asChild>
                                           <button
                                             type="button"
-                                            title={row.alertas.length ? "Ver mensagens" : "Adicionar mensagem"}
                                             className={[
                                               "inline-flex h-5 shrink-0 items-center justify-center rounded-full border text-[11px] transition-colors",
                                               row.alertas.length
@@ -4372,15 +4431,16 @@ export default function HomePage() {
                                                             .join(" • ")}
                                                         </p>
                                                       </div>
-                                                      <button
-                                                        type="button"
-                                                        onClick={() => void removeQueueAlert(row, alerta)}
-                                                        disabled={deletingAlertId === alerta.id}
-                                                        title="Remover mensagem"
-                                                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-sky-500/20 text-sky-700 transition-colors hover:bg-sky-500/15 disabled:cursor-not-allowed disabled:opacity-50"
-                                                      >
-                                                        <X className="h-3.5 w-3.5" />
-                                                      </button>
+                                                      <SimpleTooltip content="Remover mensagem" side="top">
+                                                        <button
+                                                          type="button"
+                                                          onClick={() => void removeQueueAlert(row, alerta)}
+                                                          disabled={deletingAlertId === alerta.id}
+                                                          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-sky-500/20 text-sky-700 transition-colors hover:bg-sky-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+                                                        >
+                                                          <X className="h-3.5 w-3.5" />
+                                                        </button>
+                                                      </SimpleTooltip>
                                                     </div>
                                                   </div>
                                                 ))}
@@ -4419,12 +4479,11 @@ export default function HomePage() {
                                 ) : column.key === "competencia" ? (
                                   <div className="flex w-full min-w-0 items-center overflow-hidden">
                                     {row.nfServicoAlerta ? (
-                                      <span
-                                        title={row.nfServicoAlertaTooltip}
-                                        className="min-w-0 truncate rounded border border-red-500/40 bg-red-500/8 px-1.5 py-0.5 text-[12px] font-medium text-red-700"
-                                      >
-                                        {row.competencia}
-                                      </span>
+                                      <SimpleTooltip content={row.nfServicoAlertaTooltip} side="top" maxWidth="max-w-sm" className="text-left">
+                                        <span className="min-w-0 truncate rounded border border-red-500/40 bg-red-500/8 px-1.5 py-0.5 text-[12px] font-medium text-red-700">
+                                          {row.competencia}
+                                        </span>
+                                      </SimpleTooltip>
                                     ) : (
                                       <span className="min-w-0 truncate">{row.competencia}</span>
                                     )}
@@ -4434,18 +4493,19 @@ export default function HomePage() {
                                     const processoSolar = row.processoSolar || row.numeroProcesso;
                                     const processoExibicao = formatFilaProcessoCurto(processoSolar);
                                     return processoSolar ? (
-                                      <button
-                                        type="button"
-                                        disabled={openingSolarProcessKey === row.rowKey || !apiDisponivel}
-                                        onClick={() => void abrirProcessoSolarDaFila(row)}
-                                        className="inline-flex max-w-full items-center gap-1.5 truncate text-left font-mono text-foreground underline-offset-2 hover:text-primary hover:underline disabled:cursor-wait disabled:opacity-60"
-                                        title={`${processoSolar} — abrir processo no Solar`}
-                                      >
-                                        {openingSolarProcessKey === row.rowKey ? (
-                                          <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
-                                        ) : null}
-                                        <span className="min-w-0 truncate">{processoExibicao}</span>
-                                      </button>
+                                      <SimpleTooltip content={`${processoSolar} — abrir processo no Solar`} side="top">
+                                        <button
+                                          type="button"
+                                          disabled={openingSolarProcessKey === row.rowKey || !apiDisponivel}
+                                          onClick={() => void abrirProcessoSolarDaFila(row)}
+                                          className="inline-flex max-w-full items-center gap-1.5 truncate text-left font-mono text-foreground underline-offset-2 hover:text-primary hover:underline disabled:cursor-wait disabled:opacity-60"
+                                        >
+                                          {openingSolarProcessKey === row.rowKey ? (
+                                            <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                                          ) : null}
+                                          <span className="min-w-0 truncate">{processoExibicao}</span>
+                                        </button>
+                                      </SimpleTooltip>
                                     ) : (
                                       <span className="block min-w-0 truncate text-muted-foreground/40">—</span>
                                     );
@@ -4455,18 +4515,20 @@ export default function HomePage() {
                                     {mostrarTipoBadges && row.tipo ? (() => {
                                       const tipos = parseTipos(row.tipo);
                                       return tipos.map((entry, i) => (
-                                        <span
-                                          key={i}
-                                          title={entry.label}
-                                          className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold leading-none ${entry.style}`}
-                                        >
-                                          {entry.abbr}
-                                        </span>
+                                        <SimpleTooltip key={i} content={entry.label} side="top">
+                                          <span
+                                            className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold leading-none ${entry.style}`}
+                                          >
+                                            {entry.abbr}
+                                          </span>
+                                        </SimpleTooltip>
                                       ));
                                     })() : (
-                                      <span className="min-w-0 truncate text-foreground" title={row.tipo}>
-                                        {row.tipo}
-                                      </span>
+                                      <SimpleTooltip content={row.tipo} side="top">
+                                        <span className="min-w-0 truncate text-foreground">
+                                          {row.tipo}
+                                        </span>
+                                      </SimpleTooltip>
                                     )}
                                     {mostrarSimples && (() => {
                                       if (dispensaIndicadorSimples(row.tipo)) return null;
@@ -4477,19 +4539,25 @@ export default function HomePage() {
                                       }
                                       const status = queueSimplesMap[cnpjLimpo];
                                       if (status === true) return (
-                                        <span title="Optante pelo Simples Nacional" className="inline-flex shrink-0 items-center rounded-full border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold leading-none text-emerald-700">
-                                          SN
-                                        </span>
+                                        <SimpleTooltip content="Optante pelo Simples Nacional" side="top">
+                                          <span className="inline-flex shrink-0 items-center rounded-full border border-emerald-500/35 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold leading-none text-emerald-700">
+                                            SN
+                                          </span>
+                                        </SimpleTooltip>
                                       );
                                       if (status === false) return (
-                                        <span title="Não optante pelo Simples Nacional" className="inline-flex shrink-0 items-center rounded-full border border-orange-500/30 bg-orange-500/8 px-2 py-0.5 text-[10px] font-semibold leading-none text-orange-700">
-                                          NS
-                                        </span>
+                                        <SimpleTooltip content="Não optante pelo Simples Nacional" side="top">
+                                          <span className="inline-flex shrink-0 items-center rounded-full border border-orange-500/30 bg-orange-500/8 px-2 py-0.5 text-[10px] font-semibold leading-none text-orange-700">
+                                            NS
+                                          </span>
+                                        </SimpleTooltip>
                                       );
                                       return (
-                                        <span title="Simples Nacional indisponível para este CNPJ" className="inline-flex shrink-0 items-center rounded-full border border-slate-400/35 bg-slate-500/10 px-2 py-0.5 text-[10px] font-semibold leading-none text-slate-600">
-                                          SN?
-                                        </span>
+                                        <SimpleTooltip content="Simples Nacional indisponível para este CNPJ" side="top">
+                                          <span className="inline-flex shrink-0 items-center rounded-full border border-slate-400/35 bg-slate-500/10 px-2 py-0.5 text-[10px] font-semibold leading-none text-slate-600">
+                                            SN?
+                                          </span>
+                                        </SimpleTooltip>
                                       );
                                     })()}
                                   </div>
@@ -4497,41 +4565,41 @@ export default function HomePage() {
                                   const cnpjLimpo = row.cpfCnpj.replace(/\D/g, "");
                                   const clicavel = cnpjLimpo.length === 14;
                                   return clicavel ? (
-                                    <button
-                                      type="button"
-                                      className="block w-full min-w-0 truncate text-left underline-offset-2 hover:text-primary hover:underline"
-	                                      title={`${row.cpfCnpj} — clique para ver histórico`}
-	                                      onClick={() => {
-	                                        abrirHistoricoDaFila(row);
-	                                      }}
-                                    >
-                                      {row.cpfCnpj}
-                                    </button>
+                                    <SimpleTooltip content={`${row.cpfCnpj} — clique para ver histórico`} side="top">
+                                      <button
+                                        type="button"
+                                        className="block w-full min-w-0 truncate text-left underline-offset-2 hover:text-primary hover:underline"
+                                        onClick={() => { abrirHistoricoDaFila(row); }}
+                                      >
+                                        {row.cpfCnpj}
+                                      </button>
+                                    </SimpleTooltip>
                                   ) : (
                                     <span className="block min-w-0 truncate">{row.cpfCnpj}</span>
                                   );
                                 })() : column.key === "credor" ? (
-                                  <button
-                                    type="button"
-                                    className="block w-full min-w-0 truncate text-left text-foreground underline-offset-2 hover:text-primary hover:underline"
-	                                    title={`${row.credor} — clique para ver histórico`}
-	                                    onClick={() => {
-	                                      abrirHistoricoDaFila(row);
-	                                    }}
-                                  >
-                                    {row.credor}
-                                  </button>
+                                  <SimpleTooltip content={`${row.credor} — clique para ver histórico`} side="top">
+                                    <button
+                                      type="button"
+                                      className="block w-full min-w-0 truncate text-left text-foreground underline-offset-2 hover:text-primary hover:underline"
+                                      onClick={() => { abrirHistoricoDaFila(row); }}
+                                    >
+                                      {row.credor}
+                                    </button>
+                                  </SimpleTooltip>
                                 ) : column.key === "valor" ? (
-                                  <span className="block w-full min-w-0 truncate text-right tabular-nums" title={row.valor}>
-                                    {row.valor}
-                                  </span>
+                                  <SimpleTooltip content={row.valor} side="top">
+                                    <span className="block w-full min-w-0 truncate text-right tabular-nums">
+                                      {row.valor}
+                                    </span>
+                                  </SimpleTooltip>
                                 ) : column.key === "ic" ? (() => {
                                   // Se já tem IC na fila, exibe normalmente
                                   if (row.ic) {
                                     return (
-                                      <span className="block min-w-0 truncate" title={row.ic}>
-                                        {row.ic}
-                                      </span>
+                                      <SimpleTooltip content={row.ic} side="top">
+                                        <span className="block min-w-0 truncate">{row.ic}</span>
+                                      </SimpleTooltip>
                                     );
                                   }
                                   // Se tem contrato, tenta o lookup na tabela de contratos
@@ -4540,24 +4608,28 @@ export default function HomePage() {
                                     if (icLookup === null) {
                                       // Cadastrado na tabela mas sem IC, ou não encontrado
                                       return (
-                                        <span className="block min-w-0 truncate text-[11px] italic text-muted-foreground/60" title="Não cadastrado na tabela de contratos">
-                                          Não cadastrado
-                                        </span>
+                                        <SimpleTooltip content="Não cadastrado na tabela de contratos" side="top">
+                                          <span className="block min-w-0 truncate text-[11px] italic text-muted-foreground/60">
+                                            Não cadastrado
+                                          </span>
+                                        </SimpleTooltip>
                                       );
                                     }
                                     if (icLookup) {
                                       return (
-                                        <span className="block min-w-0 truncate" title={icLookup}>
-                                          {icLookup}
-                                        </span>
+                                        <SimpleTooltip content={icLookup} side="top">
+                                          <span className="block min-w-0 truncate">{icLookup}</span>
+                                        </SimpleTooltip>
                                       );
                                     }
                                   }
                                   return <span className="block min-w-0 truncate text-muted-foreground/40">—</span>;
                                 })() : (
-                                  <span className="block min-w-0 truncate" title={String(row[column.key] ?? "")}>
-                                    {String(row[column.key] ?? "")}
-                                  </span>
+                                  <SimpleTooltip content={String(row[column.key] ?? "")} side="top">
+                                    <span className="block min-w-0 truncate">
+                                      {String(row[column.key] ?? "")}
+                                    </span>
+                                  </SimpleTooltip>
                                 )}
                               </td>
                             ))}
@@ -4979,35 +5051,38 @@ export default function HomePage() {
                             onDrop={(event) => handleQueueColumnDrop(event, column.key)}
                             className="grid cursor-grab grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-glass-border bg-background px-3 py-2 text-sm text-foreground active:cursor-grabbing"
                           >
-                            <button
-                              type="button"
-                              onClick={() => toggleQueueColumn(column.key)}
-                              disabled={visibleQueueColumns.length === 1}
-                              className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-primary/30 bg-primary/10 text-[11px] font-bold text-primary disabled:opacity-40"
-                              title="Desativar coluna"
-                            >
-                              ✓
-                            </button>
+                            <SimpleTooltip content="Desativar coluna" side="top">
+                              <button
+                                type="button"
+                                onClick={() => toggleQueueColumn(column.key)}
+                                disabled={visibleQueueColumns.length === 1}
+                                className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-primary/30 bg-primary/10 text-[11px] font-bold text-primary disabled:opacity-40"
+                              >
+                                ✓
+                              </button>
+                            </SimpleTooltip>
                             <span className="min-w-0 truncate">{column.label}</span>
                             <div className="flex items-center gap-1">
-                              <button
-                                type="button"
-                                onClick={() => moveQueueColumn(column.key, -1)}
-                                disabled={index === 0}
-                                title="Mover para a esquerda"
-                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:text-foreground disabled:opacity-35"
-                              >
-                                <ArrowUp className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => moveQueueColumn(column.key, 1)}
-                                disabled={index === visibleQueueColumns.length - 1}
-                                title="Mover para a direita"
-                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:text-foreground disabled:opacity-35"
-                              >
-                                <ArrowDown className="h-3.5 w-3.5" />
-                              </button>
+                              <SimpleTooltip content="Mover para a esquerda" side="top">
+                                <button
+                                  type="button"
+                                  onClick={() => moveQueueColumn(column.key, -1)}
+                                  disabled={index === 0}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:text-foreground disabled:opacity-35"
+                                >
+                                  <ArrowUp className="h-3.5 w-3.5" />
+                                </button>
+                              </SimpleTooltip>
+                              <SimpleTooltip content="Mover para a direita" side="top">
+                                <button
+                                  type="button"
+                                  onClick={() => moveQueueColumn(column.key, 1)}
+                                  disabled={index === visibleQueueColumns.length - 1}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:text-foreground disabled:opacity-35"
+                                >
+                                  <ArrowDown className="h-3.5 w-3.5" />
+                                </button>
+                              </SimpleTooltip>
                             </div>
                           </div>
                         );
@@ -5151,6 +5226,74 @@ export default function HomePage() {
 
             <div className="scrollable-surface min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
               <div className="space-y-4">
+                {/* Datas globais */}
+                <section className="min-w-0 rounded-2xl border border-glass-border bg-muted/20 p-4">
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <CalendarDays className="h-4 w-4 text-muted-foreground" />
+                        <h3 className="text-base font-semibold text-foreground">Datas globais</h3>
+                        <GlobalScopeIcon label="Global" />
+                      </div>
+                      {carregandoDatasGlobais ? (
+                        <span className="inline-flex items-center gap-2 rounded-full border border-glass-border bg-background/70 px-3 py-1.5 text-xs text-muted-foreground">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Carregando
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      Atualiza as datas globais no Turso e sincroniza as telas abertas.
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+                      <label className="grid gap-1.5">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Apuração</span>
+                        <input
+                          type="date"
+                          value={datasGlobais.apuracao}
+                          onChange={(event) => {
+                            setMensagemDatasGlobais("");
+                            setDatasGlobais((current) => ({ ...current, apuracao: event.target.value }));
+                          }}
+                          className="w-full rounded-xl border border-glass-border bg-background/80 px-3 py-2.5 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                        />
+                      </label>
+                      <label className="grid gap-1.5">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Vencimento</span>
+                        <input
+                          type="date"
+                          value={datasGlobais.vencimento}
+                          onChange={(event) => {
+                            setMensagemDatasGlobais("");
+                            setDatasGlobais((current) => ({ ...current, vencimento: event.target.value }));
+                          }}
+                          className="w-full rounded-xl border border-glass-border bg-background/80 px-3 py-2.5 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                        />
+                      </label>
+                      <GlassButton
+                        type="button"
+                        size="sm"
+                        onClick={() => void handleSalvarDatasGlobais()}
+                        disabled={carregandoDatasGlobais || salvandoDatasGlobais}
+                        className="shrink-0"
+                      >
+                        {salvandoDatasGlobais ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                        {salvandoDatasGlobais ? "Salvando..." : "Salvar datas"}
+                      </GlassButton>
+                    </div>
+                    {mensagemDatasGlobais ? (
+                      <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+                        {mensagemDatasGlobais}
+                      </div>
+                    ) : null}
+                    {erroDatasGlobais ? (
+                      <div className="rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                        {erroDatasGlobais}
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+
                 {/* Tabelas */}
                 <section className="min-w-0 rounded-2xl border border-glass-border bg-muted/20 p-4">
                   <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
@@ -5293,16 +5436,20 @@ export default function HomePage() {
                 >
                   Ainda não finalizei
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void concluirRegistroLiquidacao(true)}
-                  disabled={registroSaving || !registroNumeroDocumento.trim() || !registroDificuldadeInteragida}
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-semibold text-white shadow-md shadow-emerald-900/20 transition-all hover:-translate-y-0.5 hover:bg-emerald-800 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
-                  title={!registroDificuldadeInteragida ? "Mova a barra de dificuldade para habilitar o registro." : undefined}
+                <SimpleTooltip
+                  content={!registroDificuldadeInteragida ? "Mova a barra de dificuldade para habilitar o registro." : undefined}
+                  side="top"
                 >
-                  {registroSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                  Registrar e marcar concluído
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => void concluirRegistroLiquidacao(true)}
+                    disabled={registroSaving || !registroNumeroDocumento.trim() || !registroDificuldadeInteragida}
+                    className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 text-sm font-semibold text-white shadow-md shadow-emerald-900/20 transition-all hover:-translate-y-0.5 hover:bg-emerald-800 hover:shadow-lg disabled:translate-y-0 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none"
+                  >
+                    {registroSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                    Registrar e marcar concluído
+                  </button>
+                </SimpleTooltip>
               </div>
             </div>
           </div>
@@ -5378,16 +5525,20 @@ export default function HomePage() {
                   <Plus className="h-4 w-4" />
                   Nova regra
                 </button>
-                <GlassButton
-                  type="button"
-                  size="sm"
-                  onClick={() => void persistRegrasDatasDeducoes()}
-                  disabled={!auth.isModerator || carregandoRegrasDatasDeducoes || savingRegrasDatasDeducoes || !regrasDatasDeducoes.regras.length}
-                  title={!auth.isModerator ? "Apenas moderadores podem salvar regras de deduções." : undefined}
+                <SimpleTooltip
+                  content={!auth.isModerator ? "Apenas moderadores podem salvar regras de deduções." : undefined}
+                  side="top"
                 >
-                  {savingRegrasDatasDeducoes ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                  {savingRegrasDatasDeducoes ? "Salvando..." : "Salvar"}
-                </GlassButton>
+                  <GlassButton
+                    type="button"
+                    size="sm"
+                    onClick={() => void persistRegrasDatasDeducoes()}
+                    disabled={!auth.isModerator || carregandoRegrasDatasDeducoes || savingRegrasDatasDeducoes || !regrasDatasDeducoes.regras.length}
+                  >
+                    {savingRegrasDatasDeducoes ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                    {savingRegrasDatasDeducoes ? "Salvando..." : "Salvar"}
+                  </GlassButton>
+                </SimpleTooltip>
               </div>
             </div>
 
@@ -5437,9 +5588,11 @@ export default function HomePage() {
                                   </span>
                                 ) : null}
                               </span>
-                              <span className="mt-1 block truncate text-sm font-semibold text-foreground" title={rule.nome}>
-                                {rule.nome || "Regra sem nome"}
-                              </span>
+                              <SimpleTooltip content={rule.nome} side="top" className="text-left">
+                                <span className="mt-1 block truncate text-sm font-semibold text-foreground">
+                                  {rule.nome || "Regra sem nome"}
+                                </span>
+                              </SimpleTooltip>
                               <span className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                 <span className="inline-flex min-w-0 items-center gap-1">
                                   <CalendarDays className="h-3.5 w-3.5 shrink-0" />
@@ -5502,16 +5655,17 @@ export default function HomePage() {
                                       className="inline-flex h-8 items-center gap-1 rounded-lg border border-glass-border bg-muted/20 px-2 font-mono text-xs text-foreground"
                                     >
                                       {codigo}
-                                      <button
-                                        type="button"
-                                        onClick={() => removeCodigoRegraDataDeducao(rule.id, codigo)}
-                                        disabled={!auth.isModerator}
-                                        className="inline-flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-red-500/10 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
-                                        aria-label={`Remover código ${codigo}`}
-                                        title={`Remover código ${codigo}`}
-                                      >
-                                        <Minus className="h-3.5 w-3.5" />
-                                      </button>
+                                      <SimpleTooltip content={`Remover código ${codigo}`} side="top">
+                                        <button
+                                          type="button"
+                                          onClick={() => removeCodigoRegraDataDeducao(rule.id, codigo)}
+                                          disabled={!auth.isModerator}
+                                          className="inline-flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-red-500/10 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                                          aria-label={`Remover código ${codigo}`}
+                                        >
+                                          <Minus className="h-3.5 w-3.5" />
+                                        </button>
+                                      </SimpleTooltip>
                                     </span>
                                   ))
                                 ) : (

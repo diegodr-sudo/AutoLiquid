@@ -9,7 +9,7 @@ import re
 import secrets
 import socket
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
 import requests
@@ -23,7 +23,9 @@ log = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="microseconds")
+    """Retorna o instante atual em UTC com sufixo 'Z', garantindo que o
+    frontend interprete o valor corretamente (sem deslocamento de 3h)."""
+    return datetime.now(tz=timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _config() -> tuple[str, str]:
@@ -1967,6 +1969,7 @@ def _montar_historico(rows_exec: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "liquido": _to_float(row.get("liquido")),
             "lfNumero": str(row.get("lf_numero") or ""),
             "ugrNumero": str(row.get("ugr_numero") or ""),
+            "siorgNumero": resolver_siorg_por_ugr(row.get("ugr_numero") or ""),
             "vencimentoDocumento": str(row.get("vencimento_documento") or ""),
             "usarContaPdf": bool(_to_int(row.get("usar_conta_pdf", 1))) if row.get("usar_conta_pdf") is not None else True,
             "contaBanco": str(row.get("conta_banco") or ""),

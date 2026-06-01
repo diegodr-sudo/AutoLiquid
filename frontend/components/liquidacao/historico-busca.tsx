@@ -74,6 +74,7 @@ interface Execucao {
   liquido: number;
   lfNumero: string;
   ugrNumero: string;
+  siorgNumero?: string;
   vencimentoDocumento: string;
   usarContaPdf?: boolean;
   contaBanco?: string;
@@ -418,9 +419,9 @@ function SecaoEmpenhos({
     return (
       <GlassTable
         compact
-        headers={["#", "Empenho", "Sit.", "Natureza", "UGR/SIORG", "VPD", "Valor"]}
-        headerTitles={["", "Número do Empenho (NE)", "Situação (DSP)", "Natureza da Despesa", "UGR e SIORG", "VPD", "Valor do Empenho"]}
-        className="overflow-x-hidden"
+        headers={["Empenho", "Sit.", "Natureza", "UGR/SIORG", "VPD", "Valor"]}
+        headerTitles={["Número do Empenho (NE)", "Situação (DSP)", "Natureza da Despesa", "UGR e SIORG", "VPD", "Valor do Empenho"]}
+        className="overflow-x-auto"
       >
         {empenhos.map((emp, idx) => {
           const saldo = emp.saldo || 0;
@@ -428,9 +429,6 @@ function SecaoEmpenhos({
           const pctValor = totalRef > 0 ? Math.min(Math.max(((emp.valor || 0) / totalRef) * 100, 0), 100) : 100;
           return (
             <GlassTableRow key={idx}>
-              <GlassTableCell compact className="w-5 text-center text-xs text-muted-foreground">
-                {idx + 1}
-              </GlassTableCell>
               {/* Número do Empenho (NE) */}
               <GlassTableCell compact className="whitespace-nowrap font-mono text-xs font-medium">
                 {emp.numero || "—"}
@@ -493,15 +491,11 @@ function SecaoEmpenhos({
   return (
     <GlassTable
       compact
-      headers={["#", "Empenho", "Sit.", "Natureza", "UGR/SIORG", "VPD", "Valor"]}
-      headerTitles={["", "Número do Empenho (NE)", "Situação (DSP)", "Natureza da Despesa", "UGR e SIORG", "VPD", "Valor Bruto"]}
+      headers={["Empenho", "Sit.", "Natureza", "UGR/SIORG", "VPD", "Valor"]}
+      headerTitles={["Número do Empenho (NE)", "Situação (DSP)", "Natureza da Despesa", "UGR e SIORG", "VPD", "Valor Bruto"]}
       className="overflow-x-hidden"
     >
       <GlassTableRow>
-        {/* # */}
-        <GlassTableCell compact className="w-5 text-center text-xs text-muted-foreground">
-          1
-        </GlassTableCell>
         {/* Empenho — não disponível em registros antigos */}
         <GlassTableCell compact className="whitespace-nowrap font-mono text-xs font-medium">
           —
@@ -517,7 +511,11 @@ function SecaoEmpenhos({
         <GlassTableCell compact className="whitespace-nowrap text-xs">
           <div className="flex flex-col gap-0.5 font-mono leading-tight">
             <span>{exec.ugrNumero || "—"}</span>
-            {exec.ugrNumero && <span className="text-[10px] text-muted-foreground">SIORG —</span>}
+            {exec.ugrNumero && (
+              <span className="text-[10px] text-muted-foreground">
+                SIORG {exec.siorgNumero || "—"}
+              </span>
+            )}
           </div>
         </GlassTableCell>
         <GlassTableCell compact className="whitespace-nowrap text-xs">
@@ -671,7 +669,7 @@ function ExecucaoCard({
           <div className="mb-3 flex gap-1 overflow-x-auto">
             {(["nfs", "deducoes", "empenhos", "pendencias"] as Aba[]).map(aba => {
               const LABELS: Record<Aba, string> = {
-                nfs: "Notas Fiscais",
+                nfs: "Documentos",
                 deducoes: "Deduções",
                 empenhos: "Empenhos",
                 pendencias: "Pendências",

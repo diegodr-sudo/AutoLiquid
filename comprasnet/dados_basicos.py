@@ -115,15 +115,27 @@ def _comparar_documentos_origem(
     numeros_web = Counter(doc["numero"] for doc in docs_web)
     faltando_na_web = list((numeros_pdf - numeros_web).elements())
     sobrando_na_web = list((numeros_web - numeros_pdf).elements())
+
+    valor_pdf_por_numero = {doc["numero"]: doc["valor"] for doc in docs_pdf}
+    valor_web_por_numero = {doc["numero"]: doc["valor"] for doc in docs_web}
+
     if faltando_na_web:
+        partes = [
+            f"{nf}={valor_pdf_por_numero[nf]}" if valor_pdf_por_numero.get(nf) else nf
+            for nf in faltando_na_web
+        ]
         erros.append(
             "NF(s) ausente(s) nos documentos de origem da Web: "
-            + ", ".join(faltando_na_web)
+            + ", ".join(partes)
         )
     if sobrando_na_web:
+        partes = [
+            f"{nf}={valor_web_por_numero[nf]}" if valor_web_por_numero.get(nf) else nf
+            for nf in sobrando_na_web
+        ]
         erros.append(
             "NF(s) inesperada(s) nos documentos de origem da Web: "
-            + ", ".join(sobrando_na_web)
+            + ", ".join(partes)
         )
 
     total_pdf = sum((_decimal_normalizado(doc["valor"]) for doc in docs_pdf), Decimal("0"))
@@ -650,111 +662,81 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
         _abrir_aba_dados_basicos(pagina)
 
         # 0. Tipo DH Padrão — NP
+        # A decisão é dirigida pelo VALOR ATUAL do select #select-tipo-dh-padrao,
+        # nunca pela mera presença de outros campos (botão/dtvenc). Esses campos
+        # podem existir enquanto o select ainda está em "== Selecione ==", então
+        # usá-los como atalho fazia o software pular a seleção indevidamente.
+        # Regra: se já estiver em NP → segue; caso contrário → seleciona NP.
         print("[0] Tipo DH Padrão: NP")
-        _valor_dh = ""
         _ok_dh = False
         try:
             estado_dh = pagina.evaluate(
                 r"""() => {
-                    const visivel = (el) => {
-                        if (!el) return false;
-                        const rect = el.getBoundingClientRect();
-                        const style = window.getComputedStyle(el);
-                        return rect.width > 0
-                            && rect.height > 0
-                            && style.visibility !== 'hidden'
-                            && style.display !== 'none';
-                    };
                     const normalizar = (txt) => String(txt || '').replace(/\s+/g, ' ').trim().toUpperCase();
-                    const contexto = (el) => {
-                        const partes = [];
-                        let atual = el;
-                        for (let i = 0; i < 4 && atual; i += 1) {
-                            partes.push(atual.innerText || atual.textContent || '');
-                            atual = atual.parentElement;
-                        }
-                        return normalizar(partes.join(' '));
+                    const ehNP = (txt) => {
+                        const t = normalizar(txt);
+                        return /(^|[^A-Z])NP([^A-Z]|$)/.test(t) || t.includes('NOTA DE PAGAMENTO');
                     };
-
-                    const candidatos = Array.from(document.querySelectorAll('select, input'))
-                        .filter((el) => visivel(el) || el.disabled || el.readOnly)
-                        .map((el) => ({ el, tag: el.tagName.toLowerCase(), ctx: contexto(el) }))
-                        .filter(({ el, ctx }) => {
-                            if (ctx.includes('TIPO DH PADR') || ctx.includes('NOTA DE PAGAMENTO')) return true;
-                            const idName = normalizar(`${el.id || ''} ${el.name || ''}`);
-                            return idName.includes('TIPO') || idName.includes('DH');
-                        });
-
-                    for (const { el, tag } of candidatos) {
-                        if (tag !== 'input') continue;
-                        const valor = normalizar(el.value || '');
-                        if (valor.includes('NP') || valor.includes('NOTA DE PAGAMENTO')) {
-                            return { ok: true, valor: el.value || '', modo: 'input-existente' };
-                        }
+                    const sel = document.getElementById('select-tipo-dh-padrao');
+                    if (!sel) {
+                        // Sem o select na página: formulário já passou da etapa de escolha.
+                        return { ok: true, modo: 'sem-select' };
                     }
 
-                    for (const { el, tag } of candidatos) {
-                        if (tag !== 'select') continue;
-                        const atual = normalizar(el.options[el.selectedIndex]?.text || el.value || '');
-                        if (atual.includes('NP') || atual.includes('NOTA DE PAGAMENTO')) {
-                            return { ok: true, valor: el.options[el.selectedIndex]?.text || el.value || '', modo: 'select-existente' };
-                        }
-
-                        const op = Array.from(el.options || []).find((option) => {
-                            const texto = normalizar(option.text || '');
-                            const valor = normalizar(option.value || '');
-                            return texto.includes('NP') || valor === 'NP' || texto.includes('NOTA DE PAGAMENTO');
-                        });
-                        if (!op) continue;
-
-                        el.value = op.value;
-                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                        if (typeof window.$ !== 'undefined') {
-                            window.$(el).trigger('change');
-                        }
-                        return { ok: true, valor: op.text || op.value || '', modo: 'select-ajustado' };
+                    // Já está em NP? (verifica texto da opção selecionada e o value)
+                    const atual = sel.options[sel.selectedIndex]?.text || sel.value || '';
+                    if (ehNP(atual)) {
+                        return { ok: true, modo: 'select-existente' };
                     }
 
-                    return { ok: false, valor: '', modo: 'nao-encontrado' };
+                    // Não está em NP (ex.: "== Selecione =="): seleciona a opção NP.
+                    const op = Array.from(sel.options || []).find((o) => ehNP(o.text) || normalizar(o.value) === 'NP');
+                    if (!op) return { ok: false, modo: 'sem-opcao-np' };
+
+                    sel.value = op.value;
+                    sel.dispatchEvent(new Event('input', { bubbles: true }));
+                    sel.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (typeof window.$ !== 'undefined') {
+                        window.$(sel).trigger('change');
+                    }
+                    return { ok: true, modo: 'select-ajustado' };
                 }"""
             ) or {}
+            modo = estado_dh.get("modo", "")
             _ok_dh = bool(estado_dh.get("ok"))
-            _valor_dh = str(estado_dh.get("valor", "")).strip()
-            if _ok_dh:
-                print(f"  → Tipo DH resolvido ({estado_dh.get('modo')}): '{_valor_dh}'.")
-        except Exception:
-            estado_dh = {"ok": False, "modo": "erro-js"}
+            print(f"  → Tipo DH: modo={modo}, ok={_ok_dh}")
+
+            if modo == "select-ajustado":
+                # A escolha de NP dispara um AJAX que (re)carrega o formulário.
+                # Aguarda o formulário estabilizar antes de preencher os campos.
+                print("  → NP selecionado; aguardando formulário estabilizar...")
+                try:
+                    pagina.wait_for_function(
+                        r"""() => {
+                            const b = document.querySelector('#btnSubmitFormSfDadosBasicos');
+                            const v = document.querySelector('#dtvenc, input[name="dtvenc"]');
+                            if (!b || !v) return false;
+                            const rb = b.getBoundingClientRect();
+                            return rb.width > 0 && rb.height > 0;
+                        }""",
+                        timeout=15_000,
+                    )
+                    print("  → Formulário estabilizado.")
+                except Exception:
+                    print("  → Timeout aguardando formulário; seguindo.")
+                    time.sleep(2.0)
+            elif modo == "select-existente":
+                print("  → Tipo DH já estava em NP; seguindo sem reselecionar.")
+            elif modo == "sem-opcao-np":
+                # Select não tem opção NP — assume formulário correto
+                print("  → Opção NP não disponível no select; assumindo formulário OK.")
+                _ok_dh = True
+        except Exception as _exc:
+            print(f"  → Aviso: seleção de NP falhou ({_exc}); seguindo.")
+            _ok_dh = True  # não bloquear — tenta preencher os campos mesmo assim
 
         if not _ok_dh:
-            print("  → Fallback para seleção por label do campo.")
-            try:
-                selecionar_opcao(pagina, "Tipo DH Padrão", "NP")
-                time.sleep(0.8)
-                valor_confirmado = pagina.evaluate(
-                    r"""() => {
-                        const els = Array.from(document.querySelectorAll('input, select'));
-                        const alvo = els.find((el) => {
-                            const bloco = el.closest('div, form, section') || el.parentElement;
-                            const texto = (bloco.innerText || '').toUpperCase();
-                            return texto.includes('TIPO DH PADR') || texto.includes('NOTA DE PAGAMENTO');
-                        });
-                        if (!alvo) return '';
-                        if (alvo.tagName.toLowerCase() === 'select') {
-                            return alvo.options[alvo.selectedIndex]?.text || alvo.value || '';
-                        }
-                        return alvo.value || '';
-                    }"""
-                )
-                valor_confirmado = str(valor_confirmado).strip()
-                if valor_confirmado:
-                    _ok_dh = "NP" in valor_confirmado.upper() or "NOTA DE PAGAMENTO" in valor_confirmado.upper()
-                print(f"  → Tipo DH após fallback: '{valor_confirmado}'.")
-            except Exception as exc:
-                print(f"  → Aviso: fallback do Tipo DH falhou ({exc}).")
-
-        if not _ok_dh:
-            print("  → Aviso: Tipo DH não pôde ser confirmado automaticamente; seguindo o fluxo.")
+            print("  → Aviso: Tipo DH não confirmado; seguindo o fluxo.")
 
         # 1. Data de Vencimento
         print(f"[1] Vencimento: {data_vencimento_usuario}")
