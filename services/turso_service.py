@@ -1399,6 +1399,22 @@ def _fila_row_key(row: dict[str, Any]) -> str:
     return f"{numero}::{sol}" if numero or sol else protocolo or json.dumps(row, ensure_ascii=False, sort_keys=True)
 
 
+def _numero_processo_digits(value: Any) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _numero_processo_match_keys(value: Any) -> list[str]:
+    text = str(value or "").strip()
+    digits = _numero_processo_digits(text)
+    keys = [digits] if digits else []
+    match = re.search(r"\b23080\.(\d{1,6})/\d{4}", text)
+    if match:
+        sequencial = match.group(1)
+        keys.extend([sequencial, sequencial.lstrip("0")])
+    seen: set[str] = set()
+    return [key for key in keys if key and not (key in seen or seen.add(key))]
+
+
 def _normalizar_sarf_fila(contrato: str) -> str:
     texto = str(contrato or "").strip()
     match = re.match(r"^(\d+)/(\d{4})$", texto)
@@ -1801,24 +1817,68 @@ def salvar_responsavel_fila(*, numero_processo: str, sol_pagamento: str, respons
 
 def salvar_conclusao_fila(*, numero_processo: str, sol_pagamento: str, concluido: bool, autor: str = "") -> dict[str, Any]:
     garantir_schema_cache(timeout=8)
+    numero_limpo = numero_processo.strip()
+    sol_limpa = sol_pagamento.strip()
     row_key = _fila_row_key({"Número Processo": numero_processo, "Sol. Pagamento": sol_pagamento})
     concluido_em = _now_iso() if concluido else ""
     concluido_por = autor if concluido else ""
     atualizado_em = _now_iso()
+    if numero_limpo and not sol_limpa:
+        numero_match_keys = _numero_processo_match_keys(numero_limpo)
+        numero_placeholders = ",".join("?" for _ in numero_match_keys) or "?"
+        numero_args = numero_match_keys or [""]
+        matches = _rows(executar(
+            f"""
+            select chave, numero_processo
+            from fila_processos_atual
+            where presente = 1
+              and (
+                numero_processo = ?
+                or replace(replace(replace(replace(coalesce(numero_processo, ''), '.', ''), '/', ''), '-', ''), ' ', '') in ({numero_placeholders})
+              )
+            """,
+            [numero_limpo, *numero_args],
+            timeout=8,
+        ))
+        if matches:
+            chaves = [str(row.get("chave") or "").strip() for row in matches if str(row.get("chave") or "").strip()]
+            placeholders = ",".join("?" for _ in chaves)
+            statements: list[tuple[str, list[Any] | tuple[Any, ...] | None]] = [
+                (
+                    f"update fila_processos_atual set concluido = ?, concluido_por = ?, concluido_em = ?, atualizado_em = ? where chave in ({placeholders})",
+                    [1 if concluido else 0, concluido_por or None, concluido_em or None, atualizado_em, *chaves],
+                ),
+                (
+                    f"""
+                    update fila_processos_historico
+                    set concluido = ?, atualizado_em = ?
+                    where numero_processo = ?
+                       or replace(replace(replace(replace(coalesce(numero_processo, ''), '.', ''), '/', ''), '-', ''), ' ', '') in ({numero_placeholders})
+                    """,
+                    [1 if concluido else 0, atualizado_em, numero_limpo, *numero_args],
+                ),
+            ]
+            executar_pipeline(statements, timeout=8)
+        return {
+            "concluido": concluido,
+            "concluidoPor": concluido_por,
+            "concluidoEm": concluido_em,
+            "matched": len(matches),
+        }
     executar_pipeline(
         [
             (
                 "insert into fila_processos_atual (chave, numero_processo, sol_pagamento, dados, concluido, concluido_por, concluido_em, presente, atualizado_em) values (?, ?, ?, '{}', ?, ?, ?, 1, ?) on conflict(chave) do update set numero_processo = excluded.numero_processo, sol_pagamento = excluded.sol_pagamento, concluido = excluded.concluido, concluido_por = excluded.concluido_por, concluido_em = excluded.concluido_em, atualizado_em = excluded.atualizado_em",
-                [row_key, numero_processo.strip() or None, sol_pagamento.strip() or None, 1 if concluido else 0, concluido_por or None, concluido_em or None, atualizado_em],
+                [row_key, numero_limpo or None, sol_limpa or None, 1 if concluido else 0, concluido_por or None, concluido_em or None, atualizado_em],
             ),
             (
                 "update fila_processos_historico set concluido = ?, atualizado_em = ? where chave = ? or numero_processo = ?",
-                [1 if concluido else 0, atualizado_em, row_key, numero_processo.strip() or None],
+                [1 if concluido else 0, atualizado_em, row_key, numero_limpo or None],
             ),
         ],
         timeout=8,
     )
-    return {"concluido": concluido, "concluidoPor": concluido_por, "concluidoEm": concluido_em}
+    return {"concluido": concluido, "concluidoPor": concluido_por, "concluidoEm": concluido_em, "matched": 1}
 
 
 def salvar_alerta_fila(*, numero_processo: str, sol_pagamento: str, mensagem: str, autor: str = "") -> dict[str, Any]:

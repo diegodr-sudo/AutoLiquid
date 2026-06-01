@@ -30,6 +30,7 @@ from comprasnet.principal_helpers import (
     _capturar_empenhos_web,
     _comparar_empenhos_pdf_web,
 )
+from core.de_para_contratos import formatar_sarf, buscar_ig
 
 # ─────────────────────────────────────────────────────────────────────────────
 # UTILITÁRIO: aguardar recarga do formulário de situação
@@ -151,10 +152,7 @@ def _revalidar_favorecido_contrato(pagina, ig_code: str, erros: list) -> None:
     if not ig_esperado:
         return
     try:
-        campo_fav = pagina.locator(
-            "xpath=//*[normalize-space(text())='Favorecido do Contrato']"
-            "/following::input[1]"
-        ).first
+        campo_fav = _localizar_campo_contrato(pagina)
         valor_atual = ""
         try:
             valor_atual = campo_fav.input_value().strip()
@@ -179,6 +177,59 @@ def _revalidar_favorecido_contrato(pagina, ig_code: str, erros: list) -> None:
         )
     except Exception as e:
         erros.append(f"Erro ao revalidar 'Favorecido do Contrato': {e}")
+
+
+def _localizar_campo_contrato(pagina):
+    rotulos = [
+        "Favorecido do Contrato",
+        "Código do Contrato",
+        "Codigo do Contrato",
+        "Código de Contrato",
+        "Codigo de Contrato",
+    ]
+    for rotulo in rotulos:
+        campo = pagina.locator(
+            f"xpath=//*[normalize-space(text())='{rotulo}']"
+            "/following::input[1]"
+        ).first
+        try:
+            campo.wait_for(state="visible", timeout=1200)
+            return campo
+        except Exception:
+            continue
+    raise RuntimeError("campo de contrato não encontrado")
+
+
+def _resolver_ig_contrato(dados: dict, erros: list | None = None) -> str:
+    ig_atual = str(dados.get("IG") or "").strip()
+    if ig_atual:
+        return ig_atual
+
+    contrato = str(
+        dados.get("Número do Contrato")
+        or dados.get("Numero do Contrato")
+        or dados.get("Contrato")
+        or ""
+    ).strip()
+    sarf = str(dados.get("SARF") or "").strip()
+    if not sarf and contrato:
+        sarf = formatar_sarf(contrato)
+        dados["SARF"] = sarf
+
+    if not sarf:
+        return ""
+
+    ig = buscar_ig(sarf)
+    if ig:
+        dados["IG"] = ig
+        print(f"    Contrato {contrato or sarf}: IC/IG resolvido pelo de/para ({ig}).")
+        return ig
+
+    if erros is not None:
+        erros.append(
+            f"Contrato {contrato or sarf}: IC/IG não encontrado no de/para de contratos."
+        )
+    return ""
 
 
 def _abrir_aba_principal_orcamento(pagina, timeout_ms: int = 10000) -> None:
@@ -263,6 +314,7 @@ def executar(dados_extraidos, deve_parar=None, *, pagina=None, playwright=None):
     try:
         print("=== PRINCIPAL COM ORÇAMENTO ===")
         erros = []
+        _resolver_ig_contrato(dados_extraidos)
 
         _abrir_aba_principal_orcamento(pagina)
         time.sleep(0.3)
@@ -298,6 +350,7 @@ def executar(dados_extraidos, deve_parar=None, *, pagina=None, playwright=None):
             if handler:
                 # Injeta o código da situação no dict de dados para que os
                 # handlers possam adaptar o comportamento por situação.
+                _resolver_ig_contrato(dados_extraidos)
                 dados_handler = {**(dados_extraidos or {}), "_SITUACAO_NORM": cod_completo}
                 handler(
                     pagina,
@@ -313,7 +366,8 @@ def executar(dados_extraidos, deve_parar=None, *, pagina=None, playwright=None):
         # Confirma aba (somente sem erros)
         if not erros:
             try:
-                _revalidar_favorecido_contrato(pagina, dados_extraidos.get("IG", ""), erros)
+                ig_contrato = _resolver_ig_contrato(dados_extraidos, erros)
+                _revalidar_favorecido_contrato(pagina, ig_contrato, erros)
                 btn = pagina.locator("button[name='confirma-dados-pco']").first
                 btn.wait_for(state="visible", timeout=5000)
                 btn.click()

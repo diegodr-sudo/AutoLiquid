@@ -137,8 +137,24 @@ def buscar_ig(sarf_code: str) -> str:
     Retorna o código IG correspondente ao SARF.
     Retorna '' se não encontrado.
     """
+    sarf = str(sarf_code).strip()
     tabela = _carregar()
-    return tabela.get(str(sarf_code).strip(), "")
+    ig = tabela.get(sarf, "")
+    if ig:
+        return ig
+
+    try:
+        from services import turso_service
+
+        if turso_service.turso_configurado():
+            mapa = turso_service.obter_contratos_ic_de_para()
+            if mapa:
+                tabela.update({str(k).strip(): str(v).strip() for k, v in mapa.items() if str(k).strip()})
+                return tabela.get(sarf, "")
+    except Exception as e:
+        log.warning("Falha ao consultar contrato %s no Turso: %s", sarf, e)
+
+    return ""
 
 
 def buscar_ig_por_contrato(numero_contrato: str):

@@ -23,6 +23,27 @@ from comprasnet.principal_helpers import (
 )
 
 
+def _localizar_campo_contrato(pagina):
+    rotulos = [
+        "Favorecido do Contrato",
+        "Código do Contrato",
+        "Codigo do Contrato",
+        "Código de Contrato",
+        "Codigo de Contrato",
+    ]
+    for rotulo in rotulos:
+        campo = pagina.locator(
+            f"xpath=//*[normalize-space(text())='{rotulo}']"
+            "/following::input[1]"
+        ).first
+        try:
+            campo.wait_for(state="visible", timeout=1200)
+            return campo
+        except Exception:
+            continue
+    raise RuntimeError("campo de contrato não encontrado")
+
+
 def _preencher_situacao_DSP001(
     pagina, num_empenho_pdf, cfg, erros, dados_extraidos=None, deve_parar=None
 ):
@@ -69,10 +90,7 @@ def _preencher_situacao_DSP001(
 
         if ig_code:
             try:
-                campo_fav = pagina.locator(
-                    "xpath=//*[normalize-space(text())='Favorecido do Contrato']"
-                    "/following::input[1]"
-                ).first
+                campo_fav = _localizar_campo_contrato(pagina)
                 _preencher_campo_com_retry(
                     pagina, campo_fav, ig_code, erros,
                     descricao="Favorecido do Contrato",

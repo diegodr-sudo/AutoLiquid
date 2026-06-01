@@ -1584,12 +1584,19 @@ export default function HomePage() {
     const alvo = normalizeQueueCell(numeroProcesso);
     if (!alvo) return false;
     const alvoDigits = alvo.replace(/\D/g, "");
+    const alvoSolarSeq = alvo.match(/\b23080\.(\d{1,6})\/\d{4}/)?.[1] ?? "";
+    const alvoKeys = [alvoDigits, alvoSolarSeq, alvoSolarSeq.replace(/^0+/, "")]
+      .filter(Boolean);
     const candidatos = [row.numeroProcesso, row.processoSolar]
       .map(normalizeQueueCell)
       .filter(Boolean);
     return candidatos.some((candidato) => {
       if (candidato === alvo) return true;
       const candidatoDigits = candidato.replace(/\D/g, "");
+      const candidatoSolarSeq = candidato.match(/\b23080\.(\d{1,6})\/\d{4}/)?.[1] ?? "";
+      const candidatoKeys = [candidatoDigits, candidatoSolarSeq, candidatoSolarSeq.replace(/^0+/, "")]
+        .filter(Boolean);
+      if (candidatoKeys.some((key) => alvoKeys.includes(key))) return true;
       return Boolean(
         alvoDigits &&
         candidatoDigits &&
@@ -3611,6 +3618,18 @@ export default function HomePage() {
         for (const row of rowsParaConcluir) {
           await toggleQueueConclusao(row);
         }
+        if (rowsParaConcluir.length === 0 && registroPendente.numeroProcesso) {
+          try {
+            await saveFilaConclusao({
+              numeroProcesso: registroPendente.numeroProcesso,
+              solPagamento: "",
+              concluido: true,
+            });
+          } catch (error) {
+            console.warn("Registro salvo, mas não foi possível marcar a fila automaticamente.", error);
+            setErroFila(error instanceof Error ? error.message : "Não foi possível marcar a fila automaticamente.");
+          }
+        }
         setActiveMainTab("registro");
       }
       if (typeof window !== "undefined") {
@@ -3641,15 +3660,15 @@ export default function HomePage() {
     const defaultRule = normalizedConfig.regras.find((rule) => rule.id === ALERTA_SERVICO_REGRA_PADRAO_ID) ?? ALERTA_SERVICO_REGRA_PADRAO;
     const customRules = normalizedConfig.regras.filter((rule) => rule.id !== ALERTA_SERVICO_REGRA_PADRAO_ID);
     const renderRuleField = (title: string, value: string, tone = "text-muted-foreground") => (
-      <span className="grid min-w-0 gap-1">
+      <span className="grid min-w-[96px] flex-[1_1_112px] gap-1">
         <span className="text-[10px] font-semibold uppercase text-muted-foreground">{title}</span>
         <span className={`min-w-0 truncate text-sm ${tone}`}>{value}</span>
       </span>
     );
 
     const renderRuleContent = (rule: AlertaServicoRule, label: string) => (
-      <div className="grid min-w-0 gap-3 lg:grid-cols-[88px_minmax(260px,1.6fr)_76px_minmax(120px,0.9fr)_minmax(120px,0.9fr)_minmax(120px,0.9fr)] lg:items-center">
-        <label className="inline-flex h-8 w-fit items-center gap-2 rounded-full border border-glass-border bg-muted/20 px-3 text-xs text-muted-foreground">
+      <div className="flex min-w-0 flex-wrap items-end gap-3">
+        <label className="inline-flex h-8 flex-none items-center gap-2 rounded-full border border-glass-border bg-muted/20 px-3 text-xs text-muted-foreground">
           <input
             type="checkbox"
             checked={rule.active}
@@ -3658,7 +3677,7 @@ export default function HomePage() {
           />
           {rule.active ? "Ativa" : "Inativa"}
         </label>
-        <span className="grid min-w-0 gap-1">
+        <span className="grid min-w-[220px] flex-[2_1_240px] gap-1">
           <span className="text-[10px] font-semibold uppercase text-muted-foreground">Regra de vencimento</span>
           <span
             className={`inline-flex min-h-8 max-w-full items-center rounded-full border px-3 py-1 text-xs font-medium leading-4 ${
@@ -3670,7 +3689,7 @@ export default function HomePage() {
             <span className="truncate">{formatAlertaServicoAcao(rule)}</span>
           </span>
         </span>
-        <span className="grid min-w-0 gap-1">
+        <span className="grid min-w-[72px] flex-none gap-1">
           <span className="text-[10px] font-semibold uppercase text-muted-foreground">Perfil</span>
           <span className="inline-flex h-7 w-fit items-center rounded-full bg-secondary/70 px-2 text-[10px] font-semibold uppercase text-muted-foreground">
             {label}
@@ -3686,16 +3705,22 @@ export default function HomePage() {
       <div className="rounded-2xl border border-red-500/15 bg-red-500/5 p-4 text-sm text-foreground">
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
           <div className="min-w-0">
-            <span className="block font-medium">Alerta de vencimento</span>
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="font-medium">Alerta de vencimento</span>
+              <GlobalScopeIcon
+                label="Global"
+                message="Global: as regras de alerta de vencimento ficam salvas no Turso e são compartilhadas por todos os usuários."
+              />
+            </div>
             <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
               Define o vencimento das NFs de serviço e quando elas aparecem destacadas na fila.
             </p>
           </div>
-          <div className="flex flex-wrap items-end gap-2">
+          <div className="flex min-w-0 flex-wrap items-end gap-2">
             {savingAlertaServicoConfig ? (
               <Loader2 className="mb-2 h-4 w-4 animate-spin text-muted-foreground" />
             ) : null}
-            <label className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-[auto_80px_auto] sm:items-center">
+            <label className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Destacar na fila</span>
               <input
                 type="number"
@@ -3720,10 +3745,10 @@ export default function HomePage() {
         <div className="mt-3 overflow-hidden rounded-2xl border border-glass-border bg-background">
           <div className="divide-y divide-glass-border">
             <div
-              className="grid min-w-0 gap-3 px-3 py-3 lg:grid-cols-[minmax(0,1fr)_72px] lg:items-center"
+              className="grid min-w-0 gap-3 px-3 py-3 xl:grid-cols-[minmax(0,1fr)_72px] xl:items-center"
             >
               {renderRuleContent(defaultRule, "padrão")}
-              <div className="flex items-center gap-1 lg:justify-end">
+              <div className="flex items-center gap-1 xl:justify-end">
                 <SimpleTooltip content="Editar alerta padrão" side="top">
                   <button
                     type="button"
@@ -3748,28 +3773,28 @@ export default function HomePage() {
             {customRules.map((rule) => (
               <div
                 key={rule.id}
-                className="grid min-w-0 gap-3 px-3 py-3 lg:grid-cols-[minmax(0,1fr)_72px] lg:items-center"
+                className="grid min-w-0 gap-3 px-3 py-3 xl:grid-cols-[minmax(0,1fr)_72px] xl:items-center"
               >
                 {renderRuleContent(rule, "exceção")}
-                <div className="flex items-center gap-1 lg:justify-end">
-                <SimpleTooltip content="Editar exceção" side="top">
-                  <button
-                    type="button"
-                    onClick={() => openEditAlertaServicoRule(rule)}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:text-foreground"
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </button>
-                </SimpleTooltip>
-                <SimpleTooltip content="Excluir exceção" side="top">
-                  <button
-                    type="button"
-                    onClick={() => removeAlertaServicoRule(rule.id)}
-                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:border-red-500/40 hover:text-red-600"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </SimpleTooltip>
+                <div className="flex items-center gap-1 xl:justify-end">
+                  <SimpleTooltip content="Editar exceção" side="top">
+                    <button
+                      type="button"
+                      onClick={() => openEditAlertaServicoRule(rule)}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                  </SimpleTooltip>
+                  <SimpleTooltip content="Excluir exceção" side="top">
+                    <button
+                      type="button"
+                      onClick={() => removeAlertaServicoRule(rule.id)}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-muted-foreground transition-colors hover:border-red-500/40 hover:text-red-600"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </SimpleTooltip>
                 </div>
               </div>
             ))}
@@ -4934,7 +4959,7 @@ export default function HomePage() {
             </div>
 
             <div className="scrollable-surface min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
-              <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+              <div className="grid min-w-0 gap-4">
                 <div className="min-w-0 space-y-4">
                   <section className="min-w-0 rounded-2xl border border-glass-border bg-muted/20 p-4">
                     <div className="mb-3">

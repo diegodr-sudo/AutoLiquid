@@ -392,8 +392,10 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
         # "Contrato S   Número do Contrato: 00160/2020"
         # "Contrato ? S   Número do Contrato: 00058/2023"
         # "Número do Contrato: 00058/2023"
+        # Em alguns PDFs o pdfplumber cola os rótulos:
+        # "Contrato? S NúmerodoContrato: 00077/2022"
         match_contrato = re.search(
-            r"(?:Contrato\s*\??\s*(?:S|SIM|N|NÃO|NAO)?\s+)?N[úu]mero\s+do\s+Contrato:\s*(\d+/\d{4})",
+            r"(?:Contrato\s*\??\s*(?:S|SIM|N|NÃO|NAO)?\s*)?N[úu]mero\s*do\s*Contrato\s*:\s*(\d+/\d{4})",
             texto,
             re.IGNORECASE,
         )
@@ -420,7 +422,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
         lista_bolsas = []
         bloco_documentos = ""
         match_docs = re.search(
-            r"Documentos\s+Fiscais:(.*?)(?:Dados\s+Orçamentários:|Detalhamento\s+de\s+Fonte:|RESUMO:)",
+            r"Documentos\s*Fiscais\s*:(.*?)(?:Dados\s*Orçamentários\s*:|Detalhamento\s*de\s*Fonte\s*:|RESUMO\s*:)",
             texto,
             re.DOTALL | re.IGNORECASE,
         )
@@ -474,7 +476,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
                     continue
 
                 m_nf = re.match(
-                    r"NF\s+(Material|Servi[çc]o)\s+([\d.]+)\s+([\d-]+)\s+([\d-]+)\s+([\d,.]+)$",
+                    r"NF\s*(Material|Servi[çc]o)\s+([\d.]+)\s+([\d-]+)\s+([\d-]+)\s+([\d,.]+)$",
                     linha,
                     re.IGNORECASE,
                 )
@@ -505,7 +507,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
 
         if not lista_notas:
             notas_encontradas = re.findall(
-                r"NF\s+(Material|Servi[çc]o)\s+([\d.]+)\s+([\d-]+)\s+([\d-]+)\s+([\d,\.]+)",
+                r"NF\s*(Material|Servi[çc]o)\s+([\d.]+)\s+([\d-]+)\s+([\d-]+)\s+([\d,\.]+)",
                 texto, re.IGNORECASE
             )
             for nota in notas_encontradas:
@@ -563,7 +565,11 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
         # ── 4. Fonte e Convênio ───────────────────────────────────────────────
         # Fonte pode ser numérica (1000000000) ou alfanumérica (1000A0008U) — sempre 10 chars
         # Convênio: 8 dígitos que precedem a fonte na linha do Detalhamento
-        match_detalhe = re.search(r"Detalhamento de Fonte:(.*)RESUMO:", texto, re.DOTALL)
+        match_detalhe = re.search(
+            r"Detalhamento\s*de\s*Fonte\s*:(.*)RESUMO\s*:",
+            texto,
+            re.DOTALL | re.IGNORECASE,
+        )
         fonte_encontrada = ""
         tem_convenio = False
 
@@ -618,16 +624,16 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
 
         # ── 6. Resumo ─────────────────────────────────────────────────────────
         resumo = {'Valor Bruto': '', 'Total Deduções': '', 'Valor Líquido': '', 'Valor Encargos': ''}
-        match_resumo = re.search(r"RESUMO:(.*)", texto, re.DOTALL | re.IGNORECASE)
+        match_resumo = re.search(r"RESUMO\s*:(.*)", texto, re.DOTALL | re.IGNORECASE)
         if match_resumo:
             bloco_resumo = match_resumo.group(1)
             def _ev(pattern, bloco):
                 m = re.search(pattern, bloco, re.IGNORECASE)
                 return m.group(1).strip() if m else ''
-            resumo['Valor Bruto']    = _ev(r"Valor\s+Bruto:\s*([\d,.]+)", bloco_resumo)
+            resumo['Valor Bruto']    = _ev(r"Valor\s*Bruto\s*:\s*([\d,.]+)", bloco_resumo)
             resumo['Total Deduções'] = _ev(r"Dedu[çc][õo]es:\s*([\d,.]+)", bloco_resumo)
-            resumo['Valor Líquido']  = _ev(r"Valor\s+L[íi]quido\s+([\d,.]+)", bloco_resumo)
-            resumo['Valor Encargos'] = _ev(r"Valor\s+Encargos:\s*([\d,.]+)", bloco_resumo)
+            resumo['Valor Líquido']  = _ev(r"Valor\s*L[íi]quido\s*:?\s*([\d,.]+)", bloco_resumo)
+            resumo['Valor Encargos'] = _ev(r"Valor\s*Encargos\s*:\s*([\d,.]+)", bloco_resumo)
         dados_extraidos['Resumo'] = resumo
 
         # ── 7. Deduções ───────────────────────────────────────────────────────
@@ -637,7 +643,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
         lista_deducoes = []
         codigo_situacao_siafi = obter_mapa_codigo_siafi()
         match_ded_bloco = re.search(
-            r"Dedu[çc][õo]es:(.*?)(?=Detalhamento\s+de\s+Fonte:|RESUMO:)",
+            r"Dedu[çc][õo]es\s*:(.*?)(?=Detalhamento\s*de\s*Fonte\s*:|RESUMO\s*:)",
             texto, re.DOTALL | re.IGNORECASE
         )
         if match_ded_bloco:

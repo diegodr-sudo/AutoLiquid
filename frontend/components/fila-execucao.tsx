@@ -140,21 +140,7 @@ export function FilaExecucao({
 }: FilaExecucaoProps) {
   const concluidos = etapas.filter((e) => e.status === "concluido").length;
   const [deducoesExpandidas, setDeducoesExpandidas] = useState(false);
-  const deducoesVisiveis = Array.from(
-    deducoes.reduce((acc, deducao) => {
-      const siafi = String(deducao.siafi || "").toUpperCase();
-      if (!acc.has(siafi)) {
-        acc.set(siafi, {
-          ...deducao,
-          tipo: siafi,
-          valor: deducoes
-            .filter((item) => String(item.siafi || "").toUpperCase() === siafi)
-            .reduce((total, item) => total + item.valor, 0),
-        });
-      }
-      return acc;
-    }, new Map<string, Deducao>())
-  ).map(([_, item]) => item);
+  const deducoesVisiveis = deducoes;
 
   return (
     <GlassCard className="flex h-full flex-col">
@@ -263,8 +249,10 @@ export function FilaExecucao({
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-xs font-medium text-foreground">
                               {ded.siafi}
+                              {ded.codigo && ded.codigo !== "—" ? ` · Cód. ${ded.codigo}` : ""}
                             </p>
                             <p className="text-[10px] text-muted-foreground">
+                              {ded.rendimento && ded.rendimento !== "—" ? `Rend. ${ded.rendimento} · ` : ""}
                               Recolhido - {formatCurrency(ded.valor)}
                             </p>
                           </div>

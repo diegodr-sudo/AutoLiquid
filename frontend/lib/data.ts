@@ -121,6 +121,7 @@ export interface Deducao {
   tipo: string
   codigo: string
   siafi: string
+  rendimento?: string
   baseCalculo: number
   valor: number
   status: "aguardando" | "executando" | "concluido" | "erro"

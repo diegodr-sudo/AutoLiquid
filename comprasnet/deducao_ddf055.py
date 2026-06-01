@@ -59,6 +59,7 @@ def executar_ddf055(
     # Import tardio — evita circular com comprasnet_deducao
     from comprasnet.deducao import (
         _verificar_interrupcao,
+        _aguardar_portal_limpo_entre_tipos,
         _preencher_deducao_darf_total,
     )
 
@@ -87,6 +88,9 @@ def executar_ddf055(
 
     for idx, ded in enumerate(ddf055_list):
         _verificar_interrupcao(deve_parar)
+        if idx > 0:
+            _aguardar_portal_limpo_entre_tipos(pagina, timeout_ms=30000)
+
         siafi = str(ded.get("Situação SIAFI") or "DDF055").strip().upper()
         codigo_ref = str(ded.get("Código") or ded.get("CÃ³digo") or "").strip()
         datas_calc = calcular_datas(

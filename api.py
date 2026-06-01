@@ -754,23 +754,31 @@ def _carregar_regras_alerta_servico() -> tuple[dict[str, Any], str]:
     return _normalizar_regras_alerta_servico({"diasUteisPadrao": dias}), "default"
 
 
-def _salvar_regras_alerta_servico(config: dict[str, Any]) -> None:
+def _salvar_regras_alerta_servico(config: dict[str, Any]) -> str:
     errors: list[str] = []
+    saved_sources: list[str] = []
     rows = [config]
     if _fonte_dados_habilitada("tabelas_operacionais", "turso"):
         try:
             turso = _turso_service()
             if turso.turso_configurado():
                 turso.salvar_tabela_operacional("fila_alerta_servico_regras", rows)
+                saved_sources.append("turso")
+            else:
+                errors.append("Turso: credenciais não configuradas")
         except Exception as exc:
             errors.append(f"Turso: {exc}")
     if _fonte_dados_habilitada("tabelas_operacionais", "supabase"):
         try:
             _postgres_service().salvar_tabela_operacional("fila_alerta_servico_regras", rows)
+            saved_sources.append("postgres")
         except Exception as exc:
             errors.append(f"Supabase: {exc}")
+    if saved_sources:
+        return "+".join(saved_sources)
     if errors:
         raise RuntimeError("; ".join(errors))
+    raise RuntimeError("Nenhuma fonte compartilhada está habilitada para salvar os alertas.")
 
 
 DEDUCOES_DATAS_GRUPOS_PADRAO: list[dict[str, Any]] = [
@@ -2057,6 +2065,7 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
             "tipo": ded.get("Situação", ""),
             "codigo": ded.get("Código", ""),
             "siafi": ded.get("Situação SIAFI", ""),
+            "rendimento": ded.get("Rendimento", ""),
             "baseCalculo": _brl_para_float(ded.get("Base Cálculo", "0")),
             "valor": _brl_para_float(ded.get("Valor", "0")),
             "status": _ded_status_map.get(str(i + 1), _ded_status_map.get(i + 1, "aguardando")),
@@ -3050,7 +3059,7 @@ def obter_setores_historico_fila(limite: int = Query(default=300, ge=1, le=1000)
 def salvar_regras_alerta_servico(payload: AlertaServicoConfigPayload) -> dict[str, Any]:
     config = _normalizar_regras_alerta_servico(payload)
     try:
-        _salvar_regras_alerta_servico(config)
+        source = _salvar_regras_alerta_servico(config)
     except Exception as exc:
         raise HTTPException(
             status_code=503,
@@ -3066,7 +3075,7 @@ def salvar_regras_alerta_servico(payload: AlertaServicoConfigPayload) -> dict[st
     _broadcast_fila_event({"type": "alerta-servico-regras-atualizadas"})
     return {
         "success": True,
-        "config": config,
+        "config": {**config, "source": source},
     }
 
 
@@ -3458,9 +3467,26 @@ def atualizar_conclusao_fila(payload: FilaConclusaoPayload) -> dict[str, Any]:
 
     row_key = f"{numero_processo}::{sol_pagamento}"
     updated_rows: list[dict[str, Any]] =[]
+    numero_digits = re.sub(r"\D+", "", numero_processo)
+    numero_solar_match = re.search(r"\b23080\.(\d{1,6})/\d{4}", numero_processo)
+    numero_solar_seq = numero_solar_match.group(1) if numero_solar_match else ""
+    numero_keys = {item for item in (numero_digits, numero_solar_seq, numero_solar_seq.lstrip("0")) if item}
     for row in FILA_PROCESSOS_CACHE.get("rows", []) or[]:
         current_key = f"{str(row.get('Número Processo') or '').strip()}::{str(row.get('Sol. Pagamento') or '').strip()}"
-        if current_key == row_key:
+        current_numero = str(row.get("Número Processo") or "").strip()
+        current_digits = re.sub(r"\D+", "", current_numero)
+        current_solar_match = re.search(r"\b23080\.(\d{1,6})/\d{4}", current_numero)
+        current_solar_seq = current_solar_match.group(1) if current_solar_match else ""
+        current_keys = {item for item in (current_digits, current_solar_seq, current_solar_seq.lstrip("0")) if item}
+        same_row = current_key == row_key or (
+            bool(numero_processo)
+            and not sol_pagamento
+            and (
+                current_numero == numero_processo
+                or bool(numero_keys.intersection(current_keys))
+            )
+        )
+        if same_row:
             next_row = dict(row)
             next_row["__concluido"] = "1" if result.get("concluido") else ""
             next_row["__concluido_por"] = str(result.get("concluidoPor") or "")
@@ -4832,6 +4858,13 @@ def registrar_liquidacao(payload: RegistroLiquidacaoPayload) -> dict[str, Any]:
                 servidor_nome=payload.servidorNome,
                 servidor_username=payload.servidorUsername,
             )
+            if payload.finalizada and payload.numeroProcesso:
+                _turso_service().salvar_conclusao_fila(
+                    numero_processo=payload.numeroProcesso,
+                    sol_pagamento="",
+                    concluido=True,
+                    autor=payload.servidorNome or payload.servidorUsername,
+                )
             try:
                 _local_cache_service().salvar_registro_liquidacao(payload_local, sincronizado=True)
             except Exception:

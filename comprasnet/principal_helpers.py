@@ -490,8 +490,13 @@ def _comparar_empenhos_pdf_web(empenhos_pdf: list, empenhos_web: list) -> list[s
         Empenho 2026NE000136 — Valor: Web=149.40 | PDF=51683.15
         Empenho ausente no IC: 2026NE000136=51683.15
         Empenho exclusivo no IC: 2022NE002642=149.40
+    Empenhos presentes nos dois lados com o mesmo valor não geram linha.
     """
     from comprasnet.base import normalizar_valor
+
+    def _valor_cmp(valor) -> str:
+        texto = re.sub(r"[^\d,.\-]+", "", str(valor or ""))
+        return normalizar_valor(texto)
 
     linhas: list[str] = []
 
@@ -500,14 +505,14 @@ def _comparar_empenhos_pdf_web(empenhos_pdf: list, empenhos_web: list) -> list[s
         numero = _formatar_numero_empenho(e.get("Empenho", ""))
         if not numero:
             continue
-        pdf.append({"numero": numero, "valor": normalizar_valor(e.get("Valor", ""))})
+        pdf.append({"numero": numero, "valor": _valor_cmp(e.get("Valor", ""))})
 
     web = []
     for e in (empenhos_web or []):
         numero = _formatar_numero_empenho(e.get("numero", ""))
         if not numero:
             continue
-        web.append({"numero": numero, "valor": normalizar_valor(e.get("valor", ""))})
+        web.append({"numero": numero, "valor": _valor_cmp(e.get("valor", ""))})
 
     web_por_num = {e["numero"]: e for e in web}
     nums_pdf = {e["numero"] for e in pdf}
@@ -517,10 +522,11 @@ def _comparar_empenhos_pdf_web(empenhos_pdf: list, empenhos_web: list) -> list[s
         if w is None:
             linhas.append(f"Empenho ausente no IC: {e['numero']}={e['valor'] or '—'}")
             continue
-        linhas.append(
-            f"Empenho {e['numero']} — Valor: "
-            f"Web={w['valor'] or '—'} | PDF={e['valor'] or '—'}"
-        )
+        if (w["valor"] or "") != (e["valor"] or ""):
+            linhas.append(
+                f"Empenho {e['numero']} — Valor: "
+                f"Web={w['valor'] or '—'} | PDF={e['valor'] or '—'}"
+            )
 
     for e in web:
         if e["numero"] not in nums_pdf:

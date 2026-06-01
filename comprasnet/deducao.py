@@ -899,6 +899,25 @@ def _read_input_value(pagina, fid: str) -> str:
         return ""
 
 
+def _set_input_silente(pagina, fid: str, valor: str) -> bool:
+    try:
+        return bool(pagina.evaluate(
+            """([id, val]) => {
+                const el = document.getElementById(id);
+                if (!el) return false;
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                el.focus();
+                if (setter) setter.call(el, val); else el.value = val;
+                el.defaultValue = val;
+                el.setAttribute('value', val);
+                return true;
+            }""",
+            [fid, str(valor or "")],
+        ))
+    except Exception:
+        return False
+
+
 def _valor_campo_equivalente(atual: str, esperado: str, tolerancia: float = 0.01) -> bool:
     atual_txt = str(atual or "").strip()
     esperado_txt = str(esperado or "").strip()
@@ -1042,24 +1061,29 @@ def _abrir_aba_deducao(pagina) -> None:
 
 def _esperar_formulario_deducao_estabilizar(pagina, did: str, timeout_ms: int = 20000) -> None:
     """Espera os campos principais da deduÃ§Ã£o existirem e o botÃ£o confirmar estar disponÃ­vel."""
-    pagina.wait_for_function(
-        """(deducaoId) => {
-            const visivel = (el) => !!el && (!!el.offsetParent || el.type === 'hidden');
-            const match = (prefixo) => {
-                if (!deducaoId) return null;
-                return document.getElementById(`${prefixo}${deducaoId}`);
-            };
-            const editavel = (el) => visivel(el) && !el.disabled && !el.readOnly;
-            const situacao = match('sfdeducaocodsit');
-            const venc = match('sfdeducaodtvenc');
-            const pag = match('sfdeducaodtpgtoreceb');
-            const valor = match('sfdeducaovlr');
-            const confirmar = document.getElementById(`confirma-dados-deducao-${deducaoId}`);
-            return editavel(situacao) && editavel(venc) && editavel(pag) && editavel(valor) && visivel(confirmar);
-        }""",
-        arg=did,
-        timeout=timeout_ms,
-    )
+    try:
+        pagina.wait_for_function(
+            """(deducaoId) => {
+                const visivel = (el) => !!el && (!!el.offsetParent || el.type === 'hidden');
+                const match = (prefixo) => {
+                    if (!deducaoId) return null;
+                    return document.getElementById(`${prefixo}${deducaoId}`);
+                };
+                const editavel = (el) => visivel(el) && !el.disabled && !el.readOnly;
+                const situacao = match('sfdeducaocodsit');
+                const venc = match('sfdeducaodtvenc');
+                const pag = match('sfdeducaodtpgtoreceb');
+                const valor = match('sfdeducaovlr');
+                const confirmar = document.getElementById(`confirma-dados-deducao-${deducaoId}`);
+                return editavel(situacao) && editavel(venc) && editavel(pag) && editavel(valor) && visivel(confirmar);
+            }""",
+            arg=did,
+            timeout=timeout_ms,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Formulário da dedução {did or 'sem id'} não estabilizou em {timeout_ms}ms."
+        ) from exc
 
 
 def _fixar_datas_deducao(pagina, did: str, data_venc: str, erros: list) -> str:
@@ -1306,12 +1330,14 @@ def _garantir_sem_deducao_em_edicao(pagina, timeout_ms: int = 8000) -> None:
                             return valor !== 'true' && visivel(botao);
                         });
                 }""",
-                timeout=15000,
+                timeout=max(timeout_ms, 30000),
             )
             print("    [Recuperação] Dedução fechada com sucesso.")
         except Exception as e2:
             print(f"    [Recuperação] Ainda há dedução aberta após tentativa de fechar: {e2}")
-            raise
+            raise RuntimeError(
+                f"Dedução anterior continuou aberta após recuperação ({fechadas} fechada(s))."
+            ) from e2
 
 
 def _verificar_interrupcao(deve_parar=None):
@@ -2501,10 +2527,14 @@ def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
     """Cria e preenche uma entrada DDR001 para uma Nota Fiscal especÃ­fica."""
 
     iss_br  = _formatar_valor_br(f"{iss_nf:.2f}")
-    num_nf  = nf.get('NÃºmero da Nota', '')
+    num_nf = (
+        nf.get("Número da Nota", "")
+        or nf.get("Numero da Nota", "")
+        or nf.get("NÃºmero da Nota", "")
+    )
     print(f"  â†’ DDR001 NF {num_nf} [{idx+1}/{total}]  ISS={iss_br}  Venc={data_venc}")
     _verificar_interrupcao(deve_parar)
-    _garantir_sem_deducao_em_edicao(pagina, timeout_ms=15000)
+    _garantir_sem_deducao_em_edicao(pagina, timeout_ms=30000)
 
     # â"€â"€ 1. Cria nova deduÃ§Ã£o â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     did = _clicar_nova_deducao(pagina)
@@ -2519,7 +2549,7 @@ def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
 
     # ── 3. Situação → DDR001 (com retry — AJAX pode resetar o select) ───────────
     try:
-        _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=15000)
+        _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=30000)
     except Exception:
         pass
 
@@ -2547,7 +2577,7 @@ def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
         return False
 
     try:
-        _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=15000)
+        _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=30000)
     except Exception:
         pass
     _verificar_interrupcao(deve_parar)
@@ -2556,14 +2586,14 @@ def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
     print(f"    [Pré-expansão DDR001] Abrindo recolhedor e pré-doc...")
     rid_expandido: str = ""
     try:
-        pagina.locator(f"#novo-recolhedor{did}").wait_for(state="visible", timeout=25000)
+        pagina.locator(f"#novo-recolhedor{did}").wait_for(state="visible", timeout=30000)
     except Exception as ex_wait_rid:
-        print(f"      [Aviso] novo-recolhedor{did} não visível em 10s: {ex_wait_rid}")
+        print(f"      [Aviso] novo-recolhedor{did} não visível em 30s: {ex_wait_rid}")
     for _tent_rid in range(3):  # 3 tentativas para dom mais pesado
         try:
             rid_ant = _obter_rid(pagina, did)
             pagina.locator(f"#novo-recolhedor{did}").click()
-            rid_expandido = _aguardar_novo_recolhedor(pagina, did, rid_anterior=rid_ant, timeout_ms=20000)
+            rid_expandido = _aguardar_novo_recolhedor(pagina, did, rid_anterior=rid_ant, timeout_ms=30000)
             print(f"      recolhedor aberto: rid={rid_expandido}")
             break
         except Exception as ex_rid:
@@ -2851,7 +2881,12 @@ def _preencher_deducao_darf_total(
         "IN 2110/22" if siafi == "DDF050" else "IN 1234/12",
     )
 
-    print(f"  â†’ {siafi} [{idx+1}/{total}]  Valor={valor_item_br}  Venc={data_venc}")
+    detalhe_codigo = f"  Código={codigo_darf}" if codigo_darf else ""
+    detalhe_rendimento = f"  Rendimento={natureza}" if siafi != "DDF050" and natureza and natureza != "—" else ""
+    print(
+        f"  â†’ {siafi} [{idx+1}/{total}]"
+        f"{detalhe_codigo}{detalhe_rendimento}  Valor={valor_item_br}  Venc={data_venc}"
+    )
     _verificar_interrupcao(deve_parar)
     _garantir_sem_deducao_em_edicao(pagina, timeout_ms=8000)
 
@@ -3005,21 +3040,23 @@ def _preencher_deducao_darf_total(
     # Tab/blur; "1162" não é município → AJAX limpa o campo. Setter silente.
     if codigo_darf:
         try:
-            pagina.evaluate(
-                """([id, val]) => {
-                    const el = document.getElementById(id);
-                    if (!el) return false;
-                    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-                    el.focus();
-                    if (setter) setter.call(el, val); else el.value = val;
-                    el.defaultValue = val;
-                    el.setAttribute('value', val);
-                    return true;
-                }""",
-                [f"txtinscra{did}", str(codigo_darf)],
-            )
+            if not _set_input_silente(pagina, f"txtinscra{did}", str(codigo_darf)):
+                erros.append(f"Código de Recolhimento DARF: campo txtinscra{did} não encontrado.")
         except Exception as e:
             erros.append(f"Código de Recolhimento DARF: {e}")
+
+    if siafi != "DDF050" and natureza and natureza != "—":
+        natureza_id = f"txtinscrb{did}"
+        if not _set_input_silente(pagina, natureza_id, natureza):
+            erros.append(f"Natureza de Rendimento: campo {natureza_id} não encontrado.")
+        else:
+            natureza_atual = _read_input_value(pagina, natureza_id)
+            if str(natureza_atual or "").strip() != str(natureza).strip():
+                erros.append(
+                    f"Natureza de Rendimento ({natureza_id}): esperado {natureza}, ficou {natureza_atual or 'vazio'}."
+                )
+            else:
+                print(f"    Natureza de Rendimento final: {natureza}")
 
     # ── Confirmar (atômico: seta datas + clica no mesmo tick JS) ─────────────
     print(f"    Confirmando {siafi} (did={did})")
@@ -3738,7 +3775,7 @@ def _aguardar_portal_limpo_entre_tipos(pagina, timeout_ms: int = 20000) -> None:
     except Exception as e:
         log.warning("[Transição] Portal não ficou limpo em %dms: %s", timeout_ms, e)
         print(f"    [Transição] Aviso: portal não confirmou limpeza em {timeout_ms}ms — tentando recuperação.")
-        _garantir_sem_deducao_em_edicao(pagina, timeout_ms=15000)
+        _garantir_sem_deducao_em_edicao(pagina, timeout_ms=max(timeout_ms, 30000))
         pagina.wait_for_function(
             """() => {
                 const visivel = (el) =>
@@ -3747,7 +3784,7 @@ def _aguardar_portal_limpo_entre_tipos(pagina, timeout_ms: int = 20000) -> None:
                 const btnNova = document.getElementById('nova-aba-situacao-deducao');
                 return (!overlay || !visivel(overlay)) && visivel(btnNova);
             }""",
-            timeout=15000,
+            timeout=max(timeout_ms, 30000),
         )
         print("    [Transição] Portal recuperado após espera extra ✓")
 

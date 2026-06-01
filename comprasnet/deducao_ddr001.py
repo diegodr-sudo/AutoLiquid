@@ -127,7 +127,7 @@ def executar_ddr001(
             # Garante comportamento idêntico para 1ª, 2ª, 3ª, 4ª... NF:
             # sem AJAX residual, sem overlay, botão '+' disponível + buffer 1.5s.
             # Para a 1ª NF o portal já está limpo; a função retorna rapidamente.
-            _aguardar_portal_limpo_entre_tipos(pagina)
+            _aguardar_portal_limpo_entre_tipos(pagina, timeout_ms=30000)
             try:
                 nf_val = float(normalizar_valor(nf.get("Valor", "0")))
             except Exception:
