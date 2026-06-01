@@ -63,6 +63,19 @@ class SolarFilaExtractor:
         self.config = config
 
     def extract(self) -> pd.DataFrame:
+        # Garante que esta thread não tenha um loop asyncio ativo antes de usar
+        # a API síncrona do Playwright. O endpoint /api/fila-processos é síncrono
+        # e roda numa thread do pool do FastAPI/uvicorn, que pode herdar/detectar
+        # o event loop do servidor, disparando o erro:
+        # "It looks like you are using Playwright Sync API inside the asyncio loop."
+        # Mesmo padrão usado em services/chrome_service.py.
+        import asyncio
+
+        try:
+            asyncio.set_event_loop(None)
+        except Exception:
+            pass
+
         with sync_playwright() as playwright:
             # Estratégia preferencial sem senha: reutilizar sessão autenticada
             # de um Chrome já aberto com depuração remota.
