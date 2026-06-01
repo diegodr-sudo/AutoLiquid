@@ -25,6 +25,7 @@ CONFIG_APP_PADRAO = {
     "turso_auth_token": "",
     "nome_usuario": "",
     "nf_servico_alerta_dias_uteis": 3,
+    "tipos_documento_lf": ["NF Serviço", "Fatura", "Boleto"],
     "rocket_chat_url": "https://chat.ufsc.br",
     "rocket_chat_user_id": "",
     "rocket_chat_auth_token": "",

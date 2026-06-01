@@ -191,6 +191,7 @@ export interface AppSettings {
   tursoAuthToken: string
   nomeUsuario: string
   nfServicoAlertaDiasUteis: number
+  tiposDocumentoLf: string[]
   rocketChatUrl: string
   rocketChatUserId: string
   rocketChatAuthToken: string
@@ -345,9 +346,17 @@ export interface AlertaServicoRule {
   valorAcao: string
 }
 
+export interface AlertaSetorRule {
+  id: string
+  active: boolean
+  setor: string
+  mensagem: string
+}
+
 export interface AlertaServicoConfig {
   diasUteisPadrao: number
   regras: AlertaServicoRule[]
+  alertasSetor: AlertaSetorRule[]
   source?: string
 }
 

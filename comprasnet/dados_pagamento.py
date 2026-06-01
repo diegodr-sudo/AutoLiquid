@@ -57,6 +57,49 @@ def _tem_fatura(dados_extraidos: dict) -> bool:
     )
 
 
+def _tem_nf_servico(dados_extraidos: dict) -> bool:
+    return any(
+        "NF" in str(nota.get("Tipo", "") or "").upper()
+        and "SERVI" in str(nota.get("Tipo", "") or "").upper()
+        for nota in dados_extraidos.get("Notas Fiscais", []) or []
+    )
+
+
+def _normalizar_tipo_documento(value) -> str:
+    texto = str(value or "").upper()
+    return (
+        texto.replace("Á", "A")
+        .replace("À", "A")
+        .replace("Â", "A")
+        .replace("Ã", "A")
+        .replace("É", "E")
+        .replace("Ê", "E")
+        .replace("Í", "I")
+        .replace("Ó", "O")
+        .replace("Ô", "O")
+        .replace("Õ", "O")
+        .replace("Ú", "U")
+        .replace("Ç", "C")
+    )
+
+
+def _documento_tem_tipo_lf_configurado(dados_extraidos: dict) -> bool:
+    tipos_config = dados_extraidos.get("_tipos_documento_lf")
+    if not isinstance(tipos_config, list):
+        return _tem_fatura(dados_extraidos) or _tem_nf_servico(dados_extraidos)
+    tipos_normalizados = [
+        _normalizar_tipo_documento(tipo)
+        for tipo in tipos_config
+        if str(tipo or "").strip()
+    ]
+    if not tipos_normalizados:
+        return False
+    return any(
+        any(tipo_config in _normalizar_tipo_documento(nota.get("Tipo", "")) for tipo_config in tipos_normalizados)
+        for nota in dados_extraidos.get("Notas Fiscais", []) or []
+    )
+
+
 def _clicar_aba_dados_pagamento(pagina) -> None:
     """Navega para a aba Dados de Pagamento de forma resiliente."""
 
@@ -701,7 +744,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
             dados_extraidos.get("_vencimento_documento", "") or data_vencimento_usuario or ""
         ).strip()
         lf_numero = str(dados_extraidos.get("_lf_numero", "") or "").strip()
-        fatura_com_lf = _tem_fatura(dados_extraidos) and bool(lf_numero)
+        documento_com_lf = _documento_tem_tipo_lf_configurado(dados_extraidos) and bool(lf_numero)
 
         _clicar_aba_dados_pagamento(pagina)
         _esperar_dados_pagamento_prontos(pagina)
@@ -713,10 +756,10 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
             erros.append(f"Erro ao preencher Data de Pagamento: {e}")
 
         print("[2] Validando favorecido e valor...")
-        cnpj_pdf = _BANCO_BRASIL_CNPJ if fatura_com_lf else re.sub(r"\D", "", str(dados_extraidos.get("CNPJ", "") or ""))
+        cnpj_pdf = _BANCO_BRASIL_CNPJ if documento_com_lf else re.sub(r"\D", "", str(dados_extraidos.get("CNPJ", "") or ""))
 
-        if fatura_com_lf:
-            print(f"  Fatura com LF: alterando favorecido para Banco do Brasil ({_BANCO_BRASIL_CNPJ_FORMATADO})")
+        if documento_com_lf:
+            print(f"  Documento com LF: alterando favorecido para Banco do Brasil ({_BANCO_BRASIL_CNPJ_FORMATADO})")
             if not _preencher_favorecido_lista_pagamento(pagina, _BANCO_BRASIL_CNPJ):
                 erros.append("Não foi possível alterar o favorecido para Banco do Brasil antes do Pré-Doc.")
 
@@ -807,7 +850,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
         ):
             print("  Aviso: campo Processo do modal nÃ£o foi localizado.")
 
-        if fatura_com_lf:
+        if documento_com_lf:
             print(f"[6] LF informada: {lf_numero}")
             _selecionar_tipo_ob_modal(pagina, "OB Fatura")
             _preencher_lf_modal(pagina, lf_numero)
@@ -819,7 +862,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
         # O portal não pré-preenche esses campos; deixá-los vazios causa erro de validação.
         usar_conta_pdf_ativo = bool(usar_conta_pdf)
 
-        if fatura_com_lf:
+        if documento_com_lf:
             banco_fav = _OB_FATURA_BANCO
             agencia_fav = _OB_FATURA_AGENCIA
             conta_fav = ""

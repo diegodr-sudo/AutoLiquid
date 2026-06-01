@@ -2,7 +2,7 @@
 
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowDownToLine, ArrowUp, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, FileUp, Info, Loader2, MessageSquare, Minus, Pencil, Plus, RefreshCw, Save, Settings2, Table, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, FileUp, Info, Loader2, MessageSquare, Minus, Pencil, Plus, RefreshCw, Save, Settings2, Table, Trash2, X } from "lucide-react";
 import { Header } from "@/components/header";
 import { DateFields } from "@/components/date-fields";
 import { UploadZone } from "@/components/upload-zone";
@@ -71,6 +71,7 @@ import {
   verificarAtualizacao,
   type AlertaServicoConfig,
   type AlertaServicoRule,
+  type AlertaSetorRule,
   type AuthSession,
   type AuthDiagnostico,
   type RegistroLiquidacaoTipoDocumento,
@@ -170,6 +171,8 @@ interface QueueDisplayRow {
   alertas: FilaAlerta[];
   nfServicoAlerta: boolean;
   nfServicoAlertaTooltip: string;
+  setorAlerta: boolean;
+  setorAlertaTooltip: string;
   competencia: string;
   tipo: string;
   cpfCnpj: string;
@@ -227,6 +230,7 @@ const ALERTA_SERVICO_REGRA_PADRAO: AlertaServicoRule = {
 const DEFAULT_ALERTA_SERVICO_CONFIG: AlertaServicoConfig = {
   diasUteisPadrao: 3,
   regras: [ALERTA_SERVICO_REGRA_PADRAO],
+  alertasSetor: [],
 };
 const DEFAULT_ALERTA_SERVICO_RULE: AlertaServicoRule = {
   id: "",
@@ -434,6 +438,30 @@ function normalizeAlertaServicoConfig(config: Partial<AlertaServicoConfig> | nul
   const rawRules = Array.isArray(config?.regras) ? config.regras : [];
   const defaultRule = rawRules.find((rule) => rule.id === ALERTA_SERVICO_REGRA_PADRAO_ID);
   const customRules = rawRules.filter((rule) => rule.id !== ALERTA_SERVICO_REGRA_PADRAO_ID);
+  const alertasSetorMap = new Map<string, AlertaSetorRule>();
+  const rawAlertasSetor = Array.isArray(config?.alertasSetor) ? config.alertasSetor : [];
+  for (const item of rawAlertasSetor) {
+    const setor = normalizeQueueCell(item?.setor);
+    if (!setor) continue;
+    const key = setor.toLocaleLowerCase("pt-BR");
+    if (alertasSetorMap.has(key)) continue;
+    alertasSetorMap.set(key, {
+      id: normalizeQueueCell(item?.id) || `setor-${key}`,
+      active: item?.active !== false,
+      setor,
+      mensagem: String(item?.mensagem ?? ""),
+    });
+  }
+  const legacySetoresAlerta = Array.isArray((config as { setoresAlerta?: string[] } | null | undefined)?.setoresAlerta)
+    ? ((config as { setoresAlerta?: string[] }).setoresAlerta ?? [])
+    : [];
+  for (const setorRaw of legacySetoresAlerta) {
+    const setor = normalizeQueueCell(setorRaw);
+    const key = setor.toLocaleLowerCase("pt-BR");
+    if (setor && !alertasSetorMap.has(key)) {
+      alertasSetorMap.set(key, { id: `setor-${key}`, active: true, setor, mensagem: "" });
+    }
+  }
   return {
     ...DEFAULT_ALERTA_SERVICO_CONFIG,
     ...config,
@@ -442,7 +470,21 @@ function normalizeAlertaServicoConfig(config: Partial<AlertaServicoConfig> | nul
       { ...ALERTA_SERVICO_REGRA_PADRAO, ...(defaultRule ?? {}) },
       ...customRules,
     ],
+    alertasSetor: Array.from(alertasSetorMap.values()),
   };
+}
+
+function buildSetorAlert(setorOrigem: string, config: AlertaServicoConfig): {
+  ativo: boolean;
+  tooltip: string;
+} {
+  const setor = normalizeQueueCell(setorOrigem);
+  if (!setor) return { ativo: false, tooltip: "" };
+  const alertas = normalizeAlertaServicoConfig(config).alertasSetor;
+  const alerta = alertas.find((item) => item.active && item.setor.toLocaleLowerCase("pt-BR") === setor.toLocaleLowerCase("pt-BR"));
+  return alerta
+    ? { ativo: true, tooltip: alerta.mensagem ? `Alerta de setor (${setor}): ${alerta.mensagem}` : `Alerta de setor: ${setor}` }
+    : { ativo: false, tooltip: "" };
 }
 
 function matchesAlertaServicoRule(
@@ -1052,6 +1094,7 @@ function buildFilaDistribuida(
     const cpfCnpj = normalizeQueueCell(row["CPF/CNPJ"]);
     const setorOrigem = normalizeQueueCell(row["Setor Origem"]);
     const nfServicoAlert = buildNfServicoAlert(tipo, competencia, cpfCnpj, setorOrigem, alertaServicoConfig);
+    const setorAlert = buildSetorAlert(setorOrigem, alertaServicoConfig);
 
     return {
       rowKey: `${numeroProcesso}::${solPagamento}`,
@@ -1065,6 +1108,8 @@ function buildFilaDistribuida(
       alertas,
       nfServicoAlerta: nfServicoAlert.ativo,
       nfServicoAlertaTooltip: nfServicoAlert.tooltip,
+      setorAlerta: setorAlert.ativo,
+      setorAlertaTooltip: setorAlert.tooltip,
       competencia,
       tipo,
       cpfCnpj,
@@ -1448,6 +1493,8 @@ export default function HomePage() {
   const [alertaServicoDialogOpen, setAlertaServicoDialogOpen] = useState(false);
   const [editingAlertaServicoRuleId, setEditingAlertaServicoRuleId] = useState<string | null>(null);
   const [alertaServicoRuleDraft, setAlertaServicoRuleDraft] = useState<AlertaServicoRule>(DEFAULT_ALERTA_SERVICO_RULE);
+  const [alertaSetorDraft, setAlertaSetorDraft] = useState("");
+  const [alertaSetorMensagemDraft, setAlertaSetorMensagemDraft] = useState("");
   const [regrasDatasDeducoes, setRegrasDatasDeducoes] = useState<RegrasDatasDeducoesConfig>(DEFAULT_REGRAS_DATAS_DEDUCOES);
   const [carregandoRegrasDatasDeducoes, setCarregandoRegrasDatasDeducoes] = useState(false);
   const [savingRegrasDatasDeducoes, setSavingRegrasDatasDeducoes] = useState(false);
@@ -2527,6 +2574,82 @@ export default function HomePage() {
     });
   };
 
+  const addAlertaSetor = () => {
+    const setor = normalizeQueueCell(alertaSetorDraft);
+    const mensagem = normalizeQueueCell(alertaSetorMensagemDraft);
+    if (!setor) return;
+    const normalized = normalizeAlertaServicoConfig(alertaServicoConfig);
+    const existente = normalized.alertasSetor.find((item) => item.setor.toLocaleLowerCase("pt-BR") === setor.toLocaleLowerCase("pt-BR"));
+    if (existente) {
+      setAlertaSetorDraft("");
+      setAlertaSetorMensagemDraft("");
+      if (!existente.active) {
+        void persistAlertaServicoConfig({
+          ...normalized,
+          alertasSetor: normalized.alertasSetor.map((item) => item.id === existente.id ? { ...item, active: true, mensagem: mensagem || item.mensagem } : item),
+        });
+      } else if (mensagem && mensagem !== existente.mensagem) {
+        void persistAlertaServicoConfig({
+          ...normalized,
+          alertasSetor: normalized.alertasSetor.map((item) => item.id === existente.id ? { ...item, mensagem } : item),
+        });
+      }
+      return;
+    }
+    setAlertaSetorDraft("");
+    setAlertaSetorMensagemDraft("");
+    void persistAlertaServicoConfig({
+      ...normalized,
+      alertasSetor: [
+        ...normalized.alertasSetor,
+        {
+          id: `setor-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          active: true,
+          setor,
+          mensagem,
+        },
+      ],
+    });
+  };
+
+  const toggleAlertaSetor = (alertaId: string, active: boolean) => {
+    const normalized = normalizeAlertaServicoConfig(alertaServicoConfig);
+    void persistAlertaServicoConfig({
+      ...normalized,
+      alertasSetor: normalized.alertasSetor.map((item) => item.id === alertaId ? { ...item, active } : item),
+    });
+  };
+
+  const removeAlertaSetor = (alertaId: string) => {
+    const normalized = normalizeAlertaServicoConfig(alertaServicoConfig);
+    void persistAlertaServicoConfig({
+      ...normalized,
+      alertasSetor: normalized.alertasSetor.filter((item) => item.id !== alertaId),
+    });
+  };
+
+  const updateAlertaSetorMensagem = (alertaId: string, mensagem: string) => {
+    setAlertaServicoConfig((current) => {
+      const normalized = normalizeAlertaServicoConfig(current);
+      return {
+        ...normalized,
+        alertasSetor: normalized.alertasSetor.map((item) =>
+          item.id === alertaId ? { ...item, mensagem } : item
+        ),
+      };
+    });
+  };
+
+  const persistAlertaSetorMensagem = (alertaId: string, mensagem: string) => {
+    const normalized = normalizeAlertaServicoConfig(alertaServicoConfig);
+    void persistAlertaServicoConfig({
+      ...normalized,
+      alertasSetor: normalized.alertasSetor.map((item) =>
+        item.id === alertaId ? { ...item, mensagem: normalizeQueueCell(mensagem) } : item
+      ),
+    });
+  };
+
   const patchRegraDataDeducao = (ruleId: string, patch: Partial<RegraDataDeducao>) => {
     if (!auth.isModerator) return;
     setErroRegrasDatasDeducoes("");
@@ -3312,6 +3435,12 @@ export default function HomePage() {
         void loadRemoteAlertaServicoConfig();
         return;
       }
+      if (data?.type === "fila-remota-atualizada") {
+        void loadRemoteAlertaServicoConfig();
+        void loadAlertaServicoSetoresHistorico();
+        scheduleRefresh();
+        return;
+      }
       if (data?.type === "datas-deducoes-regras-atualizadas") {
         void loadRemoteRegrasDatasDeducoes();
         return;
@@ -3724,7 +3853,7 @@ export default function HomePage() {
           {rule.active ? "Ativa" : "Inativa"}
         </label>
         <span className="grid min-w-[220px] flex-[2_1_240px] gap-1">
-          <span className="text-[10px] font-semibold uppercase text-muted-foreground">Regra de vencimento</span>
+          <span className="text-[10px] font-semibold uppercase text-muted-foreground">Regra de competência</span>
           <span
             className={`inline-flex min-h-8 max-w-full items-center rounded-full border px-3 py-1 text-xs font-medium leading-4 ${
               rule.acaoVencimento === "IGNORAR"
@@ -3748,18 +3877,19 @@ export default function HomePage() {
     );
 
     return (
+      <>
       <div className="rounded-2xl border border-red-500/15 bg-red-500/5 p-4 text-sm text-foreground">
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
           <div className="min-w-0">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <span className="font-medium">Alerta de vencimento</span>
+              <span className="font-medium">Alerta de competência</span>
               <GlobalScopeIcon
                 label="Global"
-                message="Global: as regras de alerta de vencimento ficam salvas no Turso e são compartilhadas por todos os usuários."
+                message="Global: as regras de alerta de competência ficam salvas no Turso e são compartilhadas por todos os usuários."
               />
             </div>
             <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
-              Define o vencimento das NFs de serviço e quando elas aparecem destacadas na fila.
+              Define o vencimento por competência e quando as linhas aparecem destacadas na fila.
             </p>
           </div>
           <div className="flex min-w-0 flex-wrap items-end gap-2">
@@ -3847,6 +3977,117 @@ export default function HomePage() {
           </div>
         </div>
       </div>
+
+      <div className="rounded-2xl border border-orange-500/15 bg-orange-500/5 p-4 text-sm text-foreground">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(260px,420px)] lg:items-start">
+          <div className="min-w-0">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="font-medium">Alerta de setor</span>
+              <GlobalScopeIcon
+                label="Global"
+                message="Global: os alertas de setor ficam salvos no Turso e são compartilhados por todos os usuários."
+              />
+            </div>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
+              Destaca processos de setores acompanhados em qualquer competência.
+            </p>
+          </div>
+          <div className="grid min-w-0 gap-2">
+            <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(160px,0.9fr)_minmax(220px,1.1fr)]">
+              <input
+                list="alerta-setor-options"
+                value={alertaSetorDraft}
+                onChange={(event) => setAlertaSetorDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addAlertaSetor();
+                  }
+                }}
+                placeholder="Setor de origem"
+                className={PILL_FORM_CONTROL_CLASS}
+              />
+              <input
+                value={alertaSetorMensagemDraft}
+                onChange={(event) => setAlertaSetorMensagemDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addAlertaSetor();
+                  }
+                }}
+                placeholder="Mensagem do alerta"
+                className={PILL_FORM_CONTROL_CLASS}
+              />
+              <datalist id="alerta-setor-options">
+                {alertaServicoSetorOptions.map((setor) => (
+                  <option key={setor} value={setor} />
+                ))}
+              </datalist>
+            </div>
+            <div className="flex justify-end">
+              <GlassButton
+                type="button"
+                size="sm"
+                onClick={addAlertaSetor}
+                disabled={savingAlertaServicoConfig || !normalizeQueueCell(alertaSetorDraft)}
+              >
+                <Plus className="h-4 w-4" />
+                {savingAlertaServicoConfig ? "Salvando..." : "Adicionar"}
+              </GlassButton>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid gap-2">
+          {normalizedConfig.alertasSetor.length ? (
+            normalizedConfig.alertasSetor.map((alerta) => (
+              <div
+                key={alerta.id}
+                className={`grid min-w-0 gap-2 rounded-xl border px-3 py-2 text-xs font-medium md:grid-cols-[minmax(150px,220px)_minmax(220px,1fr)_auto] md:items-center ${
+                  alerta.active
+                    ? "border-orange-500/25 bg-orange-500/10 text-orange-800"
+                    : "border-zinc-300 bg-zinc-100 text-zinc-600"
+                }`}
+              >
+                <label className="inline-flex min-w-0 items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={alerta.active}
+                    onChange={(event) => toggleAlertaSetor(alerta.id, event.target.checked)}
+                    className="h-3.5 w-3.5 shrink-0 accent-orange-600"
+                  />
+                  <span className="min-w-0 truncate">{alerta.setor}</span>
+                </label>
+                <input
+                  value={alerta.mensagem}
+                  onChange={(event) => updateAlertaSetorMensagem(alerta.id, event.target.value)}
+                  onBlur={(event) => persistAlertaSetorMensagem(alerta.id, event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.currentTarget.blur();
+                    }
+                  }}
+                  placeholder="Mensagem exibida no alerta"
+                  className="h-9 min-w-0 rounded-full border border-orange-500/20 bg-background/75 px-3 text-xs text-foreground outline-none transition focus:border-orange-500"
+                />
+                <SimpleTooltip content="Excluir alerta de setor" side="top">
+                  <button
+                    type="button"
+                    onClick={() => removeAlertaSetor(alerta.id)}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-orange-500/15 md:justify-self-end"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </SimpleTooltip>
+              </div>
+            ))
+          ) : (
+            <span className="text-xs text-muted-foreground">Nenhum setor em alerta.</span>
+          )}
+        </div>
+      </div>
+      </>
     );
   };
 
@@ -4399,9 +4640,11 @@ export default function HomePage() {
                               "border-b border-glass-border/60 last:border-0",
                               row.concluido
                                 ? "bg-emerald-500/15 hover:bg-emerald-500/20"
-                                : queueViewedRows[row.rowKey]
-                                  ? "bg-amber-500/10 hover:bg-amber-500/15"
-                                  : "odd:bg-background/35 even:bg-background/10 hover:bg-primary/5",
+                                : row.setorAlerta
+                                  ? "bg-orange-500/10 hover:bg-orange-500/15"
+                                  : queueViewedRows[row.rowKey]
+                                    ? "bg-amber-500/10 hover:bg-amber-500/15"
+                                    : "odd:bg-background/35 even:bg-background/10 hover:bg-primary/5",
                             ].join(" ")}
                           >
                             {queueColumnsToRender.map((column) => (
@@ -4458,6 +4701,13 @@ export default function HomePage() {
                                         >
                                           <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-[11px] font-semibold text-amber-700">
                                             !
+                                          </span>
+                                        </SimpleTooltip>
+                                      ) : null}
+                                      {row.setorAlerta ? (
+                                        <SimpleTooltip content={row.setorAlertaTooltip} side="top" maxWidth="max-w-sm">
+                                          <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-orange-500/35 bg-orange-500/10 text-orange-700">
+                                            <AlertTriangle className="h-3 w-3" />
                                           </span>
                                         </SimpleTooltip>
                                       ) : null}
@@ -4557,6 +4807,18 @@ export default function HomePage() {
                                       </SimpleTooltip>
                                     ) : (
                                       <span className="min-w-0 truncate">{row.competencia}</span>
+                                    )}
+                                  </div>
+                                ) : column.key === "setorOrigem" ? (
+                                  <div className="flex w-full min-w-0 items-center overflow-hidden">
+                                    {row.setorAlerta ? (
+                                      <SimpleTooltip content={row.setorAlertaTooltip} side="top" maxWidth="max-w-sm">
+                                        <span className="min-w-0 truncate rounded border border-orange-500/40 bg-orange-500/10 px-1.5 py-0.5 text-[12px] font-medium text-orange-800">
+                                          {row.setorOrigem}
+                                        </span>
+                                      </SimpleTooltip>
+                                    ) : (
+                                      <span className="min-w-0 truncate">{row.setorOrigem}</span>
                                     )}
                                   </div>
                                 ) : column.key === "numeroProcesso" ? (
@@ -6027,7 +6289,7 @@ export default function HomePage() {
             </section>
 
             <section className="rounded-2xl border border-glass-border bg-muted/20 p-4">
-              <h3 className="text-sm font-semibold text-foreground">O que acontece?</h3>
+              <h3 className="text-sm font-semibold text-foreground">Como a competência alerta?</h3>
               <div className="mt-3 grid gap-3 sm:grid-cols-[1.25fr_1fr]">
                 <label className="space-y-1.5 text-sm">
                   <span className="text-xs font-medium text-muted-foreground">Ação</span>

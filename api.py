@@ -59,7 +59,7 @@ import requests
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.app_paths import CAMINHO_CONFIG, URL_INICIAL, caminho_recurso
 from core.runtime_config import obter_datas_salvas, obter_porta_chrome, salvar_datas_processo
@@ -724,9 +724,47 @@ def _normalizar_regras_alerta_servico(config: Any) -> dict[str, Any]:
                     out.append(rule)
         return out
 
+    alertas_setor_raw = config.get("alertasSetor") or config.get("alertas_setor") or []
+    alertas_setor: list[dict[str, Any]] = []
+    seen_setores: set[str] = set()
+    if isinstance(alertas_setor_raw, list):
+        for index, item in enumerate(alertas_setor_raw):
+            if isinstance(item, BaseModel):
+                item = item.model_dump()
+            if isinstance(item, str):
+                item = {"setor": item}
+            if not isinstance(item, dict):
+                continue
+            setor = str(item.get("setor") or "").strip()
+            key = setor.casefold()
+            if not setor or key in seen_setores:
+                continue
+            seen_setores.add(key)
+            alertas_setor.append({
+                "id": str(item.get("id") or f"setor-{index + 1}-{key}").strip(),
+                "active": bool(item.get("active", item.get("ativo", True))),
+                "setor": setor,
+                "mensagem": str(item.get("mensagem") or "").strip(),
+            })
+
+    setores_raw = config.get("setoresAlerta") or config.get("setores_alerta") or []
+    if isinstance(setores_raw, list):
+        for item in setores_raw:
+            setor = str(item or "").strip()
+            key = setor.casefold()
+            if setor and key not in seen_setores:
+                seen_setores.add(key)
+                alertas_setor.append({
+                    "id": f"setor-{len(alertas_setor) + 1}-{key}",
+                    "active": True,
+                    "setor": setor,
+                    "mensagem": "",
+                })
+
     return {
         "diasUteisPadrao": dias,
         "regras": _lista_regras(),
+        "alertasSetor": alertas_setor,
     }
 
 
@@ -1257,6 +1295,7 @@ class WebConfigPayload(BaseModel):
     tursoAuthToken: str = ""
     nomeUsuario: str = ""
     nfServicoAlertaDiasUteis: int = 3
+    tiposDocumentoLf: list[str] = Field(default_factory=lambda: ["NF Serviço", "Fatura", "Boleto"])
     rocketChatUrl: str = "https://chat.ufsc.br"
     rocketChatUserId: str = ""
     rocketChatAuthToken: str = ""
@@ -1363,9 +1402,18 @@ class AlertaServicoRulePayload(BaseModel):
     valorAcao: str = ""
 
 
+class AlertaSetorRulePayload(BaseModel):
+    id: str = ""
+    active: bool = True
+    setor: str = ""
+    mensagem: str = ""
+
+
 class AlertaServicoConfigPayload(BaseModel):
     diasUteisPadrao: int = 3
     regras: list[AlertaServicoRulePayload] = []
+    alertasSetor: list[AlertaSetorRulePayload] = []
+    setoresAlerta: list[str] = []
 
 
 class RegraDataDeducaoPayload(BaseModel):
@@ -2293,6 +2341,7 @@ def _executar_uma_etapa(
                 **dados,
                 "_lf_numero": lf_numero,
                 "_vencimento_documento": venc,
+                "_tipos_documento_lf": _web_config_service().carregar_configuracoes_web().get("tiposDocumentoLf", []),
             }
             resultado = comprasnet_dados_pagamento.executar(
                 dados_pagamento, venc,

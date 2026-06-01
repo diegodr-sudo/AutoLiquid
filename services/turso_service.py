@@ -1772,26 +1772,30 @@ def obter_token_tempo_real_fila(*, timeout: float = 2.0) -> str:
         """,
         timeout=timeout,
     ))
-    servidores = _rows(executar(
+    configuracoes = _rows(executar(
         """
-        select coalesce(atualizado_em, '') as updated_at
+        select chave, coalesce(atualizado_em, '') as updated_at
         from tabelas_operacionais
-        where chave = ?
+        where chave in (?, ?)
         """,
-        [_QUEUE_SERVERS_CONFIG_KEY],
+        [_QUEUE_SERVERS_CONFIG_KEY, "fila_alerta_servico_regras"],
         timeout=timeout,
     ))
     fila_row = fila[0] if fila else {}
     fila_presente_row = fila_presente[0] if fila_presente else {}
     alertas_row = alertas[0] if alertas else {}
-    servidor_updated_at = str(servidores[0].get("updated_at") or "") if servidores else ""
+    config_updated_at = {
+        str(row.get("chave") or ""): str(row.get("updated_at") or "")
+        for row in configuracoes
+    }
     return "|".join([
         "turso",
         str(fila_presente_row.get("total") or 0),
         str(fila_row.get("updated_at") or ""),
         str(alertas_row.get("total") or 0),
         str(alertas_row.get("max_id") or 0),
-        servidor_updated_at,
+        config_updated_at.get(_QUEUE_SERVERS_CONFIG_KEY, ""),
+        config_updated_at.get("fila_alerta_servico_regras", ""),
     ])
 
 

@@ -126,6 +126,11 @@ const FILA_TRABALHO_URL =
 const REGISTRO_LIQUIDACAO_PENDENTE_KEY = "autoliquid_registro_liquidacao_pendente";
 const IGNORAR_RETORNO_PENDENCIA_SESSION_KEY = "autoliquid_ignorar_retorno_pendencia_sessao";
 const RETORNO_PENDENCIA_DISPENSADO_KEY = "autoliquid_retorno_pendencia_dispensado";
+const DEFAULT_TIPOS_DOCUMENTO_LF = ["NF Serviço", "Fatura", "Boleto"];
+
+function normalizarTipoDocumentoLf(valor: string) {
+  return valor.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value || 0);
@@ -175,6 +180,7 @@ function ConferenciaPageContent() {
   const [chromeStatus, setChromeStatus] = useState<"pronto" | "carregando" | "erro">("carregando");
   const [browserName, setBrowserName] = useState("Chrome");
   const [nomeUsuario, setNomeUsuario] = useState<string | null>(null);
+  const [tiposDocumentoLf, setTiposDocumentoLf] = useState<string[]>(DEFAULT_TIPOS_DOCUMENTO_LF);
   const [pendencias, setPendencias] = useState<PendenciaDocumento[]>([]);
   const [statusGeral, setStatusGeral] = useState<StatusGeralDocumento>({
     tipo: "atencao",
@@ -185,8 +191,8 @@ function ConferenciaPageContent() {
   const [lfNumero, setLfNumero] = useState("");
   const [ugrNumero, setUgrNumero] = useState("");
   const [vencimentoDocumento, setVencimentoDocumento] = useState("");
-  /** Quando false, a fatura não tem LF/vencimento — o pagamento segue normal, sem exigir esses campos. */
-  const [faturaTemLf, setFaturaTemLf] = useState(true);
+  /** Quando false, o documento opcional não tem LF/vencimento e segue como nota fiscal comum. */
+  const [documentoTemLf, setDocumentoTemLf] = useState(false);
   const [requiresCentroCusto, setRequiresCentroCusto] = useState(false);
   const [usarContaPdf, setUsarContaPdf] = useState(true);
   const [contaBanco, setContaBanco] = useState("");
@@ -219,10 +225,18 @@ function ConferenciaPageContent() {
   // estiver preenchendo (tocouVpd=true), mesmo que o valor já não esteja vazio.
   const precisaVpd = _temPendenciaVpd && !vpd.trim();
   const mostrarVpd = _temPendenciaVpd || tocouVpd;
+  const tiposLfNormalizados = tiposDocumentoLf.map(normalizarTipoDocumentoLf).filter(Boolean);
   const temFatura = notasFiscais.some((nota) =>
-    nota.tipo.toLowerCase().includes("fatura")
+    normalizarTipoDocumentoLf(nota.tipo).includes("fatura")
   );
-  const mostraBlocoLf = precisaLF || temFatura;
+  const tipoLfEncontrado = notasFiscais.find((nota) => {
+    const tipoNota = normalizarTipoDocumentoLf(nota.tipo);
+    return tiposLfNormalizados.some((tipoConfig) => tipoNota.includes(tipoConfig));
+  });
+  const documentoTemLfOpcional = Boolean(tipoLfEncontrado);
+  const documentoComLfAtivo = precisaLF || (documentoTemLfOpcional && documentoTemLf);
+  const documentoUsaLfComVencimento = documentoTemLfOpcional && documentoComLfAtivo;
+  const mostraBlocoLf = precisaLF || documentoTemLfOpcional;
   const contaPdfDisponivel = Boolean(documento.bancoPdf || documento.agenciaPdf || documento.contaPdf);
   const contaManualCompleta = Boolean(
     contaBanco.trim() && contaAgencia.trim() && contaConta.trim()
@@ -603,6 +617,7 @@ function ConferenciaPageContent() {
 
             if (settingsResult.status === "fulfilled" && ativo) {
               setBrowserName(settingsResult.value.navegador === "edge" ? "Edge" : "Chrome");
+              setTiposDocumentoLf(settingsResult.value.tiposDocumentoLf ?? DEFAULT_TIPOS_DOCUMENTO_LF);
               const storedSession = await readStoredAuthSession();
               const nomeSessao = auth.session?.nome || auth.session?.username || storedSession?.nome || storedSession?.username || "";
               setNomeUsuario((current) => nomeSessao || current || settingsResult.value.nomeUsuario || "");
@@ -658,6 +673,7 @@ function ConferenciaPageContent() {
 
       if (settingsResult.status === "fulfilled" && ativo) {
         setBrowserName(settingsResult.value.navegador === "edge" ? "Edge" : "Chrome");
+        setTiposDocumentoLf(settingsResult.value.tiposDocumentoLf ?? DEFAULT_TIPOS_DOCUMENTO_LF);
         const storedSession = await readStoredAuthSession();
         const nomeSessao = auth.session?.nome || auth.session?.username || storedSession?.nome || storedSession?.username || "";
         setNomeUsuario((current) => nomeSessao || current || settingsResult.value.nomeUsuario || "");
@@ -702,13 +718,14 @@ function ConferenciaPageContent() {
     setTocouUgr(false);
     setTocouConta(false);
     setTocouFatura(false);
+    setDocumentoTemLf(false);
   }, [documentoId]);
 
   useEffect(() => {
-    if (precisaUGR || precisaLF || precisaVpd || (temFatura && faturaTemLf) || !dadosBancariosResolvidos) {
+    if (precisaUGR || precisaLF || precisaVpd || documentoComLfAtivo || !dadosBancariosResolvidos) {
       setPendenciasExpanded(true);
     }
-  }, [precisaUGR, precisaLF, precisaVpd, temFatura, faturaTemLf, dadosBancariosResolvidos]);
+  }, [precisaUGR, precisaLF, precisaVpd, documentoComLfAtivo, dadosBancariosResolvidos]);
 
   useEffect(() => {
     if (!documentoId || !isExecutando) return;
@@ -735,9 +752,9 @@ function ConferenciaPageContent() {
   }, [documentoId, isExecutando]);
 
   const executeAll = async (
-    lfInformada = temFatura && !faturaTemLf ? "" : lfNumero,
+    lfInformada = documentoTemLfOpcional && !documentoComLfAtivo ? "" : lfNumero,
     ugrInformada = ugrNumero,
-    vencimentoInformado = vencimentoDocumento,
+    vencimentoInformado = documentoTemLfOpcional && !documentoComLfAtivo ? "" : vencimentoDocumento,
     usarPdf = usarContaPdf,
     banco = contaBanco,
     agencia = contaAgencia,
@@ -791,9 +808,9 @@ function ConferenciaPageContent() {
 
   const executeEtapa = async (
     etapa: EtapaExecucao,
-    lfInformada = temFatura && !faturaTemLf ? "" : lfNumero,
+    lfInformada = documentoTemLfOpcional && !documentoComLfAtivo ? "" : lfNumero,
     ugrInformada = ugrNumero,
-    vencimentoInformado = vencimentoDocumento,
+    vencimentoInformado = documentoTemLfOpcional && !documentoComLfAtivo ? "" : vencimentoDocumento,
     usarPdf = usarContaPdf,
     banco = contaBanco,
     agencia = contaAgencia,
@@ -870,10 +887,10 @@ function ConferenciaPageContent() {
     }
 
     if (contexto === "todas" || etapa?.id === 4) {
-      if (temFatura && faturaTemLf && !vencimentoDocumento.trim()) {
-        faltas.push("vencimento da fatura");
+      if (documentoUsaLfComVencimento && !vencimentoDocumento.trim()) {
+        faltas.push(temFatura ? "vencimento da fatura" : "vencimento da LF");
         if (!mensagemSemClique && !tocouFatura) {
-          mensagemSemClique = "Revise os dados de fatura na aba Pendências antes de executar.";
+          mensagemSemClique = "Revise os dados de LF na aba Pendências antes de executar.";
         }
       }
 
@@ -972,10 +989,12 @@ function ConferenciaPageContent() {
     setErro("");
 
     try {
+      const lfParaSalvar = documentoTemLfOpcional && !documentoComLfAtivo ? "" : lfNumero;
+      const vencimentoParaSalvar = documentoTemLfOpcional && !documentoComLfAtivo ? "" : vencimentoDocumento;
       const payload = await salvarPreenchimentoDocumento(documentoId, {
-        lfNumero,
+        lfNumero: lfParaSalvar,
         ugrNumero,
-        vencimentoDocumento,
+        vencimentoDocumento: vencimentoParaSalvar,
         usarContaPdf,
         contaBanco,
         contaAgencia,
@@ -1110,12 +1129,12 @@ function ConferenciaPageContent() {
 
   // Bolsa não tem deduções nem dados bancários — essas pendências não se aplicam.
   if (!documentoBolsa) {
-    if (temFatura && !vencimentoDocumento.trim()) {
+    if (documentoUsaLfComVencimento && !vencimentoDocumento.trim()) {
       pendenciasLocais.push({
-        id: "local-fatura-vencimento",
+        id: "local-lf-vencimento",
         tipo: "atencao",
-        titulo: "Vencimento da fatura não informado",
-        descricao: "Se este documento usa vencimento específico de fatura, informe-o antes de executar os dados de pagamento.",
+        titulo: "Vencimento da LF não informado",
+        descricao: "Se este documento usa LF, informe o vencimento antes de executar os dados de pagamento.",
         origem: "configuracao",
       });
     }
@@ -1921,18 +1940,26 @@ function ConferenciaPageContent() {
                           {mostraBlocoLf && (
                             <div className="space-y-3">
                               <div className="flex items-center justify-between">
-                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">LF e Fatura</p>
-                                {temFatura && (
+                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">LF</p>
+                                {documentoTemLfOpcional && !precisaLF && (
                                   <label className="flex cursor-pointer items-center gap-2">
-                                    <span className="text-xs text-muted-foreground">Esta fatura tem LF?</span>
+                                    <span className="text-xs text-muted-foreground">
+                                      {temFatura ? "Esta fatura tem LF?" : "Este documento tem LF?"}
+                                    </span>
                                     <Switch
-                                      checked={faturaTemLf}
-                                      onCheckedChange={setFaturaTemLf}
+                                      checked={documentoTemLf}
+                                      onCheckedChange={(checked) => {
+                                        setDocumentoTemLf(checked);
+                                        if (!checked) {
+                                          setLfNumero("");
+                                          setVencimentoDocumento("");
+                                        }
+                                      }}
                                     />
                                   </label>
                                 )}
                               </div>
-                              {(precisaLF || (temFatura && faturaTemLf)) && (
+                              {documentoComLfAtivo && (
                                 <div className="space-y-2">
                                   <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
                                     LF
@@ -1949,10 +1976,10 @@ function ConferenciaPageContent() {
                                   />
                                 </div>
                               )}
-                              {temFatura && faturaTemLf && (
+                              {documentoUsaLfComVencimento && (
                                 <div className="space-y-2">
                                   <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-                                    Vencimento da fatura
+                                    {temFatura ? "Vencimento da fatura" : "Vencimento da LF"}
                                   </label>
                                   <Input
                                     value={vencimentoDocumento}
@@ -1965,9 +1992,9 @@ function ConferenciaPageContent() {
                                   />
                                 </div>
                               )}
-                              {temFatura && !faturaTemLf && (
+                              {documentoTemLfOpcional && !documentoComLfAtivo && (
                                 <p className="text-xs text-muted-foreground">
-                                  Pagamento sem LF — seguirá como nota fiscal comum.
+                                  Pagamento sem LF - seguirá como nota fiscal comum.
                                 </p>
                               )}
                             </div>

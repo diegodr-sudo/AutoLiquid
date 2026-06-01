@@ -23,6 +23,7 @@ _CONTRATOS_TURSO_SYNC_AT = 0.0
 WEB_THEME_VALUES = {"light", "dark", "system"}
 WEB_NIVEL_LOG_VALUES = {"desenvolvedor"}
 WEB_NAVEGADOR_VALUES = {"chrome", "edge"}
+DEFAULT_TIPOS_DOCUMENTO_LF = ["NF Serviço", "Fatura", "Boleto"]
 
 
 def fonte_dados_habilitada(tabela: str, provedor: str) -> bool:
@@ -316,6 +317,22 @@ TABLE_DEFINITIONS: dict[str, dict[str, Any]] = {
 
 def _sanitize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _normalizar_tipos_documento_lf(value: Any) -> list[str]:
+    raw_items = value if isinstance(value, list) else DEFAULT_TIPOS_DOCUMENTO_LF
+    tipos: list[str] = []
+    vistos: set[str] = set()
+    for item in raw_items:
+        tipo = _sanitize_text(item)
+        if not tipo:
+            continue
+        chave = tipo.casefold()
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        tipos.append(tipo[:60])
+    return tipos
 
 
 def _column_keys(table_key: str) -> list[str]:
@@ -730,6 +747,7 @@ def carregar_configuracoes_web() -> dict[str, Any]:
     navegador = _sanitize_text(config.get("navegador") or "chrome").lower()
     if navegador not in WEB_NAVEGADOR_VALUES:
         navegador = "chrome"
+    tipos_documento_lf = _normalizar_tipos_documento_lf(config.get("tipos_documento_lf"))
 
     return {
         "chromePorta": chrome_porta,
@@ -742,6 +760,7 @@ def carregar_configuracoes_web() -> dict[str, Any]:
         "tursoAuthToken": str(config.get("turso_auth_token") or ""),
         "nomeUsuario": str(config.get("nome_usuario") or ""),
         "nfServicoAlertaDiasUteis": int(config.get("nf_servico_alerta_dias_uteis", 3) or 0),
+        "tiposDocumentoLf": tipos_documento_lf,
         "rocketChatUrl": str(config.get("rocket_chat_url") or "https://chat.ufsc.br"),
         "rocketChatUserId": str(config.get("rocket_chat_user_id") or ""),
         "rocketChatAuthToken": str(config.get("rocket_chat_auth_token") or ""),
@@ -774,6 +793,7 @@ def salvar_configuracoes_web(dados: dict[str, Any]) -> dict[str, Any]:
     turso_database_url = str(dados.get("tursoDatabaseUrl") or "").strip()
     turso_auth_token = str(dados.get("tursoAuthToken") or "").strip()
     nome_usuario = str(dados.get("nomeUsuario") or "").strip()
+    tipos_documento_lf = _normalizar_tipos_documento_lf(dados.get("tiposDocumentoLf"))
     rocket_chat_url = str(dados.get("rocketChatUrl") or "https://chat.ufsc.br").strip().rstrip("/")
     if rocket_chat_url and not rocket_chat_url.startswith(("http://", "https://")):
         rocket_chat_url = f"https://{rocket_chat_url}"
@@ -801,6 +821,7 @@ def salvar_configuracoes_web(dados: dict[str, Any]) -> dict[str, Any]:
             "turso_auth_token": turso_auth_token,
             "nome_usuario": nome_usuario,
             "nf_servico_alerta_dias_uteis": nf_servico_alerta_dias_uteis,
+            "tipos_documento_lf": tipos_documento_lf,
             "rocket_chat_url": rocket_chat_url,
             "rocket_chat_user_id": rocket_chat_user_id,
             "rocket_chat_auth_token": rocket_chat_auth_token,
