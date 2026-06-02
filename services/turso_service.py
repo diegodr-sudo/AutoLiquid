@@ -241,12 +241,14 @@ def garantir_schema_cache(*, timeout: float = 10) -> None:
             ("""create index if not exists idx_empenhos_numero on empenhos(numero)""", None),
             ("""create table if not exists fila_processos_atual (chave text primary key, numero_processo text, sol_pagamento text, protocolo text, competencia text, dados text not null default '{}', responsavel_manual text, responsavel_manual_por text, responsavel_manual_em text, concluido integer not null default 0, concluido_por text, concluido_em text, presente integer not null default 1, atualizado_em text default current_timestamp)""", None),
             ("""create index if not exists idx_fila_atual_presente_ordem on fila_processos_atual(presente, competencia, numero_processo, chave)""", None),
+            ("""create index if not exists idx_fila_atual_presente_atualizado on fila_processos_atual(presente, atualizado_em)""", None),
             ("""create table if not exists fila_processos_historico (chave text primary key, numero_processo text, sol_pagamento text, protocolo text, competencia text, dados text not null default '{}', responsavel_manual text, concluido integer not null default 0, presente integer not null default 0, primeiro_visto_em text, ultimo_visto_em text, saiu_da_fila_em text, retornou_em text, atualizado_em text default current_timestamp)""", None),
             ("""create index if not exists idx_fila_historico_numero on fila_processos_historico(numero_processo, ultimo_visto_em)""", None),
             ("""create index if not exists idx_fila_historico_presente on fila_processos_historico(presente, competencia, numero_processo)""", None),
             ("""create table if not exists fila_processos_alertas (id integer primary key autoincrement, chave text not null, numero_processo text, sol_pagamento text, mensagem text not null, autor text, ativo integer not null default 1, criado_em text default current_timestamp)""", None),
             ("""create index if not exists idx_fila_alertas_chave on fila_processos_alertas(chave, ativo, criado_em)""", None),
             ("""create index if not exists idx_fila_alertas_numero on fila_processos_alertas(numero_processo, ativo, criado_em)""", None),
+            ("""create index if not exists idx_fila_alertas_ativo_id on fila_processos_alertas(ativo, id)""", None),
             ("""create table if not exists ausencias (id text primary key, servidor text not null, tipo text not null, inicio text not null, fim text not null, obs text)""", None),
         ]
     existing_result = executar(
@@ -292,9 +294,11 @@ def garantir_schema_fila_cache(*, timeout: float = 5) -> None:
         ("""create table if not exists cache_snapshots (chave text primary key, payload text not null, atualizado_em text)""", None),
         ("""create table if not exists fila_processos_atual (chave text primary key, numero_processo text, sol_pagamento text, protocolo text, competencia text, dados text not null default '{}', responsavel_manual text, responsavel_manual_por text, responsavel_manual_em text, concluido integer not null default 0, concluido_por text, concluido_em text, presente integer not null default 1, atualizado_em text default current_timestamp)""", None),
         ("""create index if not exists idx_fila_atual_presente_ordem on fila_processos_atual(presente, competencia, numero_processo, chave)""", None),
+        ("""create index if not exists idx_fila_atual_presente_atualizado on fila_processos_atual(presente, atualizado_em)""", None),
         ("""create table if not exists fila_processos_alertas (id integer primary key autoincrement, chave text not null, numero_processo text, sol_pagamento text, mensagem text not null, autor text, ativo integer not null default 1, criado_em text default current_timestamp)""", None),
         ("""create index if not exists idx_fila_alertas_chave on fila_processos_alertas(chave, ativo, criado_em)""", None),
         ("""create index if not exists idx_fila_alertas_numero on fila_processos_alertas(numero_processo, ativo, criado_em)""", None),
+        ("""create index if not exists idx_fila_alertas_ativo_id on fila_processos_alertas(ativo, id)""", None),
     ]
     existing_result = executar(
         "select name from sqlite_master where type in ('table', 'index')",
@@ -1496,9 +1500,7 @@ def salvar_snapshot_fila(rows: list[dict[str, Any]], updated_at: str | None) -> 
     chaves_snapshot = {_fila_row_key(row) for row in rows or []}
     snapshot_em = updated_at or _now_iso()
     gravado_em = _now_iso()
-    statements: list[tuple[str, list[Any] | tuple[Any, ...] | None]] = [
-        ("insert into cache_snapshots (chave, payload, atualizado_em) values (?, ?, ?) on conflict(chave) do update set payload = excluded.payload, atualizado_em = excluded.atualizado_em", ["fila_processos_atual", json.dumps(rows or [], ensure_ascii=False, separators=(",", ":")), updated_at]),
-    ]
+    statements: list[tuple[str, list[Any] | tuple[Any, ...] | None]] = []
     if chaves_snapshot:
         placeholders = ",".join("?" for _ in chaves_snapshot)
         args_ausentes = [gravado_em, *sorted(chaves_snapshot)]
@@ -1536,6 +1538,19 @@ def salvar_snapshot_fila(rows: list[dict[str, Any]], updated_at: str | None) -> 
                   concluido_em = case when ? = 1 then null else coalesce(excluded.concluido_em, fila_processos_atual.concluido_em) end,
                   presente = 1,
                   atualizado_em = excluded.atualizado_em
+                where fila_processos_atual.presente <> 1
+                   or fila_processos_atual.numero_processo is not excluded.numero_processo
+                   or fila_processos_atual.sol_pagamento is not excluded.sol_pagamento
+                   or fila_processos_atual.protocolo is not excluded.protocolo
+                   or fila_processos_atual.competencia is not excluded.competencia
+                   or fila_processos_atual.dados is not excluded.dados
+                   or (excluded.responsavel_manual is not null and fila_processos_atual.responsavel_manual is not excluded.responsavel_manual)
+                   or (excluded.responsavel_manual_por is not null and fila_processos_atual.responsavel_manual_por is not excluded.responsavel_manual_por)
+                   or (excluded.responsavel_manual_em is not null and fila_processos_atual.responsavel_manual_em is not excluded.responsavel_manual_em)
+                   or ? = 1
+                   or (excluded.concluido = 1 and coalesce(fila_processos_atual.concluido, 0) <> 1)
+                   or (excluded.concluido_por is not null and fila_processos_atual.concluido_por is not excluded.concluido_por)
+                   or (excluded.concluido_em is not null and fila_processos_atual.concluido_em is not excluded.concluido_em)
                 """,
                 [
                     row_key,
@@ -1551,6 +1566,7 @@ def salvar_snapshot_fila(rows: list[dict[str, Any]], updated_at: str | None) -> 
                     str(row.get("__concluido_por") or "").strip() or None,
                     str(row.get("__concluido_em") or "").strip() or None,
                     gravado_em,
+                    resetar_conclusao,
                     resetar_conclusao,
                     resetar_conclusao,
                     resetar_conclusao,
@@ -1579,6 +1595,15 @@ def salvar_snapshot_fila(rows: list[dict[str, Any]], updated_at: str | None) -> 
                   saiu_da_fila_em = null,
                   retornou_em = case when fila_processos_historico.presente = 0 then excluded.ultimo_visto_em else fila_processos_historico.retornou_em end,
                   atualizado_em = excluded.atualizado_em
+                where fila_processos_historico.presente <> 1
+                   or fila_processos_historico.numero_processo is not excluded.numero_processo
+                   or fila_processos_historico.sol_pagamento is not excluded.sol_pagamento
+                   or fila_processos_historico.protocolo is not excluded.protocolo
+                   or fila_processos_historico.competencia is not excluded.competencia
+                   or fila_processos_historico.dados is not excluded.dados
+                   or (excluded.responsavel_manual is not null and fila_processos_historico.responsavel_manual is not excluded.responsavel_manual)
+                   or ? = 1
+                   or (excluded.concluido = 1 and coalesce(fila_processos_historico.concluido, 0) <> 1)
                 """,
                 [
                     row_key,
@@ -1593,6 +1618,7 @@ def salvar_snapshot_fila(rows: list[dict[str, Any]], updated_at: str | None) -> 
                     gravado_em,
                     gravado_em if resetar_conclusao else None,
                     gravado_em,
+                    resetar_conclusao,
                     resetar_conclusao,
                 ],
             )
@@ -1747,42 +1773,39 @@ def obter_token_tempo_real_fila(*, timeout: float = 2.0) -> str:
     if not turso_configurado():
         return "turso:disabled"
     garantir_schema_cache(timeout=timeout)
-    fila = _rows(executar(
-        """
-        select count(*) as total,
-               coalesce(max(atualizado_em), '') as updated_at
-        from fila_processos_atual
-        """,
+    results = executar_pipeline(
+        [
+            (
+                """
+                select coalesce(max(atualizado_em), '') as updated_at
+                from fila_processos_atual
+                where presente = 1
+                """,
+                None,
+            ),
+            (
+                """
+                select coalesce(max(id), 0) as max_id
+                from fila_processos_alertas
+                where ativo = 1
+                """,
+                None,
+            ),
+            (
+                """
+                select chave, coalesce(atualizado_em, '') as updated_at
+                from tabelas_operacionais
+                where chave in (?, ?)
+                """,
+                [_QUEUE_SERVERS_CONFIG_KEY, "fila_alerta_servico_regras"],
+            ),
+        ],
         timeout=timeout,
-    ))
-    fila_presente = _rows(executar(
-        """
-        select count(*) as total
-        from fila_processos_atual
-        where presente = 1
-        """,
-        timeout=timeout,
-    ))
-    alertas = _rows(executar(
-        """
-        select count(*) as total,
-               coalesce(max(id), 0) as max_id
-        from fila_processos_alertas
-        where ativo = 1
-        """,
-        timeout=timeout,
-    ))
-    configuracoes = _rows(executar(
-        """
-        select chave, coalesce(atualizado_em, '') as updated_at
-        from tabelas_operacionais
-        where chave in (?, ?)
-        """,
-        [_QUEUE_SERVERS_CONFIG_KEY, "fila_alerta_servico_regras"],
-        timeout=timeout,
-    ))
+    )
+    fila = _rows(results[0] if len(results) > 0 else {})
+    alertas = _rows(results[1] if len(results) > 1 else {})
+    configuracoes = _rows(results[2] if len(results) > 2 else {})
     fila_row = fila[0] if fila else {}
-    fila_presente_row = fila_presente[0] if fila_presente else {}
     alertas_row = alertas[0] if alertas else {}
     config_updated_at = {
         str(row.get("chave") or ""): str(row.get("updated_at") or "")
@@ -1790,9 +1813,7 @@ def obter_token_tempo_real_fila(*, timeout: float = 2.0) -> str:
     }
     return "|".join([
         "turso",
-        str(fila_presente_row.get("total") or 0),
         str(fila_row.get("updated_at") or ""),
-        str(alertas_row.get("total") or 0),
         str(alertas_row.get("max_id") or 0),
         config_updated_at.get(_QUEUE_SERVERS_CONFIG_KEY, ""),
         config_updated_at.get("fila_alerta_servico_regras", ""),

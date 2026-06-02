@@ -83,6 +83,7 @@ import {
   type AlertaSetorRule,
   type AuthSession,
   type AuthDiagnostico,
+  type AppSettings,
   type RegistroLiquidacaoTipoDocumento,
   type FilaAlerta,
   type RegraDataDeducao,
@@ -130,6 +131,7 @@ const LOADING_STEPS = [
   "Fila",
 ];
 const REGISTRO_LIQUIDACAO_PENDENTE_KEY = "autoliquid_registro_liquidacao_pendente";
+const REGISTRO_NOTICE_PENDENTE_KEY = "autoliquid_registro_notice_pendente";
 const IGNORAR_RETORNO_PENDENCIA_SESSION_KEY = "autoliquid_ignorar_retorno_pendencia_sessao";
 const RETORNO_PENDENCIA_DISPENSADO_KEY = "autoliquid_retorno_pendencia_dispensado";
 const DASHBOARD_LIMIT_OPTIONS = [5, 10, 25, 50, 100] as const;
@@ -242,6 +244,7 @@ const DEFAULT_ALERTA_SERVICO_CONFIG: AlertaServicoConfig = {
   regras: [ALERTA_SERVICO_REGRA_PADRAO],
   alertasSetor: [],
 };
+const DEFAULT_TIPOS_DOCUMENTO_LF = ["NF Serviço", "Fatura", "Boleto"];
 const DEFAULT_ALERTA_SERVICO_RULE: AlertaServicoRule = {
   id: "",
   active: true,
@@ -1500,6 +1503,12 @@ export default function HomePage() {
   const [salvandoDatasGlobais, setSalvandoDatasGlobais] = useState(false);
   const [erroDatasGlobais, setErroDatasGlobais] = useState("");
   const [mensagemDatasGlobais, setMensagemDatasGlobais] = useState("");
+  const [registroSettingsBase, setRegistroSettingsBase] = useState<AppSettings | null>(null);
+  const [registroTiposDocumentoLf, setRegistroTiposDocumentoLf] = useState<string[]>(DEFAULT_TIPOS_DOCUMENTO_LF);
+  const [novoTipoDocumentoLf, setNovoTipoDocumentoLf] = useState("");
+  const [salvandoTiposDocumentoLf, setSalvandoTiposDocumentoLf] = useState(false);
+  const [erroTiposDocumentoLf, setErroTiposDocumentoLf] = useState("");
+  const [mensagemTiposDocumentoLf, setMensagemTiposDocumentoLf] = useState("");
   const [mostrarTipoBadges, setMostrarTipoBadges] = useState(() => loadQueueMostrarTipoBadges());
   const [mostrarSimples, setMostrarSimples] = useState(() => loadQueueMostrarSimples());
   const [queueViewedRows, setQueueViewedRows] = useState<Record<string, boolean>>(() => loadQueueViewedRows());
@@ -1580,6 +1589,13 @@ export default function HomePage() {
   const queueTableMinWidth = compactQueueColumns ? "min-w-[1180px]" : "min-w-[1480px]";
   const hasManualQueueWidths = Object.keys(queueColumnWidths).length > 0;
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      const noticePendente = window.sessionStorage.getItem(REGISTRO_NOTICE_PENDENTE_KEY);
+      if (noticePendente) {
+        window.sessionStorage.removeItem(REGISTRO_NOTICE_PENDENTE_KEY);
+        mostrarRegistroNotice(noticePendente, 1500);
+      }
+    }
     return () => {
       if (registroNoticeTimerRef.current) {
         clearTimeout(registroNoticeTimerRef.current);
@@ -3589,12 +3605,23 @@ export default function HomePage() {
     setCarregandoDatasGlobais(true);
     setErroDatasGlobais("");
     setMensagemDatasGlobais("");
-    fetchDatasGlobais()
-      .then((dates) => {
-        if (ativo) setDatasGlobais({ apuracao: dateToISO(dates.apuracao), vencimento: dateToISO(dates.vencimento) });
-      })
-      .catch((error: unknown) => {
-        if (ativo) setErroDatasGlobais(error instanceof Error ? error.message : "Não foi possível carregar as datas globais.");
+    setErroTiposDocumentoLf("");
+    setMensagemTiposDocumentoLf("");
+    Promise.allSettled([fetchDatasGlobais(), fetchAppSettings()])
+      .then(([datesResult, settingsResult]) => {
+        if (!ativo) return;
+        if (datesResult.status === "fulfilled") {
+          setDatasGlobais({ apuracao: dateToISO(datesResult.value.apuracao), vencimento: dateToISO(datesResult.value.vencimento) });
+        } else {
+          setErroDatasGlobais(datesResult.reason instanceof Error ? datesResult.reason.message : "Não foi possível carregar as datas globais.");
+        }
+        if (settingsResult.status === "fulfilled") {
+          setRegistroSettingsBase(settingsResult.value);
+          const tiposCarregados = limparTiposDocumentoLfConfig(settingsResult.value.tiposDocumentoLf?.length ? settingsResult.value.tiposDocumentoLf : DEFAULT_TIPOS_DOCUMENTO_LF);
+          setRegistroTiposDocumentoLf(tiposCarregados.length ? tiposCarregados : DEFAULT_TIPOS_DOCUMENTO_LF);
+        } else {
+          setErroTiposDocumentoLf(settingsResult.reason instanceof Error ? settingsResult.reason.message : "Não foi possível carregar os ajustes do registro.");
+        }
       })
       .finally(() => {
         if (ativo) setCarregandoDatasGlobais(false);
@@ -3614,6 +3641,65 @@ export default function HomePage() {
       setErroDatasGlobais(error instanceof Error ? error.message : "Não foi possível salvar as datas globais.");
     } finally {
       setSalvandoDatasGlobais(false);
+    }
+  };
+
+  const normalizarTipoDocumentoLfConfig = (value: string) => value.trim().replace(/\s+/g, " ").slice(0, 60);
+
+  const limparTiposDocumentoLfConfig = (values: string[]) => {
+    const vistos = new Set<string>();
+    const tipos: string[] = [];
+    for (const value of values) {
+      const tipo = normalizarTipoDocumentoLfConfig(value);
+      if (!tipo || /^u\/\d+(?:\b|[\s-])/i.test(tipo)) continue;
+      const chave = tipo.toLocaleLowerCase("pt-BR");
+      if (vistos.has(chave)) continue;
+      vistos.add(chave);
+      tipos.push(tipo);
+    }
+    return tipos;
+  };
+
+  const handleAdicionarTipoDocumentoLf = () => {
+    const tipo = normalizarTipoDocumentoLfConfig(novoTipoDocumentoLf);
+    if (!tipo) return;
+    setMensagemTiposDocumentoLf("");
+    setErroTiposDocumentoLf("");
+    setRegistroTiposDocumentoLf((current) => {
+      if (current.some((item) => item.localeCompare(tipo, "pt-BR", { sensitivity: "base" }) === 0)) {
+        return current;
+      }
+      return [...current, tipo];
+    });
+    setNovoTipoDocumentoLf("");
+  };
+
+  const handleRemoverTipoDocumentoLf = (tipo: string) => {
+    setMensagemTiposDocumentoLf("");
+    setErroTiposDocumentoLf("");
+    setRegistroTiposDocumentoLf((current) => current.filter((item) => item !== tipo));
+  };
+
+  const handleSalvarTiposDocumentoLf = async () => {
+    setSalvandoTiposDocumentoLf(true);
+    setErroTiposDocumentoLf("");
+    setMensagemTiposDocumentoLf("");
+    try {
+      const base = await fetchAppSettings();
+      const tiposDocumentoLf = limparTiposDocumentoLfConfig(registroTiposDocumentoLf);
+      const saved = await saveAppSettings({ ...base, tiposDocumentoLf });
+      const confirmacao = await fetchAppSettings();
+      const tiposConfirmados = limparTiposDocumentoLfConfig(confirmacao.tiposDocumentoLf?.length ? confirmacao.tiposDocumentoLf : saved.tiposDocumentoLf);
+      if (JSON.stringify(tiposConfirmados) !== JSON.stringify(tiposDocumentoLf)) {
+        throw new Error("O backend não confirmou a lista de tipos do registro.");
+      }
+      setRegistroSettingsBase(confirmacao);
+      setRegistroTiposDocumentoLf(tiposConfirmados.length ? tiposConfirmados : DEFAULT_TIPOS_DOCUMENTO_LF);
+      setMensagemTiposDocumentoLf("Ajustes do registro atualizados.");
+    } catch (error) {
+      setErroTiposDocumentoLf(error instanceof Error ? error.message : "Não foi possível salvar os ajustes do registro.");
+    } finally {
+      setSalvandoTiposDocumentoLf(false);
     }
   };
 
@@ -6173,6 +6259,84 @@ export default function HomePage() {
                     {erroDatasGlobais ? (
                       <div className="rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                         {erroDatasGlobais}
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+
+                {/* Ajustes do registro */}
+                <section className="min-w-0 rounded-2xl border border-glass-border bg-muted/20 p-4">
+                  <div className="space-y-3">
+                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                      <div className="min-w-0">
+                        <h3 className="text-base font-semibold text-foreground">Ajustes do registro</h3>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Tipos e aliases de documento que exibem a opção de LF na conferência.
+                        </p>
+                      </div>
+                      <GlassButton
+                        type="button"
+                        size="sm"
+                        onClick={() => void handleSalvarTiposDocumentoLf()}
+                        disabled={carregandoDatasGlobais || salvandoTiposDocumentoLf}
+                        className="shrink-0"
+                      >
+                        {salvandoTiposDocumentoLf ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                        {salvandoTiposDocumentoLf ? "Salvando..." : "Salvar ajustes"}
+                      </GlassButton>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      {registroTiposDocumentoLf.map((tipo) => (
+                        <span
+                          key={tipo}
+                          className="inline-flex items-center gap-2 rounded-full border border-glass-border bg-background/80 px-3 py-1.5 text-sm text-foreground"
+                        >
+                          {tipo}
+                          <button
+                            type="button"
+                            onClick={() => handleRemoverTipoDocumentoLf(tipo)}
+                            className="rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                            aria-label={`Remover ${tipo}`}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+
+                    <form
+                      className="flex flex-col gap-2 sm:flex-row"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        handleAdicionarTipoDocumentoLf();
+                      }}
+                    >
+                      <input
+                        value={novoTipoDocumentoLf}
+                        onChange={(event) => setNovoTipoDocumentoLf(event.target.value)}
+                        placeholder="Ex.: Recibo"
+                        className="min-w-0 flex-1 rounded-xl border border-glass-border bg-background/80 px-3 py-2.5 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                      />
+                      <GlassButton
+                        type="submit"
+                        size="sm"
+                        className="justify-center"
+                        disabled={!novoTipoDocumentoLf.trim()}
+                      >
+                        <Plus className="h-4 w-4" />
+                        Adicionar
+                      </GlassButton>
+                    </form>
+
+                    {mensagemTiposDocumentoLf ? (
+                      <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+                        {mensagemTiposDocumentoLf}
+                      </div>
+                    ) : null}
+                    {erroTiposDocumentoLf ? (
+                      <div className="rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                        {erroTiposDocumentoLf}
                       </div>
                     ) : null}
                   </div>

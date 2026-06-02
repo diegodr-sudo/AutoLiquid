@@ -57,6 +57,8 @@ import { readStoredAuthSession } from "@/lib/auth-store";
 import { useAuth } from "@/lib/auth-context";
 import { SimpleTooltip } from "@/components/ui/simple-tooltip";
 
+const REGISTRO_NOTICE_PENDENTE_KEY = "autoliquid_registro_notice_pendente";
+
 // ── Pontuação de Dificuldade ─────────────────────────────────────────────────
 
 const DIFFICULTY_OPTIONS: { value: number; label: string; short: string; color: string; bg: string; ring: string }[] = [
@@ -503,11 +505,13 @@ function ConferenciaPageContent() {
     setConclusaoErro("");
     setConclusaoSaving(true);
     const encaminhamentoKey = `${conclusaoTipo}:${conclusaoNumero.trim()}:${conclusaoDificuldade ?? ""}`;
+    let encaminhamentoCopiado = conclusaoEncaminhamentoCopiadoKeyRef.current === encaminhamentoKey;
     try {
-      if (finalizada && conclusaoEncaminhamentoCopiadoKeyRef.current !== encaminhamentoKey) {
+      if (finalizada && !encaminhamentoCopiado) {
         try {
           await copiarTextoParaAreaTransferencia(montarTextoEncaminhamentoConclusao());
           conclusaoEncaminhamentoCopiadoKeyRef.current = encaminhamentoKey;
+          encaminhamentoCopiado = true;
           mostrarConclusaoNotice("Encaminhamento copiado", 1500);
         } catch (error) {
           console.warn("Não foi possível copiar o encaminhamento automaticamente.", error);
@@ -530,6 +534,9 @@ function ConferenciaPageContent() {
       // Sinaliza para page.tsx que o registro já foi feito aqui
       if (typeof window !== "undefined") {
         window.sessionStorage.removeItem("autoliquid_vem_de_concluir");
+        if (finalizada && encaminhamentoCopiado) {
+          window.sessionStorage.setItem(REGISTRO_NOTICE_PENDENTE_KEY, "Encaminhamento copiado");
+        }
       }
       router.push("/");
     } catch (error) {

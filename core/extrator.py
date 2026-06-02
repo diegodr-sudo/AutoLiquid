@@ -505,6 +505,26 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
                     adicionar_documento("Fatura", numero_fatura, emissao_fatura, ateste_fatura, valor_fatura)
                     continue
 
+                m_boleto = re.match(
+                    r"Boleto\s+(.+?)\s+([\d-]+)\s+([\d-]+)\s+([\d,.]+)$",
+                    linha,
+                    re.IGNORECASE,
+                )
+                if m_boleto:
+                    numero_boleto, emissao_boleto, ateste_boleto, valor_boleto = m_boleto.groups()
+                    adicionar_documento("Boleto", numero_boleto, emissao_boleto, ateste_boleto, valor_boleto)
+                    continue
+
+                m_boleto_ic = re.match(
+                    r"(U/\d+\s*-\s*\d{2}/\d{4})\s+([\d-]+)\s+([\d-]+)\s*Boleto\s+([\d,.]+)$",
+                    linha,
+                    re.IGNORECASE,
+                )
+                if m_boleto_ic:
+                    numero_boleto, emissao_boleto, ateste_boleto, valor_boleto = m_boleto_ic.groups()
+                    adicionar_documento("Boleto", numero_boleto, emissao_boleto, ateste_boleto, valor_boleto)
+                    continue
+
         if not lista_notas:
             notas_encontradas = re.findall(
                 r"NF\s*(Material|Servi[çc]o)\s+([\d.]+)\s+([\d-]+)\s+([\d-]+)\s+([\d,\.]+)",

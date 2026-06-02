@@ -4,12 +4,11 @@ Etapa 0 — Pesquisa e apropriação de instrumentos de cobrança no Contratos.g
 
 Fluxo:
   1. Navega para a página de Apropriação de instrumentos de cobrança.
-  2. Preenche a pesquisa por número do contrato (preferencial) ou CNPJ (fallback).
-  3. Aplica filtros rápidos: UG do instrumento, ano de emissão da NF
-     (quando único) e situação Pendente.
+  2. Aplica em uma única busca: ano de emissão único, UG do instrumento,
+     situação Pendente e pesquisa por contrato quando houver, ou CNPJ.
   4. Seleciona as caixas de seleção cujo Número do Documento bate com o dado
      extraído do PDF (aceita variações com/sem zeros à esquerda).
-  5. Se não encontrar, remove filtros, seleciona "Todos" e pesquisa de novo.
+  5. Se não encontrar, remove apenas Situação, seleciona "Todos" e tenta de novo.
   6. Clica no botão "Apropriar".
 """
 
@@ -97,7 +96,11 @@ def _normalizar_numero(valor: str) -> str:
 
 def _extrair_contrato(dados: dict) -> str:
     """Retorna o número do contrato limpo (ex: '00108/2025')."""
-    return str(dados.get("Número do Contrato", "") or "").strip()
+    for campo in ("Número do Contrato", "Numero do Contrato", "Contrato"):
+        valor = str(dados.get(campo, "") or "").strip()
+        if valor and valor != "—":
+            return valor
+    return ""
 
 
 def _extrair_cnpj(dados: dict) -> str:
@@ -112,6 +115,17 @@ def _formatar_cnpj(cnpj_digits: str) -> str:
     if len(d) == 14:
         return f"{d[:2]}.{d[2:5]}.{d[5:8]}/{d[8:12]}-{d[12:]}"
     return cnpj_digits
+
+
+def _montar_termo_pesquisa(contrato: str, cnpj_digits: str) -> tuple[str, str]:
+    """Monta a pesquisa global: contrato tem prioridade; CNPJ é fallback."""
+    contrato_limpo = str(contrato or "").strip()
+    cnpj_fmt = _formatar_cnpj(cnpj_digits)
+    if contrato_limpo:
+        return contrato_limpo, f"contrato '{contrato_limpo}'"
+    if cnpj_fmt:
+        return cnpj_fmt, f"CNPJ '{cnpj_fmt}'"
+    return "", ""
 
 
 def _extrair_numero_documento(dados: dict) -> str:
@@ -487,6 +501,53 @@ def _remover_filtros(pagina) -> None:
         _aguardar_tabela_estavel(pagina, timeout_ms=30_000)
     except Exception as exc:
         log.warning("Não foi possível remover filtros automaticamente: %s", exc)
+
+
+def _remover_filtro_situacao(pagina) -> None:
+    """Remove apenas o filtro Situação, preservando UG, ano e pesquisa textual."""
+    log.info("Removendo apenas o filtro Situação para fallback...")
+    js = """
+        () => {
+            const visivel = (el) => {
+                if (!el) return false;
+                const rect = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0
+                    && style.visibility !== 'hidden'
+                    && style.display !== 'none';
+            };
+            const select = document.getElementById('filter_situacao');
+            const container = select
+                ? (select.nextElementSibling || select.parentElement?.querySelector('.select2'))
+                : null;
+            const remover = container
+                ? Array.from(container.querySelectorAll('.select2-selection__choice__remove, .select2-selection__clear, [title*="Remove"], [title*="remove"]'))
+                    .find(visivel)
+                : null;
+            if (remover) {
+                remover.click();
+                return 'click-x';
+            }
+            if (select) {
+                if (window.jQuery) {
+                    window.jQuery(select).val('').trigger('change');
+                } else {
+                    select.value = '';
+                    select.dispatchEvent(new Event('input', { bubbles: true }));
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                return 'select-clear';
+            }
+            return '';
+        }
+    """
+    try:
+        resultado = pagina.evaluate(js)
+        log.info("Filtro Situação removido: %s", resultado or "não encontrado")
+        time.sleep(1.2)
+        _aguardar_tabela_estavel(pagina, timeout_ms=30_000)
+    except Exception as exc:
+        log.warning("Não foi possível remover apenas a situação: %s", exc)
 
 
 def _usar_campo_pesquisar(pagina, valor: str) -> None:
@@ -950,8 +1011,9 @@ def _aplicar_filtros_e_pesquisa_em_lote(
         ok = pagina.evaluate(js, {"anoEmissao": ano_emissao, "termoPesquisa": termo_pesquisa})
         time.sleep(1.5)  # janela inicial para o browser iniciar as requisições
         _aguardar_tabela_estavel(pagina, timeout_ms=30_000)
-        log.info("Filtros + pesquisa aplicados em lote (ok: %s).", ok)
-        return bool(ok)
+        pesquisa_ok = _pesquisa_contem_termo(pagina, termo_pesquisa)
+        log.info("Filtros + pesquisa aplicados em lote (ok: %s | pesquisa_ok: %s).", ok, pesquisa_ok)
+        return bool(ok and pesquisa_ok)
     except Exception as exc:
         log.warning("Erro ao aplicar filtros em lote: %s. Usando fluxo sequencial.", exc)
         return False
@@ -1000,23 +1062,22 @@ def executar(dados: dict, pagina, playwright=None, deve_parar=None) -> dict:
         _garantir_na_pagina_apropriar(pagina)
         _verificar_interrupcao(deve_parar)
 
-        # 2+3: pesquisa textual primeiro; filtros depois.
-        #   Prioridade: contrato. Se não houver contrato, usa CNPJ.
-        if contrato:
-            filtro_label = f"contrato '{contrato}'"
-            termo_pesquisa = contrato
-        elif cnpj:
-            filtro_label = f"CNPJ '{_formatar_cnpj(cnpj)}'"
-            termo_pesquisa = _formatar_cnpj(cnpj)
-        else:
+        # 2+3. Aplica a busca principal em um único ciclo:
+        # ano, UG do instrumento, situação e pesquisa por contrato ou CNPJ.
+        termo_pesquisa, filtro_label = _montar_termo_pesquisa(contrato, cnpj)
+        if not termo_pesquisa:
             return {
                 "status": "erro",
                 "mensagem": "Não foi possível filtrar: contrato e CNPJ ausentes nos dados extraídos.",
             }
 
-        _usar_campo_pesquisar(pagina, termo_pesquisa)
-        _verificar_interrupcao(deve_parar)
-        _aplicar_filtros_iniciais(pagina, ano_emissao, aplicar_situacao=True)
+        if not _aplicar_filtros_e_pesquisa_em_lote(pagina, ano_emissao, termo_pesquisa):
+            _usar_campo_pesquisar(pagina, termo_pesquisa)
+            _verificar_interrupcao(deve_parar)
+            _aplicar_filtros_iniciais(pagina, ano_emissao, aplicar_situacao=True)
+            _verificar_interrupcao(deve_parar)
+            if not _pesquisa_contem_termo(pagina, termo_pesquisa):
+                _usar_campo_pesquisar(pagina, termo_pesquisa)
         _verificar_interrupcao(deve_parar)
 
         _clicar_todos_registros_filtrados(pagina, termo_pesquisa)
@@ -1036,35 +1097,22 @@ def executar(dados: dict, pagina, playwright=None, deve_parar=None) -> dict:
         _verificar_interrupcao(deve_parar)
 
         if marcados == 0:
-            termos_fallback: list[tuple[str, str]] = []
-            if contrato and cnpj:
-                termos_fallback.append((f"CNPJ '{_formatar_cnpj(cnpj)}'", _formatar_cnpj(cnpj)))
-            elif cnpj:
-                termos_fallback.append((f"CNPJ '{_formatar_cnpj(cnpj)}'", _formatar_cnpj(cnpj)))
-
-            for label_fallback, termo_fallback in termos_fallback:
-                log.info(
-                    "Nenhum documento encontrado com %s. Tentando fallback por %s sem reaplicar situação.",
-                    filtro_label,
-                    label_fallback,
-                )
-                _usar_campo_pesquisar(pagina, termo_fallback)
-                _verificar_interrupcao(deve_parar)
-                _aplicar_filtros_iniciais(pagina, ano_emissao, aplicar_situacao=False)
-                _verificar_interrupcao(deve_parar)
-                _clicar_todos_registros_filtrados(pagina, termo_fallback)
-                _verificar_interrupcao(deve_parar)
-                try:
-                    _aguardar_tabela(pagina, timeout_ms=10_000)
-                except Exception:
-                    log.warning("Tabela pode estar vazia ou não carregada após fallback filtrado.")
-                time.sleep(0.5)
-                _verificar_interrupcao(deve_parar)
-                marcados = _selecionar_documentos(pagina, numeros_docs)
-                _verificar_interrupcao(deve_parar)
-                if marcados > 0:
-                    filtro_label = label_fallback
-                    break
+            log.info(
+                "Nenhum documento encontrado com %s. Fallback único: remover Situação e selecionar Todos.",
+                filtro_label,
+            )
+            _remover_filtro_situacao(pagina)
+            _verificar_interrupcao(deve_parar)
+            _clicar_todos_registros_filtrados(pagina, termo_pesquisa)
+            _verificar_interrupcao(deve_parar)
+            try:
+                _aguardar_tabela(pagina, timeout_ms=10_000)
+            except Exception:
+                log.warning("Tabela pode estar vazia ou não carregada após fallback sem situação.")
+            time.sleep(0.5)
+            _verificar_interrupcao(deve_parar)
+            marcados = _selecionar_documentos(pagina, numeros_docs)
+            _verificar_interrupcao(deve_parar)
 
         if marcados == 0:
             return {

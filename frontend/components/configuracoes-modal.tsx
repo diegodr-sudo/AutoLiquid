@@ -229,7 +229,6 @@ export function ConfiguracoesModal({
   const [showRocketToken, setShowRocketToken] = useState(false);
   const [testandoRocket, setTestandoRocket] = useState(false);
   const [resultadoRocket, setResultadoRocket] = useState("");
-  const [novoTipoLf, setNovoTipoLf] = useState("");
   const [servidoresSistema, setServidoresSistema] = useState<ServidorConfigRemoto[]>([]);
   const [usuariosAuth, setUsuariosAuth] = useState<AuthUsuario[]>([]);
   const [datasGlobais, setDatasGlobais] = useState<ProcessDates>(DEFAULT_DATAS_GLOBAIS);
@@ -475,28 +474,6 @@ export function ConfiguracoesModal({
   const handleTemaWebChange = (temaWeb: AppSettings["temaWeb"]) => {
     setSettings((current) => ({ ...current, temaWeb }));
     setTheme(temaWeb);
-  };
-
-  const normalizarTipoLf = (value: string) => value.trim().replace(/\s+/g, " ").slice(0, 60);
-
-  const handleAdicionarTipoLf = () => {
-    const tipo = normalizarTipoLf(novoTipoLf);
-    if (!tipo) return;
-    setSettings((current) => {
-      const atuais = current.tiposDocumentoLf ?? [];
-      if (atuais.some((item) => item.localeCompare(tipo, "pt-BR", { sensitivity: "base" }) === 0)) {
-        return current;
-      }
-      return { ...current, tiposDocumentoLf: [...atuais, tipo] };
-    });
-    setNovoTipoLf("");
-  };
-
-  const handleRemoverTipoLf = (tipo: string) => {
-    setSettings((current) => ({
-      ...current,
-      tiposDocumentoLf: (current.tiposDocumentoLf ?? []).filter((item) => item !== tipo),
-    }));
   };
 
   const handleRecarregar = async () => {
@@ -1071,58 +1048,6 @@ export function ConfiguracoesModal({
                       </label>
                     </section>
 
-                    {/* Ajustes do registro */}
-                    <section className="space-y-3 rounded-2xl border border-glass-border bg-secondary/25 px-4 py-4">
-                      <div>
-                        <h3 className="text-sm font-semibold text-foreground">Ajustes do registro</h3>
-                        <p className="text-sm text-muted-foreground">
-                          Tipos de documento que exibem a opção de LF na conferência.
-                        </p>
-                      </div>
-
-                      <div className="flex flex-wrap gap-2">
-                        {(settings.tiposDocumentoLf ?? []).map((tipo) => (
-                          <span
-                            key={tipo}
-                            className="inline-flex items-center gap-2 rounded-full border border-glass-border bg-background/80 px-3 py-1.5 text-sm text-foreground"
-                          >
-                            {tipo}
-                            <button
-                              type="button"
-                              onClick={() => handleRemoverTipoLf(tipo)}
-                              className="rounded-full p-0.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                              aria-label={`Remover ${tipo}`}
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-
-                      <form
-                        className="flex flex-col gap-2 sm:flex-row"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          handleAdicionarTipoLf();
-                        }}
-                      >
-                        <input
-                          value={novoTipoLf}
-                          onChange={(event) => setNovoTipoLf(event.target.value)}
-                          placeholder="Ex.: Recibo"
-                          className="min-w-0 flex-1 rounded-xl border border-glass-border bg-background/80 px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
-                        />
-                        <GlassButton
-                          type="submit"
-                          size="sm"
-                          className="justify-center"
-                          disabled={!novoTipoLf.trim()}
-                        >
-                          <Plus className="h-4 w-4" />
-                          Adicionar
-                        </GlassButton>
-                      </form>
-                    </section>
 
                     {/* Atualização */}
                     <section className="rounded-2xl border border-violet-500/20 bg-violet-500/10 px-4 py-4">

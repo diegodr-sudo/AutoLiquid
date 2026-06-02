@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -326,6 +327,8 @@ def _normalizar_tipos_documento_lf(value: Any) -> list[str]:
     for item in raw_items:
         tipo = _sanitize_text(item)
         if not tipo:
+            continue
+        if re.match(r"^u/\d+(?:\b|[\s-])", tipo, re.IGNORECASE):
             continue
         chave = tipo.casefold()
         if chave in vistos:

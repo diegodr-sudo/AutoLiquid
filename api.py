@@ -194,6 +194,9 @@ SERVIDORES_SORTEIO_CACHE_LOCK = Lock()
 SERVIDORES_SORTEIO_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="servidores-sorteio")
 SERVIDORES_SORTEIO_FUTURE = None
 SERVIDORES_SORTEIO_FUTURE_LOCK = Lock()
+DASHBOARD_CACHE_TTL_SECONDS = 60.0
+DASHBOARD_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+DASHBOARD_CACHE_LOCK = Lock()
 
 
 def _chrome_service():
@@ -378,6 +381,25 @@ def _sincronizar_fila_turso_async(rows: list[dict[str, Any]], updated_at: str | 
     Thread(target=_run, name="turso-fila-sync", daemon=True).start()
 
 
+def _atualizar_cache_local_fila(updated_rows: list[dict[str, Any]]) -> None:
+    """Atualiza apenas os caches em memória/local após uma edição pontual.
+
+    A persistência remota dessas edições já acontece em funções específicas do
+    Turso; reenviar a fila inteira aqui gera milhares de escritas redundantes.
+    """
+    if not updated_rows:
+        return
+    FILA_PROCESSOS_CACHE["rows"] = updated_rows
+    FILA_PROCESSOS_CACHE["columns"] = _colunas_fila(updated_rows)
+    try:
+        _local_cache_service().salvar_fila_processos_snapshot(
+            updated_rows,
+            FILA_PROCESSOS_CACHE.get("updatedAt"),
+        )
+    except Exception:
+        log.debug("Falha ao atualizar cache local da fila", exc_info=True)
+
+
 def _broadcast_fila_event(payload: dict[str, Any]) -> None:
     mensagem = json.dumps(payload, ensure_ascii=False)
     with FILA_EVENT_SUBSCRIBERS_LOCK:
@@ -461,6 +483,11 @@ def _fila_remote_watcher_loop() -> None:
     last_token: str | None = None
     while True:
         try:
+            with FILA_EVENT_SUBSCRIBERS_LOCK:
+                tem_assinantes = bool(FILA_EVENT_SUBSCRIBERS)
+            if not tem_assinantes:
+                time.sleep(10)
+                continue
             token = _fila_remote_token()
             if token and last_token is None:
                 last_token = token
@@ -483,7 +510,7 @@ def _fila_remote_watcher_loop() -> None:
                 })
         except Exception:
             log.debug("Falha no watcher remoto da fila", exc_info=True)
-        time.sleep(2)
+        time.sleep(20)
 
 
 def _ensure_fila_remote_watcher() -> None:
@@ -2539,13 +2566,7 @@ def _auto_concluir_na_fila(doc_id: str) -> None:
                 updated_rows.append(row)
 
         if updated_rows:
-            FILA_PROCESSOS_CACHE["rows"] = updated_rows
-            FILA_PROCESSOS_CACHE["columns"] = _colunas_fila(updated_rows)
-            try:
-                _local_cache_service().salvar_fila_processos_snapshot(updated_rows, FILA_PROCESSOS_CACHE.get("updatedAt"))
-            except Exception:
-                pass
-            _sincronizar_fila_turso_async(updated_rows, FILA_PROCESSOS_CACHE.get("updatedAt"))
+            _atualizar_cache_local_fila(updated_rows)
 
         _broadcast_fila_event({
             "type": "conclusao-alterada",
@@ -2877,6 +2898,21 @@ def dashboard(
     servidor_nome: str = Query(default=""),
     limite: int = Query(default=5, ge=1, le=100),
 ) -> dict[str, Any]:
+    cache_key = ("dashboard", str(periodo or ""), str(servidor_nome or "").strip().casefold(), int(limite or 5))
+    now = time.monotonic()
+    with DASHBOARD_CACHE_LOCK:
+        cached = DASHBOARD_CACHE.get(cache_key)
+        if cached and now - cached[0] <= DASHBOARD_CACHE_TTL_SECONDS:
+            return dict(cached[1])
+
+    def _cache_dashboard_result(result: dict[str, Any]) -> dict[str, Any]:
+        with DASHBOARD_CACHE_LOCK:
+            DASHBOARD_CACHE[cache_key] = (time.monotonic(), dict(result))
+            if len(DASHBOARD_CACHE) > 80:
+                oldest_key = min(DASHBOARD_CACHE, key=lambda item: DASHBOARD_CACHE[item][0])
+                DASHBOARD_CACHE.pop(oldest_key, None)
+        return result
+
     def _status_concluido(status: Any) -> bool:
         return "concl" in str(status or "").casefold()
 
@@ -2953,10 +2989,10 @@ def dashboard(
         turso = _turso_service()
         if not turso.turso_configurado():
             raise HTTPException(status_code=503, detail="Turso não configurado.")
-        return _mesclar_registros_locais(turso.obter_dashboard(periodo, servidor_nome=servidor_nome, limite=limite))
+        return _cache_dashboard_result(_mesclar_registros_locais(turso.obter_dashboard(periodo, servidor_nome=servidor_nome, limite=limite)))
     if not _fonte_dados_habilitada("execucoes", "supabase"):
-        return _mesclar_registros_locais({"habilitado": False, "periodo": periodo, "valorBruto": 0, "quantidadeProcessos": 0, "ultimosProcessos": []})
-    return _mesclar_registros_locais(_postgres_service().obter_dashboard(periodo, servidor_nome=servidor_nome, limite=limite))
+        return _cache_dashboard_result(_mesclar_registros_locais({"habilitado": False, "periodo": periodo, "valorBruto": 0, "quantidadeProcessos": 0, "ultimosProcessos": []}))
+    return _cache_dashboard_result(_mesclar_registros_locais(_postgres_service().obter_dashboard(periodo, servidor_nome=servidor_nome, limite=limite)))
 
 
 @app.get("/api/dashboard/historico")
@@ -2966,24 +3002,45 @@ def dashboard_historico(
     servidor: str = Query(default=""),
     periodo: str = Query(default="semana"),
 ) -> dict[str, Any]:
+    cache_key = (
+        "dashboard-historico",
+        str(empresa or "").strip().casefold(),
+        str(contrato or "").strip().casefold(),
+        str(servidor or "").strip().casefold(),
+        str(periodo or ""),
+    )
+    now = time.monotonic()
+    with DASHBOARD_CACHE_LOCK:
+        cached = DASHBOARD_CACHE.get(cache_key)
+        if cached and now - cached[0] <= DASHBOARD_CACHE_TTL_SECONDS:
+            return dict(cached[1])
+
+    def _cache_historico_result(result: dict[str, Any]) -> dict[str, Any]:
+        with DASHBOARD_CACHE_LOCK:
+            DASHBOARD_CACHE[cache_key] = (time.monotonic(), dict(result))
+            if len(DASHBOARD_CACHE) > 80:
+                oldest_key = min(DASHBOARD_CACHE, key=lambda item: DASHBOARD_CACHE[item][0])
+                DASHBOARD_CACHE.pop(oldest_key, None)
+        return result
+
     if _fonte_dados_habilitada("execucoes", "turso"):
         turso = _turso_service()
         if not turso.turso_configurado():
             raise HTTPException(status_code=503, detail="Turso não configurado.")
-        return turso.obter_dashboard_historico(
+        return _cache_historico_result(turso.obter_dashboard_historico(
             empresa=empresa,
             contrato=contrato,
             servidor=servidor,
             periodo=periodo,
-        )
+        ))
     if not _fonte_dados_habilitada("execucoes", "supabase"):
-        return {"habilitado": False, "total": 0, "totalValor": 0, "porServidor": [], "porEmpresa": [], "porContrato": [], "porMes": []}
-    return _postgres_service().obter_dashboard_historico(
+        return _cache_historico_result({"habilitado": False, "total": 0, "totalValor": 0, "porServidor": [], "porEmpresa": [], "porContrato": [], "porMes": []})
+    return _cache_historico_result(_postgres_service().obter_dashboard_historico(
         empresa=empresa,
         contrato=contrato,
         servidor=servidor,
         periodo=periodo,
-    )
+    ))
 
 
 @app.get("/api/fila-processos")
@@ -3431,13 +3488,7 @@ def atualizar_responsavel_fila(payload: FilaResponsavelPayload) -> dict[str, Any
             updated_rows.append(row)
 
     if updated_rows:
-        FILA_PROCESSOS_CACHE["rows"] = updated_rows
-        FILA_PROCESSOS_CACHE["columns"] = _colunas_fila(updated_rows)
-        try:
-            _local_cache_service().salvar_fila_processos_snapshot(updated_rows, FILA_PROCESSOS_CACHE.get("updatedAt"))
-        except Exception:
-            log.debug("Falha ao atualizar cache local da fila", exc_info=True)
-        _sincronizar_fila_turso_async(updated_rows, FILA_PROCESSOS_CACHE.get("updatedAt"))
+        _atualizar_cache_local_fila(updated_rows)
 
     _broadcast_fila_event({"type": "responsavel-alterado", "rowKey": row_key})
     return {
@@ -3504,13 +3555,7 @@ def adicionar_alerta_fila(payload: FilaAlertaPayload, background_tasks: Backgrou
             updated_rows.append(row)
 
     if updated_rows:
-        FILA_PROCESSOS_CACHE["rows"] = updated_rows
-        FILA_PROCESSOS_CACHE["columns"] = _colunas_fila(updated_rows)
-        try:
-            _local_cache_service().salvar_fila_processos_snapshot(updated_rows, FILA_PROCESSOS_CACHE.get("updatedAt"))
-        except Exception:
-            log.debug("Falha ao atualizar cache local da fila", exc_info=True)
-        _sincronizar_fila_turso_async(updated_rows, FILA_PROCESSOS_CACHE.get("updatedAt"))
+        _atualizar_cache_local_fila(updated_rows)
     _broadcast_fila_event({"type": "alerta-adicionado", "rowKey": row_key, "alerta": alerta})
 
     return {
@@ -3580,13 +3625,7 @@ def remover_alerta_fila(
         updated_rows.append(next_row)
 
     if updated_rows:
-        FILA_PROCESSOS_CACHE["rows"] = updated_rows
-        FILA_PROCESSOS_CACHE["columns"] = _colunas_fila(updated_rows)
-        try:
-            _local_cache_service().salvar_fila_processos_snapshot(updated_rows, FILA_PROCESSOS_CACHE.get("updatedAt"))
-        except Exception:
-            log.debug("Falha ao atualizar cache local da fila", exc_info=True)
-        _sincronizar_fila_turso_async(updated_rows, FILA_PROCESSOS_CACHE.get("updatedAt"))
+        _atualizar_cache_local_fila(updated_rows)
 
     _broadcast_fila_event({"type": "alerta-removido", "alertaId": alerta_id})
     return {"success": True, "alertaId": alerta_id}
@@ -3660,13 +3699,7 @@ def atualizar_conclusao_fila(payload: FilaConclusaoPayload) -> dict[str, Any]:
             updated_rows.append(row)
 
     if updated_rows:
-        FILA_PROCESSOS_CACHE["rows"] = updated_rows
-        FILA_PROCESSOS_CACHE["columns"] = _colunas_fila(updated_rows)
-        try:
-            _local_cache_service().salvar_fila_processos_snapshot(updated_rows, FILA_PROCESSOS_CACHE.get("updatedAt"))
-        except Exception:
-            log.debug("Falha ao atualizar cache local da fila", exc_info=True)
-        _sincronizar_fila_turso_async(updated_rows, FILA_PROCESSOS_CACHE.get("updatedAt"))
+        _atualizar_cache_local_fila(updated_rows)
 
     # Inclui os valores confirmados no evento para que clientes SSE
     # possam atualizar a linha diretamente, sem precisar de um refetch completo.

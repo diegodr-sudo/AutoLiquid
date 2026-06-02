@@ -1373,6 +1373,89 @@ def _capturar_ddf055_dev(pagina, etapa: str, did: str = "") -> None:
         print(f"    [Dev DDF055] Falha ao capturar snapshot {etapa}: {exc}")
 
 
+def _aguardar_ddf055_assentar(
+    pagina,
+    did: str,
+    *,
+    etapa: str = "",
+    exigir_situacao: bool = True,
+    exigir_predoc: bool = False,
+    exigir_recolhedor: bool = False,
+    timeout_ms: int = 12000,
+    pausa_s: float = 0.45,
+) -> None:
+    """Aguarda o DOM/AJAX do DDF055 assentar também fora do modo dev."""
+    try:
+        pagina.wait_for_function(
+            """([deducaoId, exigirSituacao, exigirPredoc, exigirRecolhedor]) => {
+                const visivel = (el) => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 && r.height === 0) return false;
+                    const s = window.getComputedStyle(el);
+                    return s.display !== 'none'
+                        && s.visibility !== 'hidden'
+                        && s.opacity !== '0';
+                };
+                const porId = (prefixo) => document.getElementById(prefixo + deducaoId);
+                const norm = (s) => String(s || '').normalize('NFD')
+                    .replace(/[\\u0300-\\u036f]/g, '').toUpperCase().trim();
+
+                if (exigirSituacao) {
+                    const sel = porId('sfdeducaocodsit');
+                    const op = sel?.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+                    if (!sel || norm(sel.value) !== 'DDF055' || (op && !norm(op.text || op.value).includes('DDF055'))) {
+                        return false;
+                    }
+                }
+
+                const camposTopo = [
+                    'sfdeducaocodugpgto',
+                    'sfdeducaovlr',
+                    'sfdeducaodtvenc',
+                    'sfdeducaodtpgtoreceb',
+                    'sfdeducaopossui_acrescimo',
+                    'txtinscra',
+                    'txtinscrb',
+                ];
+                if (exigirSituacao && !camposTopo.every((prefixo) => visivel(porId(prefixo)))) {
+                    return false;
+                }
+
+                if (exigirPredoc) {
+                    const temPredoc = [
+                        'sfpredoccodtipodarf',
+                        'sfpredoccodrecurso',
+                        'sfpredocdtprdoapuracao',
+                        'sfpredoctxtprocesso',
+                        'sfpredoctxtobser',
+                    ].some((prefixo) => visivel(porId(prefixo)));
+                    if (!temPredoc) return false;
+                }
+
+                if (exigirRecolhedor) {
+                    const prefixos = [
+                        'vlrPrincipal' + deducaoId,
+                        'vlrbasecalculo' + deducaoId,
+                        'txtcodrecolhedor' + deducaoId,
+                    ];
+                    const temRecolhedor = Array.from(document.querySelectorAll('input, select, textarea'))
+                        .some((el) => prefixos.some((prefixo) => String(el.id || '').startsWith(prefixo)) && visivel(el));
+                    if (!temRecolhedor) return false;
+                }
+
+                return !!document.getElementById('confirma-dados-deducao-' + deducaoId);
+            }""",
+            arg=[did, bool(exigir_situacao), bool(exigir_predoc), bool(exigir_recolhedor)],
+            timeout=timeout_ms,
+        )
+    except Exception as exc:
+        if etapa:
+            print(f"    [DDF055] Espera de estabilização ignorada em {etapa}: {exc}")
+    if pausa_s:
+        time.sleep(pausa_s)
+
+
 def _situacao_deducao_aplicada_basica(pagina, did: str, siafi: str) -> bool:
     """Checagem curta usada quando a espera AJAX formal da situação falha."""
     try:
@@ -3073,10 +3156,25 @@ def _preencher_deducao_darf_total_ddf055(
         _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=20000)
     except Exception:
         pass
+    _aguardar_ddf055_assentar(
+        pagina,
+        did,
+        etapa="formulario-criado",
+        exigir_situacao=False,
+        timeout_ms=8000,
+        pausa_s=0.25,
+    )
 
     _situacao_ok = False
     for tentativa in range(1, 4):
         _select(pagina, f"sfdeducaocodsit{did}", siafi, erros, f"Situação ({siafi})")
+        _aguardar_ddf055_assentar(
+            pagina,
+            did,
+            etapa=f"apos-select-{tentativa}",
+            timeout_ms=12000,
+            pausa_s=0.35,
+        )
         _capturar_ddf055_dev(pagina, f"dev-02-apos-select-tentativa-{tentativa}", did)
         if (
             _aguardar_situacao_deducao_aplicada(pagina, did, siafi, timeout_ms=5000)
@@ -3102,6 +3200,14 @@ def _preencher_deducao_darf_total_ddf055(
         erros.append(f"{siafi}: Pré-Doc não abriu (did={did}).")
         return False
     print(f"      pre-doc aberto: pdid={pdid_expandido}")
+    _aguardar_ddf055_assentar(
+        pagina,
+        did,
+        etapa="predoc-aberto",
+        exigir_predoc=True,
+        timeout_ms=15000,
+        pausa_s=0.55,
+    )
     _capturar_ddf055_dev(pagina, "dev-05-predoc-aberto", did)
 
     _verificar_interrupcao(deve_parar)
@@ -3129,6 +3235,14 @@ def _preencher_deducao_darf_total_ddf055(
         erros.append(f"{siafi}: Pré-Doc não preenchido.")
         return False
 
+    _aguardar_ddf055_assentar(
+        pagina,
+        did,
+        etapa="predoc-preenchido",
+        exigir_predoc=True,
+        timeout_ms=12000,
+        pausa_s=0.45,
+    )
     _capturar_ddf055_dev(pagina, "dev-06-predoc-preenchido", did)
     _verificar_interrupcao(deve_parar)
 
@@ -3139,6 +3253,15 @@ def _preencher_deducao_darf_total_ddf055(
         _capturar_ddf055_dev(pagina, "dev-07-recolhedor-falhou", did)
         erros.append(f"{siafi}: não conseguiu preencher o recolhedor/valores (did={did}).")
         return False
+    _aguardar_ddf055_assentar(
+        pagina,
+        did,
+        etapa="recolhedor-preenchido",
+        exigir_predoc=True,
+        exigir_recolhedor=True,
+        timeout_ms=12000,
+        pausa_s=0.55,
+    )
 
     # O AJAX do recolhedor pode tocar no formulário; reaplica os campos do topo
     # e o Pré-Doc antes da confirmação.
@@ -3158,6 +3281,15 @@ def _preencher_deducao_darf_total_ddf055(
         recurso=recurso,
         vinculacao="400",
     )
+    _aguardar_ddf055_assentar(
+        pagina,
+        did,
+        etapa="predoc-revalidado",
+        exigir_predoc=True,
+        exigir_recolhedor=True,
+        timeout_ms=12000,
+        pausa_s=0.35,
+    )
 
     rid_final = _obter_rid(pagina, did)
     if not _preencher_recolhedor_darf(
@@ -3172,6 +3304,15 @@ def _preencher_deducao_darf_total_ddf055(
         _capturar_ddf055_dev(pagina, "dev-08-recolhedor-final-falhou", did)
         erros.append(f"{siafi}: Valor da Receita não fixou na revalidação final (did={did}).")
         return False
+    _aguardar_ddf055_assentar(
+        pagina,
+        did,
+        etapa="recolhedor-revalidado",
+        exigir_predoc=True,
+        exigir_recolhedor=True,
+        timeout_ms=12000,
+        pausa_s=0.35,
+    )
     if not _fixar_valor_receita_darf(pagina, did, valor_item_br, erros):
         _capturar_ddf055_dev(pagina, "dev-08-valor-receita-final-falhou", did)
         return False
@@ -3182,6 +3323,15 @@ def _preencher_deducao_darf_total_ddf055(
         _capturar_ddf055_dev(pagina, "dev-08-campos-variaveis-final-falharam", did)
         return False
     _fixar_valor_receita_darf(pagina, did, valor_item_br, erros)
+    _aguardar_ddf055_assentar(
+        pagina,
+        did,
+        etapa="antes-confirmar",
+        exigir_predoc=True,
+        exigir_recolhedor=True,
+        timeout_ms=12000,
+        pausa_s=0.35,
+    )
 
     _capturar_ddf055_dev(pagina, "dev-08-antes-confirmar", did)
     _verificar_interrupcao(deve_parar)

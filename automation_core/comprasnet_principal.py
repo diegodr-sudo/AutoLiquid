@@ -332,81 +332,113 @@ def preencher_pco_direto(page: PageLike, dados: dict[str, Any], empenho: dict[st
     valores = _montar_valores_pco(dados, empenho)
     if not valores:
         return
-    resultado = page.evaluate(
-        """
-        (valores) => {
-          const situacaoSufixo = document.body.getAttribute("data-autoliquid-situacao-sufixo") || "";
-          const empenhoSufixo = document.body.getAttribute("data-autoliquid-empenho-sufixo") || "";
-          const setValue = (id, value) => {
-            const el = document.getElementById(id);
-            if (!el) return { id, ok: false, reason: "not_found" };
-            const proto = el instanceof HTMLTextAreaElement
-              ? HTMLTextAreaElement.prototype
-              : HTMLInputElement.prototype;
-            const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-            el.focus();
-            if (window.$ && $(el).inputmask) {
-              try { $(el).inputmask("setvalue", value); } catch (e) {}
+
+    resultado = None
+    for tentativa in range(1, 4):
+        resultado = page.evaluate(
+            """
+            (valores) => {
+              const situacaoSufixo = document.body.getAttribute("data-autoliquid-situacao-sufixo") || "";
+              const empenhoSufixo = document.body.getAttribute("data-autoliquid-empenho-sufixo") || "";
+              const setValue = (id, value) => {
+                const el = document.getElementById(id);
+                if (!el) return { id, ok: false, reason: "not_found", expected: value };
+                const proto = el instanceof HTMLTextAreaElement
+                  ? HTMLTextAreaElement.prototype
+                  : HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+                el.focus();
+                if (window.$ && $(el).inputmask) {
+                  try { $(el).inputmask("setvalue", value); } catch (e) {}
+                }
+                if (!el.value || String(el.value).replace(/\\D/g, "") !== String(value || "").replace(/\\D/g, "")) {
+                  if (setter) setter.call(el, value);
+                  else el.value = value;
+                }
+                el.defaultValue = el.value || value;
+                el.setAttribute("value", el.value || value);
+                el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true }));
+                el.dispatchEvent(new Event("change", { bubbles: true }));
+                el.dispatchEvent(new Event("blur", { bubbles: true }));
+                return { id, ok: true, expected: value };
+              };
+              const setSelectNoChange = (id, wantedText) => {
+                const el = document.getElementById(id);
+                if (!el) return { id, ok: false, reason: "not_found", expected: wantedText };
+                const wanted = String(wantedText || "").toUpperCase();
+                const option = Array.from(el.options || []).find((item) =>
+                  String(item.textContent || item.value || "").toUpperCase().includes(wanted)
+                );
+                if (option) el.value = option.value;
+                return { id, ok: true, expected: wantedText };
+              };
+              const out = [];
+              if (valores.indrtemcontrato && situacaoSufixo) {
+                out.push(setSelectNoChange(`indrtemcontrato${situacaoSufixo}`, valores.indrtemcontrato));
+              }
+              if (valores.numclassd && situacaoSufixo) out.push(setValue(`numclassd${situacaoSufixo}`, valores.numclassd));
+              if (valores.txtinscre && situacaoSufixo) out.push(setValue(`txtinscre${situacaoSufixo}`, valores.txtinscre));
+              for (const prefix of ["numclassa", "numclassb", "numclassc"]) {
+                if (valores[prefix] && empenhoSufixo) out.push(setValue(`${prefix}${empenhoSufixo}`, valores[prefix]));
+              }
+              if (document.activeElement && typeof document.activeElement.blur === "function") document.activeElement.blur();
+              return out;
             }
-            if (!el.value || String(el.value).replace(/\\D/g, "") !== String(value || "").replace(/\\D/g, "")) {
-              if (setter) setter.call(el, value);
-              else el.value = value;
+            """,
+            valores,
+        )
+        page.wait_for_timeout(900)
+        resultado = page.evaluate(
+            """
+            (items) => {
+              const digits = (value) => String(value || "").replace(/\\D/g, "");
+              return (items || []).map((item) => {
+                const el = document.getElementById(item.id);
+                const after = el?.value || "";
+                const expectedDigits = digits(item.expected || "");
+                const afterDigits = digits(after);
+                const stable = String(item.id || "").startsWith("indrtemcontrato")
+                  || Boolean(expectedDigits && afterDigits && afterDigits.includes(expectedDigits));
+                return { ...item, after, stable };
+              });
             }
-            el.defaultValue = el.value || value;
-            el.setAttribute("value", el.value || value);
-            el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true }));
-            return { id, ok: true, value: el.value || "" };
-          };
-          const setSelectNoChange = (id, wantedText) => {
-            const el = document.getElementById(id);
-            if (!el) return { id, ok: false, reason: "not_found" };
-            const wanted = String(wantedText || "").toUpperCase();
-            const option = Array.from(el.options || []).find((item) =>
-              String(item.textContent || item.value || "").toUpperCase().includes(wanted)
-            );
-            if (option) el.value = option.value;
-            return { id, ok: true, value: el.options?.[el.selectedIndex]?.textContent || el.value || "" };
-          };
-          const out = [];
-          if (valores.indrtemcontrato && situacaoSufixo) {
-            out.push(setSelectNoChange(`indrtemcontrato${situacaoSufixo}`, valores.indrtemcontrato));
-          }
-          if (valores.numclassd && situacaoSufixo) out.push(setValue(`numclassd${situacaoSufixo}`, valores.numclassd));
-          if (valores.txtinscre && situacaoSufixo) out.push(setValue(`txtinscre${situacaoSufixo}`, valores.txtinscre));
-          for (const prefix of ["numclassa", "numclassb", "numclassc"]) {
-            if (valores[prefix] && empenhoSufixo) out.push(setValue(`${prefix}${empenhoSufixo}`, valores[prefix]));
-          }
-          const itemId = document.body.getAttribute("data-autoliquid-empenho-item-id") || "";
-          const panel = itemId ? document.getElementById(itemId) : null;
-          const collapse = itemId ? document.getElementById(`collapse${itemId}`) : null;
-          try {
-            if (window.$ && collapse) $(collapse).collapse("hide");
-          } catch (e) {}
-          if (panel) panel.classList.add("collapsed-box");
-          if (collapse) {
-            collapse.classList.remove("in");
-            collapse.style.display = "";
-            collapse.style.height = "0px";
-            collapse.setAttribute("aria-expanded", "false");
-          }
-          if (document.activeElement && typeof document.activeElement.blur === "function") document.activeElement.blur();
-          const after = out.map((item) => {
-            const el = document.getElementById(item.id);
-            return { ...item, after: el?.value || "" };
-          });
-          return after;
-        }
-        """,
-        valores,
-    )
-    page.wait_for_timeout(300)
+            """,
+            resultado,
+        )
+        instaveis = [
+            item for item in (resultado or [])
+            if item.get("ok") and not item.get("stable")
+        ]
+        if not instaveis:
+            page.evaluate(
+                """
+                () => {
+                  const itemId = document.body.getAttribute("data-autoliquid-empenho-item-id") || "";
+                  const panel = itemId ? document.getElementById(itemId) : null;
+                  const collapse = itemId ? document.getElementById(`collapse${itemId}`) : null;
+                  try {
+                    if (window.$ && collapse) $(collapse).collapse("hide");
+                  } catch (e) {}
+                  if (panel) panel.classList.add("collapsed-box");
+                  if (collapse) {
+                    collapse.classList.remove("in");
+                    collapse.style.display = "";
+                    collapse.style.height = "0px";
+                    collapse.setAttribute("aria-expanded", "false");
+                  }
+                }
+                """
+            )
+            break
+        if tentativa < 3:
+            page.wait_for_timeout(500)
+
     falhas = [item for item in (resultado or []) if not item.get("ok")]
     if falhas:
         raise RuntimeError(f"Preenchimento direto PCO falhou: {falhas}")
     divergentes = [
         item for item in (resultado or [])
-        if not str(item.get("after") or "").strip()
-        and not str(item.get("id") or "").startswith("indrtemcontrato")
+        if item.get("ok") and not item.get("stable")
     ]
     if divergentes:
         raise RuntimeError(f"Preenchimento direto PCO não estabilizou: {divergentes}")
