@@ -20,6 +20,15 @@ from comprasnet.base import (
 )
 
 
+class ExecucaoInterrompida(Exception):
+    pass
+
+
+def _verificar_interrupcao(deve_parar=None) -> None:
+    if deve_parar and deve_parar():
+        raise ExecucaoInterrompida("Dados Básicos interrompido pelo usuário.")
+
+
 def _normalizar_numero_documento(valor: str) -> str:
     digitos = "".join(ch for ch in str(valor or "") if ch.isdigit())
     return digitos.lstrip("0") or "0"
@@ -637,7 +646,8 @@ def _ler_codigo_credor_basicos(pagina) -> str:
         return ""
 
 
-def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwright=None):
+def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwright=None, deve_parar=None):
+    _verificar_interrupcao(deve_parar)
     data_vencimento_usuario = str(
         dados_extraidos.get("_vencimento_documento", "") or data_vencimento_usuario or ""
     ).strip()
@@ -660,6 +670,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
 
         # Garante que a aba correta está aberta antes de procurar qualquer campo.
         _abrir_aba_dados_basicos(pagina)
+        _verificar_interrupcao(deve_parar)
 
         # 0. Tipo DH Padrão — NP
         # A decisão é dirigida pelo VALOR ATUAL do select #select-tipo-dh-padrao,
@@ -737,6 +748,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
 
         if not _ok_dh:
             print("  → Aviso: Tipo DH não confirmado; seguindo o fluxo.")
+        _verificar_interrupcao(deve_parar)
 
         # 1. Data de Vencimento
         print(f"[1] Vencimento: {data_vencimento_usuario}")
@@ -746,6 +758,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
         except Exception as exc:
             print(f"  → Fallback do vencimento por id falhou ({exc}); tentando pelo label.")
             preencher_data(pagina, "Data de Vencimento:", data_vencimento_usuario)
+        _verificar_interrupcao(deve_parar)
 
         # 2. Processo — usa locator scoped à aba "Dados Básicos" para evitar
         #    strict mode violation (o id #txtprocesso existe em múltiplas abas).
@@ -764,11 +777,13 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
             campo_proc.fill(proc)
             pagina.keyboard.press("Tab")
             time.sleep(0.3)
+        _verificar_interrupcao(deve_parar)
 
         # 3. Observação — formato completo com contrato (se houver) e distinção NF/Fatura
         obs = _montar_observacao(dados_extraidos)
         print(f"[3] Observação: {obs}")
         pagina.locator("textarea:visible").first.fill(obs)
+        _verificar_interrupcao(deve_parar)
 
         # 4. Ateste
         notas = dados_extraidos.get('Notas Fiscais', [])
@@ -800,6 +815,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
 
             linhas_tabela = _coletar_linhas_notas_basicos(pagina)
             erros.extend(_comparar_documentos_origem(notas, linhas_tabela))
+        _verificar_interrupcao(deve_parar)
 
         # 6. Confirmar Dados Básicos
         print("[6] Confirmando Dados Básicos...")
@@ -815,8 +831,11 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
             mensagem = "Dados Básicos requer conferência manual:\n" + "\n".join(erros)
             return {"status": "alerta", "mensagem": mensagem}
 
+        _verificar_interrupcao(deve_parar)
         return {"status": "sucesso", "mensagem": "Dados Básicos preenchidos e confirmados!"}
 
+    except ExecucaoInterrompida as e:
+        return {"status": "interrompido", "mensagem": str(e)}
     except Exception as e:
         return {"status": "erro", "mensagem": str(e)}
     finally:

@@ -4,9 +4,9 @@ Etapa 0 — Pesquisa e apropriação de instrumentos de cobrança no Contratos.g
 
 Fluxo:
   1. Navega para a página de Apropriação de instrumentos de cobrança.
-  2. Aplica filtros rápidos: ano de emissão da NF (quando único) e situação
-     Pendente.
-  3. Filtra por número do contrato (preferencial) ou CNPJ (fallback).
+  2. Preenche a pesquisa por número do contrato (preferencial) ou CNPJ (fallback).
+  3. Aplica filtros rápidos: UG do instrumento, ano de emissão da NF
+     (quando único) e situação Pendente.
   4. Seleciona as caixas de seleção cujo Número do Documento bate com o dado
      extraído do PDF (aceita variações com/sem zeros à esquerda).
   5. Se não encontrar, remove filtros, seleciona "Todos" e pesquisa de novo.
@@ -15,14 +15,71 @@ Fluxo:
 
 from __future__ import annotations
 
+import os
+import platform
 import re
+import subprocess
 import time
 import logging
 
 log = logging.getLogger(__name__)
 
-# A página de Apropriação instrumentos de cobrança fica em /gescon/fatura
-URL_APROPRIAR = "https://contratos.comprasnet.gov.br/gescon/fatura"
+
+class ExecucaoInterrompida(Exception):
+    pass
+
+
+def _verificar_interrupcao(deve_parar=None) -> None:
+    if deve_parar and deve_parar():
+        raise ExecucaoInterrompida("Apropriação interrompida pelo usuário.")
+
+
+def _ativar_janela_navegador() -> None:
+    """Traz o navegador em execução para frente no SO.
+
+    Verifica QUAL navegador está rodando antes de ativar — nunca lança um
+    app que não está aberto (osascript 'activate' abre o app se não estiver rodando).
+    """
+    sistema = platform.system()
+    try:
+        if sistema == "Darwin":
+            # Mapa: nome do processo (pgrep) → nome AppleScript
+            candidatos = [
+                ("Google Chrome", "Google Chrome"),
+                ("Microsoft Edge", "Microsoft Edge"),
+            ]
+            for processo, app in candidatos:
+                check = subprocess.run(
+                    ["pgrep", "-x", processo],
+                    capture_output=True,
+                    timeout=2,
+                )
+                if check.returncode == 0:
+                    subprocess.run(
+                        ["osascript", "-e", f'tell application "{app}" to activate'],
+                        capture_output=True,
+                        timeout=3,
+                    )
+                    return  # Achou e ativou — não tenta o próximo
+        elif sistema == "Windows":
+            for app in ("Google Chrome", "Microsoft Edge"):
+                try:
+                    result = subprocess.run(
+                        ["powershell", "-Command",
+                         f"(New-Object -ComObject WScript.Shell).AppActivate('{app}')"],
+                        capture_output=True,
+                        timeout=3,
+                    )
+                    if result.returncode == 0:
+                        return
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+# A página de Apropriação instrumentos de cobrança fica em /gescon/fatura.
+_UG_INSTRUMENTO_COBRANCA = "153163"
+URL_APROPRIAR = f"https://contratos.comprasnet.gov.br/gescon/fatura?ug_ic={_UG_INSTRUMENTO_COBRANCA}"
 
 # Timeout padrão para waitFor do Playwright (ms)
 _TIMEOUT = 20_000
@@ -233,18 +290,25 @@ def _aguardar_tabela_estavel(pagina, timeout_ms: int = 60_000) -> None:
 
     js_estavel = """
         () => {
-            // 1. Verifica spinners visíveis (qualquer elemento girando/carregando)
-            var todoEls = document.querySelectorAll('*');
-            for (var i = 0; i < todoEls.length; i++) {
-                var el = todoEls[i];
-                var cls = (el.className || '').toString().toLowerCase();
-                if (cls.indexOf('spin') !== -1 || cls.indexOf('loading') !== -1 || cls.indexOf('process') !== -1) {
-                    var rect = el.getBoundingClientRect();
+            // 1. Verifica indicadores de loading específicos do DataTables/Bootstrap.
+            //    Evita varrer todos os elementos — classes genéricas como 'process'
+            //    aparecem em elementos permanentes do Comprasnet e causam loop infinito.
+            var seletoresLoading = [
+                '#crudTable_processing',
+                '.dataTables_processing',
+                '.spinner-border:not(.btn .spinner-border)',
+                '.spinner-grow:not(.btn .spinner-grow)',
+                '[data-loading="true"]',
+            ];
+            for (var k = 0; k < seletoresLoading.length; k++) {
+                var els = document.querySelectorAll(seletoresLoading[k]);
+                for (var i = 0; i < els.length; i++) {
+                    var el = els[i];
                     var style = window.getComputedStyle(el);
-                    if (rect.width > 2 && rect.height > 2
-                            && style.display !== 'none'
+                    var opacity = parseFloat(style.opacity || '1');
+                    if (style.display !== 'none'
                             && style.visibility !== 'hidden'
-                            && style.opacity !== '0') {
+                            && opacity > 0.1) {
                         return -1;  // ainda carregando
                     }
                 }
@@ -341,13 +405,27 @@ def _aplicar_select2_por_id(pagina, select_id: str, *, valores: list[str], texto
         return False
 
 
-def _aplicar_filtros_iniciais(pagina, ano_emissao: str) -> None:
+def _aplicar_filtros_iniciais(
+    pagina,
+    ano_emissao: str,
+    *,
+    aplicar_situacao: bool = True,
+) -> None:
     """
-    Aplica filtros baratos antes da busca textual:
+    Aplica filtros após a busca textual:
+    - UG do Instrumento de Cobrança.
     - Ano Emissão, quando todas as NFs têm o mesmo ano.
-    - Situação = Pendente.
+    - Situação = Pendente, exceto em fallback.
     """
     filtros_aplicados = []
+    if _aplicar_select2_por_id(
+        pagina,
+        "filter_ug_ic",
+        valores=[_UG_INSTRUMENTO_COBRANCA],
+        texto=_UG_INSTRUMENTO_COBRANCA,
+    ):
+        filtros_aplicados.append(f"UG IC={_UG_INSTRUMENTO_COBRANCA}")
+
     if ano_emissao:
         if _aplicar_select2_por_id(
             pagina,
@@ -357,13 +435,14 @@ def _aplicar_filtros_iniciais(pagina, ano_emissao: str) -> None:
         ):
             filtros_aplicados.append(f"Ano Emissão={ano_emissao}")
 
-    if _aplicar_select2_por_id(
-        pagina,
-        "filter_situacao",
-        valores=["PEN", "Pendente"],
-        texto="Pendente",
-    ):
-        filtros_aplicados.append("Situação=Pendente")
+    if aplicar_situacao:
+        if _aplicar_select2_por_id(
+            pagina,
+            "filter_situacao",
+            valores=["PEN", "Pendente"],
+            texto="Pendente",
+        ):
+            filtros_aplicados.append("Situação=Pendente")
 
     if filtros_aplicados:
         log.info("Filtros iniciais aplicados: %s", " | ".join(filtros_aplicados))
@@ -446,10 +525,52 @@ def _usar_campo_pesquisar(pagina, valor: str) -> None:
         # Pequena pausa inicial para o site iniciar a requisição
         time.sleep(1.5)
         # Espera inteligente: polls até tabela estável (sem spinner, com dados)
-        _aguardar_tabela_estavel(pagina, timeout_ms=90_000)
+        _aguardar_tabela_estavel(pagina, timeout_ms=30_000)
         log.info("Pesquisa concluída e tabela estável.")
     except Exception as exc:
         log.warning("Erro ao usar campo Pesquisar: %s", exc)
+
+
+def _pesquisa_contem_termo(pagina, termo: str) -> bool:
+    """Confirma que o campo de busca visível contém o termo antes de expandir para Todos."""
+    js = """
+        (termo) => {
+            const normalizar = (valor) => (valor || '').toString()
+                .normalize('NFD')
+                .replace(/[\\u0300-\\u036f]/g, '')
+                .replace(/\\s+/g, '')
+                .toLowerCase();
+            const alvo = normalizar(termo);
+            if (!alvo) return false;
+            const seletores = [
+                "input[type='search']",
+                "input[aria-label*='Search']",
+                "input[aria-label*='Pesquisar']",
+                "input.form-control",
+                "input[type='text']",
+            ];
+            for (const seletor of seletores) {
+                for (const input of Array.from(document.querySelectorAll(seletor))) {
+                    const rect = input.getBoundingClientRect();
+                    if (rect.width > 0 && rect.height > 0 && normalizar(input.value).includes(alvo)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+    """
+    try:
+        return bool(pagina.evaluate(js, termo))
+    except Exception:
+        return False
+
+
+def _clicar_todos_registros_filtrados(pagina, termo_pesquisa: str) -> None:
+    if not _pesquisa_contem_termo(pagina, termo_pesquisa):
+        log.warning("Não selecionei 'Todos': pesquisa textual ainda não contém '%s'.", termo_pesquisa)
+        return
+    _clicar_todos_registros(pagina)
 
 
 def _selecionar_documentos(pagina, numero_documento: str | list[str]) -> int:
@@ -527,12 +648,74 @@ def _selecionar_todos_checkboxes(pagina) -> int:
         return 0
 
 
+def _clicar_nova_apropriacao_se_visivel(pagina) -> str | None:
+    js_nova = """
+        () => {
+            const normalizar = (valor) => (valor || '')
+                .toString()
+                .normalize('NFD')
+                .replace(/[\\u0300-\\u036f]/g, '')
+                .toLowerCase()
+                .trim()
+                .replace(/\\s+/g, ' ');
+            const candidatos = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="submit"], input[type="button"]'));
+            for (const el of candidatos) {
+                const rect = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                if (rect.width <= 0 || rect.height <= 0 || style.visibility === 'hidden' || style.display === 'none') continue;
+                const txt = normalizar(el.textContent || el.value || el.getAttribute('aria-label') || el.title || '');
+                if (txt.includes('nova apropriacao')) {
+                    el.click();
+                    return txt;
+                }
+            }
+            return null;
+        }
+    """
+    try:
+        clicado = pagina.evaluate(js_nova)
+        return str(clicado) if clicado else None
+    except Exception:
+        return None
+
+
+def _aguardar_ou_clicar_nova_apropriacao(pagina, timeout_s: float = 10) -> str | None:
+    limite = time.time() + timeout_s
+    while time.time() < limite:
+        clicado = _clicar_nova_apropriacao_se_visivel(pagina)
+        if clicado:
+            return clicado
+        try:
+            em_formulario = bool(pagina.evaluate("""
+                () => {
+                    const texto = document.body ? document.body.innerText.toLowerCase() : '';
+                    return texto.includes('dados básicos')
+                        || texto.includes('dados basicos')
+                        || texto.includes('tipo dh')
+                        || texto.includes('principal com orçamento')
+                        || texto.includes('principal com orcamento');
+                }
+            """))
+            if em_formulario:
+                return None
+        except Exception:
+            pass
+        time.sleep(0.25)
+    return None
+
+
 def _clicar_apropriar(pagina) -> None:
     """
     Clica no botão 'Apropriar Faturas' (botão azul abaixo da tabela)
     ou em qualquer variação do texto 'Apropriar'.
     """
     log.info("Clicando em Apropriar Faturas...")
+
+    clicado_nova_previa = _clicar_nova_apropriacao_se_visivel(pagina)
+    if clicado_nova_previa:
+        log.info("Modal de apropriação já estava aberto; clicado em Nova Apropriação: '%s'", clicado_nova_previa)
+        _aguardar_inicio_formulario_apropriacao(pagina)
+        return
 
     js = """
         () => {
@@ -572,39 +755,18 @@ def _clicar_apropriar(pagina) -> None:
 
     log.info("Botão clicado: '%s'", clicado)
 
-    # Clica em "NOVA APROPRIAÇÃO" assim que o modal ficar disponível.
-    js_nova = """
-        () => {
-            var termos = ['nova apropriação', 'nova apropriacão', 'nova apropriacao', 'nova apropriaçao'];
-            var candidatos = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="submit"], input[type="button"]'));
-            for (var t = 0; t < termos.length; t++) {
-                for (var i = 0; i < candidatos.length; i++) {
-                    var el = candidatos[i];
-                    var txt = (el.textContent || el.value || '').toLowerCase().trim().replace(/\\s+/g, ' ');
-                    if (txt === termos[t] || txt.indexOf('nova apropr') !== -1) {
-                        el.click();
-                        return txt;
-                    }
-                }
-            }
-            return null;
-        }
-    """
-    clicado_nova = None
-    limite_modal = time.time() + 8
-    while time.time() < limite_modal and not clicado_nova:
-        clicado_nova = pagina.evaluate(js_nova)
-        if not clicado_nova:
-            time.sleep(0.25)
+    # Se já existe apropriação anterior, o portal abre o modal "Como deseja apropriar?".
+    # Sempre escolhemos NOVA APROPRIAÇÃO; copiar apropriação anterior não se aplica.
+    clicado_nova = _aguardar_ou_clicar_nova_apropriacao(pagina, timeout_s=10)
+    if clicado_nova:
+        log.info("Clicado em Nova Apropriação: '%s'", clicado_nova)
+    else:
+        log.info("Modal de Nova Apropriação não apareceu; seguindo com o formulário atual.")
 
-    if not clicado_nova:
-        raise RuntimeError(
-            "Modal 'Como deseja apropriar?' apareceu mas o botão "
-            "'NOVA APROPRIAÇÃO' não foi encontrado."
-        )
+    _aguardar_inicio_formulario_apropriacao(pagina)
 
-    log.info("Clicado em Nova Apropriação: '%s'", clicado_nova)
 
+def _aguardar_inicio_formulario_apropriacao(pagina) -> None:
     # Não espera networkidle: o portal pode manter requisições abertas e atrasar
     # a transição para Dados Básicos. Basta aguardar a tela de apropriação iniciar.
     try:
@@ -628,6 +790,9 @@ def _garantir_na_pagina_apropriar(pagina) -> None:
     Garante que o navegador está na página de Apropriação instrumentos de cobrança.
     Essa página fica em /gescon/fatura. Se já estiver no domínio correto, fica.
     Se estiver fora do domínio, navega para URL_APROPRIAR.
+
+    Sempre traz o Chrome para frente — o navegador pode ter sido aberto em modo
+    oculto (ex: atualização da fila Solar) e precisa ficar visível para o usuário.
     """
     url_atual = pagina.url
     log.info("URL atual: %s", url_atual)
@@ -647,6 +812,13 @@ def _garantir_na_pagina_apropriar(pagina) -> None:
         pagina.goto(URL_APROPRIAR, wait_until="networkidle", timeout=30_000)
         time.sleep(1)
 
+    # Traz a aba e a janela do navegador para frente (caso Chrome esteja em segundo plano)
+    try:
+        pagina.bring_to_front()
+    except Exception:
+        pass
+    _ativar_janela_navegador()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FILTROS + PESQUISA EM LOTE (otimização de performance)
@@ -658,8 +830,8 @@ def _aplicar_filtros_e_pesquisa_em_lote(
     termo_pesquisa: str,
 ) -> bool:
     """
-    Aplica de uma só vez: Todos por página, filtro de ano, situação Pendente
-    e texto de pesquisa.
+    Aplica de uma só vez: UG do Instrumento de Cobrança, filtro de ano,
+    situação Pendente e texto de pesquisa.
 
     Disparar todos os valores antes de qualquer evento de change evita reloads
     intermediários da tabela — apenas um ciclo AJAX em vez de dois ou três.
@@ -678,33 +850,13 @@ def _aplicar_filtros_e_pesquisa_em_lote(
                 .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim().toLowerCase();
 
             const desejadosAno = anoEmissao ? [anoEmissao] : [];
+            const desejadosUgIc = ['153163'];
             const desejadosSit = ['pen', 'pendente'];
+            let ugIcAplicada = false;
             let situacaoAplicada = false;
-            let paginacaoAplicada = false;
             let pesquisaAplicada = false;
 
-            // ── 1. Define paginação e filtros SEM disparar change ainda ──
-            const setTodosRegistros = () => {
-                const selects = [
-                    document.querySelector('select[name="crudTable_length"]'),
-                    document.querySelector('select[name$="_length"]'),
-                    document.querySelector('.dataTables_length select'),
-                    ...Array.from(document.querySelectorAll('select')),
-                ].filter(Boolean);
-
-                for (const sel of selects) {
-                    const opt = Array.from(sel.options || []).find((option) => {
-                        const texto = normalizar(option.textContent);
-                        return option.value === '-1' || texto === 'todos' || texto.includes('todos');
-                    });
-                    if (opt) {
-                        sel.value = opt.value;
-                        return sel;
-                    }
-                }
-                return null;
-            };
-
+            // ── 1. Define filtros SEM disparar change ainda ──
             const setSelect = (id, desejados) => {
                 const sel = document.getElementById(id);
                 if (!sel) return false;
@@ -718,8 +870,7 @@ def _aplicar_filtros_e_pesquisa_em_lote(
                 return false;
             };
 
-            const selectTodos = setTodosRegistros();
-            paginacaoAplicada = !!selectTodos;
+            ugIcAplicada = setSelect('filter_ug_ic', desejadosUgIc);
             if (anoEmissao) setSelect('filter_emissao', desejadosAno);
             situacaoAplicada = setSelect('filter_situacao', desejadosSit);
 
@@ -762,7 +913,7 @@ def _aplicar_filtros_e_pesquisa_em_lote(
                 dispararElemento(el);
             };
 
-            dispararElemento(selectTodos);
+            dispararChange('filter_ug_ic');
             if (anoEmissao) dispararChange('filter_emissao');
             dispararChange('filter_situacao');
 
@@ -792,14 +943,14 @@ def _aplicar_filtros_e_pesquisa_em_lote(
                 }
             }
 
-            return paginacaoAplicada || situacaoAplicada || pesquisaAplicada;
+            return ugIcAplicada || situacaoAplicada || pesquisaAplicada;
         }
     """
     try:
         ok = pagina.evaluate(js, {"anoEmissao": ano_emissao, "termoPesquisa": termo_pesquisa})
         time.sleep(1.5)  # janela inicial para o browser iniciar as requisições
-        _aguardar_tabela_estavel(pagina, timeout_ms=60_000)
-        log.info("Todos + filtros + pesquisa aplicados em lote (ok: %s).", ok)
+        _aguardar_tabela_estavel(pagina, timeout_ms=30_000)
+        log.info("Filtros + pesquisa aplicados em lote (ok: %s).", ok)
         return bool(ok)
     except Exception as exc:
         log.warning("Erro ao aplicar filtros em lote: %s. Usando fluxo sequencial.", exc)
@@ -810,7 +961,7 @@ def _aplicar_filtros_e_pesquisa_em_lote(
 # Ponto de entrada principal
 # ─────────────────────────────────────────────────────────────────────────────
 
-def executar(dados: dict, pagina, playwright=None) -> dict:
+def executar(dados: dict, pagina, playwright=None, deve_parar=None) -> dict:
     """
     Executa a etapa de pesquisa e apropriação de instrumento de cobrança.
 
@@ -829,6 +980,7 @@ def executar(dados: dict, pagina, playwright=None) -> dict:
     dict com chaves: status ("ok" | "erro" | "alerta"), mensagem
     """
     try:
+        _verificar_interrupcao(deve_parar)
         contrato = _extrair_contrato(dados)
         cnpj = _extrair_cnpj(dados)
         numero_doc = _extrair_numero_documento(dados)
@@ -846,10 +998,10 @@ def executar(dados: dict, pagina, playwright=None) -> dict:
 
         # 1. Garantir que estamos na página correta
         _garantir_na_pagina_apropriar(pagina)
+        _verificar_interrupcao(deve_parar)
 
-        # 2+3 combinados: aplica ano, situação Pendente E pesquisa textual de uma vez.
-        #     Evita dois ciclos de reload da tabela (um por filtro + um pela pesquisa).
-        filtro_label = ""
+        # 2+3: pesquisa textual primeiro; filtros depois.
+        #   Prioridade: contrato. Se não houver contrato, usa CNPJ.
         if contrato:
             filtro_label = f"contrato '{contrato}'"
             termo_pesquisa = contrato
@@ -862,13 +1014,13 @@ def executar(dados: dict, pagina, playwright=None) -> dict:
                 "mensagem": "Não foi possível filtrar: contrato e CNPJ ausentes nos dados extraídos.",
             }
 
-        lote_ok = _aplicar_filtros_e_pesquisa_em_lote(pagina, ano_emissao, termo_pesquisa)
+        _usar_campo_pesquisar(pagina, termo_pesquisa)
+        _verificar_interrupcao(deve_parar)
+        _aplicar_filtros_iniciais(pagina, ano_emissao, aplicar_situacao=True)
+        _verificar_interrupcao(deve_parar)
 
-        if not lote_ok:
-            # Fallback sequencial caso o lote falhe (ex: página ainda carregando os selects)
-            log.info("Fallback sequencial: aplicando filtros e pesquisa separadamente.")
-            _aplicar_filtros_iniciais(pagina, ano_emissao)
-            _usar_campo_pesquisar(pagina, termo_pesquisa)
+        _clicar_todos_registros_filtrados(pagina, termo_pesquisa)
+        _verificar_interrupcao(deve_parar)
 
         # 4. Aguardar tabela (geralmente já estável após _aplicar_filtros_e_pesquisa_em_lote)
         try:
@@ -877,27 +1029,42 @@ def executar(dados: dict, pagina, playwright=None) -> dict:
             log.warning("Tabela pode estar vazia ou não carregada após filtro.")
 
         time.sleep(0.5)
+        _verificar_interrupcao(deve_parar)
 
         # 5. Selecionar caixas de seleção pelo número do documento
         marcados = _selecionar_documentos(pagina, numeros_docs)
+        _verificar_interrupcao(deve_parar)
 
         if marcados == 0:
-            log.info(
-                "Nenhum documento encontrado com filtros iniciais. "
-                "Removendo filtros e repetindo pesquisa ampla."
-            )
-            _remover_filtros(pagina)
-            _clicar_todos_registros(pagina)
-            if contrato:
-                _usar_campo_pesquisar(pagina, contrato)
-            else:
-                _usar_campo_pesquisar(pagina, _formatar_cnpj(cnpj))
-            try:
-                _aguardar_tabela(pagina, timeout_ms=10_000)
-            except Exception:
-                log.warning("Tabela pode estar vazia ou não carregada após fallback amplo.")
-            time.sleep(1)
-            marcados = _selecionar_documentos(pagina, numeros_docs)
+            termos_fallback: list[tuple[str, str]] = []
+            if contrato and cnpj:
+                termos_fallback.append((f"CNPJ '{_formatar_cnpj(cnpj)}'", _formatar_cnpj(cnpj)))
+            elif cnpj:
+                termos_fallback.append((f"CNPJ '{_formatar_cnpj(cnpj)}'", _formatar_cnpj(cnpj)))
+
+            for label_fallback, termo_fallback in termos_fallback:
+                log.info(
+                    "Nenhum documento encontrado com %s. Tentando fallback por %s sem reaplicar situação.",
+                    filtro_label,
+                    label_fallback,
+                )
+                _usar_campo_pesquisar(pagina, termo_fallback)
+                _verificar_interrupcao(deve_parar)
+                _aplicar_filtros_iniciais(pagina, ano_emissao, aplicar_situacao=False)
+                _verificar_interrupcao(deve_parar)
+                _clicar_todos_registros_filtrados(pagina, termo_fallback)
+                _verificar_interrupcao(deve_parar)
+                try:
+                    _aguardar_tabela(pagina, timeout_ms=10_000)
+                except Exception:
+                    log.warning("Tabela pode estar vazia ou não carregada após fallback filtrado.")
+                time.sleep(0.5)
+                _verificar_interrupcao(deve_parar)
+                marcados = _selecionar_documentos(pagina, numeros_docs)
+                _verificar_interrupcao(deve_parar)
+                if marcados > 0:
+                    filtro_label = label_fallback
+                    break
 
         if marcados == 0:
             return {
@@ -915,7 +1082,9 @@ def executar(dados: dict, pagina, playwright=None) -> dict:
         log.info("%d documento(s) selecionado(s).", marcados)
 
         # 6. Clicar em Apropriar
+        _verificar_interrupcao(deve_parar)
         _clicar_apropriar(pagina)
+        _verificar_interrupcao(deve_parar)
 
         log.info("Etapa 0 concluída com sucesso.")
         return {
@@ -923,6 +1092,9 @@ def executar(dados: dict, pagina, playwright=None) -> dict:
             "mensagem": "{} documento(s) apropriado(s) com sucesso.".format(marcados),
         }
 
+    except ExecucaoInterrompida as exc:
+        log.info("Apropriação interrompida pelo usuário.")
+        return {"status": "interrompido", "mensagem": str(exc)}
     except Exception as exc:
         log.exception("Erro na etapa de apropriação")
         return {"status": "erro", "mensagem": str(exc)}

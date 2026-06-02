@@ -427,7 +427,7 @@ export function PendenciasPanel({
       ) : (
         <div className="mt-5 space-y-3">
           {pendenciasOrdenadas.map((pendencia) => {
-            const podeConcluir = Boolean(onToggleResolvida) && !pendencia.id.startsWith("local-");
+            const podeConcluir = Boolean(onToggleResolvida);
             const estaSalvando = togglingPendenciaId === pendencia.id;
             return (
             <div
@@ -445,17 +445,17 @@ export function PendenciasPanel({
                   </span>
                   <button
                     type="button"
-                    onClick={() => podeConcluir && !estaSalvando && onToggleResolvida?.(pendencia, !pendencia.resolvida)}
-                    disabled={!podeConcluir || estaSalvando}
+                    onClick={() => podeConcluir && onToggleResolvida?.(pendencia, !pendencia.resolvida)}
+                    disabled={!podeConcluir}
                     className={`inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border px-3 text-xs font-semibold transition-all ${
                       pendencia.resolvida
                         ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15"
                         : "border-sky-500/25 bg-background/80 text-sky-800 shadow-sm hover:-translate-y-0.5 hover:border-sky-500/45 hover:bg-sky-500/10 hover:shadow-md"
-                    } ${!podeConcluir || estaSalvando ? "cursor-not-allowed opacity-45" : ""} ${estaSalvando ? "ring-2 ring-primary/15" : ""}`}
+                    } ${!podeConcluir ? "cursor-not-allowed opacity-45" : ""} ${estaSalvando ? "ring-2 ring-primary/15" : ""}`}
                     aria-label={pendencia.resolvida ? "Reabrir pendência" : "Concluir pendência"}
                   >
                     <CheckCircle2 className="h-4 w-4" />
-                    {estaSalvando ? "Salvando…" : pendencia.resolvida ? "Concluída" : "Concluir"}
+                    {pendencia.resolvida ? "Concluída" : "Concluir"}
                   </button>
                 </div>
               </div>
@@ -464,7 +464,7 @@ export function PendenciasPanel({
                 pendencia.descricao.replace(/\s*Códigos municipais:\s*[0-9, ]+\.?/i, "").trim()
               )}
               {/* Atalho portal ISS para pendência de LF (usa descricao original para extrair códigos) */}
-              {pendencia.titulo === "LF obrigatória para a OB" && (
+              {(pendencia.titulo === "LF obrigatória para a OB" || pendencia.titulo === "LF da dedução DOB001 obrigatória") && (
                 <PortaisLFPendencia descricao={pendencia.descricao} />
               )}
             </div>

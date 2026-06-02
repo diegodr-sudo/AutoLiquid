@@ -1202,10 +1202,25 @@ def _refresh_servidores_sorteio_background() -> None:
 
 
 def _servidores_sorteio_raw() -> list[dict[str, Any]]:
+    global SERVIDORES_SORTEIO_FUTURE
     cached, _source = _obter_cache_servidores_sorteio()
     if cached:
         return cached
-    _refresh_servidores_sorteio_background()
+    with SERVIDORES_SORTEIO_FUTURE_LOCK:
+        future = SERVIDORES_SORTEIO_FUTURE
+        if future is None or future.done():
+            future = SERVIDORES_SORTEIO_EXECUTOR.submit(_carregar_servidores_sorteio_remoto)
+            SERVIDORES_SORTEIO_FUTURE = future
+    try:
+        rows, source = future.result(timeout=2.5)
+        if rows:
+            _cache_servidores_sorteio(rows, source)
+            return _normalizar_servidores_sorteio(rows)
+    except TimeoutError:
+        _refresh_servidores_sorteio_background()
+    except Exception:
+        log.debug("Falha ao carregar servidores do sorteio antes de aplicar a fila", exc_info=True)
+        _refresh_servidores_sorteio_background()
     return []
 
 
@@ -1291,6 +1306,7 @@ class WebConfigPayload(BaseModel):
     perguntarLimparMes: bool
     temaWeb: str = "light"
     nivelLog: str = "desenvolvedor"
+    registroDevMode: bool = False
     tursoDatabaseUrl: str = ""
     tursoAuthToken: str = ""
     nomeUsuario: str = ""
@@ -1312,6 +1328,8 @@ class ChromeOpenResponse(BaseModel):
 
 class ExecucaoPayload(BaseModel):
     lfNumero: str = ""
+    lfPagamentoNumero: str = ""
+    lfDob001Numero: str = ""
     ugrNumero: str = ""
     vencimentoDocumento: str = ""
     usarContaPdf: bool = True
@@ -1322,6 +1340,32 @@ class ExecucaoPayload(BaseModel):
     dataApuracao: str = ""
     dataVencimento: str = ""
     codigoOperacional: str = ""
+
+
+def _resolver_lfs_payload(payload: ExecucaoPayload) -> tuple[str, str, str]:
+    fields_set = set(getattr(payload, "model_fields_set", getattr(payload, "__fields_set__", set())) or set())
+    lf_pagamento = (
+        payload.lfPagamentoNumero
+        if "lfPagamentoNumero" in fields_set
+        else (payload.lfPagamentoNumero or payload.lfNumero)
+    )
+    lf_dob001 = (
+        payload.lfDob001Numero
+        if "lfDob001Numero" in fields_set
+        else (payload.lfDob001Numero or payload.lfNumero)
+    )
+    lf_legacy = payload.lfNumero or lf_dob001 or lf_pagamento
+    return lf_legacy, lf_pagamento, lf_dob001
+
+
+class DevPrincipalOrcamentoPayload(BaseModel):
+    dryRun: bool = False
+    artifactDir: str = ""
+
+
+class DevPcoSnapshotPayload(BaseModel):
+    prefix: str = ""
+    artifactDir: str = ""
 
 
 class PendenciaResolvidaPayload(BaseModel):
@@ -1520,6 +1564,30 @@ def _atualizar_etapa(doc_id: str, etapa_id: int, status: str) -> None:
             etapa["status"] = status
             break
     _local_cache_service().salvar_documento(doc_id, doc)
+
+
+def _pausar_execucao_documento(doc: dict[str, Any]) -> dict[str, Any]:
+    next_doc = dict(doc)
+    next_doc["cancel_requested"] = True
+    next_doc["is_running"] = False
+
+    etapas = []
+    for etapa in next_doc.get("etapas", []) or []:
+        next_etapa = dict(etapa)
+        if str(next_etapa.get("status") or "") == "executando":
+            next_etapa["status"] = "aguardando"
+        etapas.append(next_etapa)
+    if etapas:
+        next_doc["etapas"] = etapas
+
+    deducoes_status = dict(next_doc.get("deducoes_status") or {})
+    for key, status in list(deducoes_status.items()):
+        if str(status or "") == "executando":
+            deducoes_status[key] = "aguardando"
+    if deducoes_status:
+        next_doc["deducoes_status"] = deducoes_status
+
+    return next_doc
 
 
 def _log(doc_id: str, mensagem: str) -> None:
@@ -1756,9 +1824,8 @@ def _montar_pendencias_documento(
             "configuracao",
         )
 
-    if any(str(ded.get("siafi", "") or "") == "DOB001" for ded in deducoes) and not str(
-        dados.get("lf_numero", "") or ""
-    ).strip():
+    lf_dob001_numero = str(dados.get("lf_dob001_numero", "") or dados.get("lf_numero", "") or "").strip()
+    if any(str(ded.get("siafi", "") or "") == "DOB001" for ded in deducoes) and not lf_dob001_numero:
         _dob001_codes = sorted({
             str(ded.get("codigo", "") or "").strip()
             for ded in deducoes
@@ -1768,8 +1835,8 @@ def _montar_pendencias_documento(
         _codes_str = f" Códigos municipais: {', '.join(_dob001_codes)}." if _dob001_codes else ""
         adicionar(
             "bloqueio",
-            "LF obrigatória para a OB",
-            f"Há dedução DOB001 no documento e o número da LF ainda não foi preenchido.{_codes_str}",
+            "LF da dedução DOB001 obrigatória",
+            f"Há dedução DOB001 no documento e o número da LF da dedução ainda não foi preenchido.{_codes_str}",
             "configuracao",
         )
 
@@ -1872,25 +1939,6 @@ def _montar_pendencias_documento(
                         "Informe o código VPD no painel de preenchimento antes de executar.",
                         "automacao",
                     )
-
-    for etapa in etapas:
-        if str(etapa.get("status", "") or "") == "erro":
-            adicionar(
-                "bloqueio",
-                f"Etapa com erro: {etapa.get('nome', 'Automação')}",
-                "A automação registrou erro nesta etapa e precisa de revisão antes de prosseguir.",
-                "automacao",
-            )
-
-    for ded in deducoes:
-        if str(ded.get("status", "") or "") == "erro":
-            rotulo = str(ded.get("siafi", "") or ded.get("tipo", "") or "Dedução").strip()
-            adicionar(
-                "bloqueio",
-                f"Dedução com erro: {rotulo}",
-                "Uma dedução falhou durante a execução e deve ser refeita ou conferida manualmente.",
-                "automacao",
-            )
 
     for alerta in dados.get("alertas", []) or[]:
         alerta_txt = str(alerta or "").strip()
@@ -2107,11 +2155,24 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
         c = str(codigo or "").strip()
         return c.lstrip("0") or c
 
+    def _municipio_deducao(codigo: str) -> str:
+        return {
+            "8105": "Florianópolis",
+            "8047": "Blumenau",
+            "8179": "Joinville",
+            "8093": "Curitibanos",
+            "8027": "Araranguá",
+            "5549": "Barra do Sul",
+            "8465": "Gov. Celso Ramos",
+            "8327": "São José",
+        }.get(_normalizar_codigo(codigo), "")
+
     deducoes =[
         {
             "id": i + 1,
             "tipo": ded.get("Situação", ""),
             "codigo": ded.get("Código", ""),
+            "municipio": _municipio_deducao(ded.get("Código", "")),
             "siafi": ded.get("Situação SIAFI", ""),
             "rendimento": ded.get("Rendimento", ""),
             "baseCalculo": _brl_para_float(ded.get("Base Cálculo", "0")),
@@ -2158,6 +2219,8 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
     return {
         "id": doc_id,
         "lfNumero": dados.get("lf_numero", ""),
+        "lfPagamentoNumero": dados.get("lf_pagamento_numero", dados.get("lf_numero", "")),
+        "lfDob001Numero": dados.get("lf_dob001_numero", dados.get("lf_numero", "")),
         "ugrNumero": dados.get("ugr_numero", ""),
         "vencimentoDocumento": dados.get("vencimento_documento", ""),
         "usarContaPdf": bool(dados.get("usar_conta_pdf", True)),
@@ -2254,10 +2317,15 @@ def _executar_uma_etapa(
     """Executa UMA etapa de automação, atualizando status e logs no dict doc."""
     import comprasnet.apropriar as comprasnet_apropriar
     import comprasnet.dados_basicos as comprasnet_dados_basicos
-    import comprasnet.principal_orcamento as comprasnet_principal_orcamento
     import comprasnet.deducao as comprasnet_deducao
     import comprasnet.dados_pagamento as comprasnet_dados_pagamento
     import comprasnet.centro_custo as comprasnet_centro_custo
+    from automation_core.comprasnet_principal import (
+        DEFAULT_ARTIFACT_DIR,
+        PrincipalPilotOptions,
+        montar_mensagem_conferencia_manual,
+        run_principal_orcamento_pilot,
+    )
 
     doc = _local_cache_service().obter_documento(doc_id)
     if not doc: return
@@ -2266,7 +2334,8 @@ def _executar_uma_etapa(
     venc = str(doc.get("vencimento_documento") or doc["dates"].get("vencimento", "") or "")
     venc_deducao = str(doc["dates"].get("vencimento", "") or "")
     apuracao = str(doc["dates"].get("apuracao", "") or "")
-    lf_numero = str(doc.get("lf_numero", "") or "")
+    lf_pagamento_numero = str(doc.get("lf_pagamento_numero", "") or doc.get("lf_numero", "") or "")
+    lf_dob001_numero = str(doc.get("lf_dob001_numero", "") or doc.get("lf_numero", "") or "")
     ugr_numero = str(doc.get("ugr_numero", "") or "")
     usar_conta_pdf = bool(doc.get("usar_conta_pdf", True))
     conta_banco = str(doc.get("conta_banco", "") or "")
@@ -2276,6 +2345,10 @@ def _executar_uma_etapa(
     def deve_parar():
         current = _local_cache_service().obter_documento(doc_id)
         return bool(current.get("cancel_requested", False)) if current else False
+
+    def _parar_se_solicitado(nome: str) -> None:
+        if deve_parar():
+            raise ExecucaoInterrompida(f"{nome} interrompido pelo usuário.")
 
     houve_divergencia = False
 
@@ -2307,16 +2380,17 @@ def _executar_uma_etapa(
     _log_s(doc_id, f"RUN {_ETAPAS_NOMES.get(etapa_id, f'Etapa {etapa_id}')}")
 
     try:
+        _parar_se_solicitado(_ETAPAS_NOMES.get(etapa_id, f"Etapa {etapa_id}"))
         if etapa_id == 0:
             _log(doc_id, "→ Pesquisando e apropriando instrumento de cobrança...")
             resultado = comprasnet_apropriar.executar(
-                dados, pagina=pagina, playwright=playwright_obj
+                dados, pagina=pagina, playwright=playwright_obj, deve_parar=deve_parar
             )
             _verificar_resultado(resultado, "Apropriar Instrumento")
         elif etapa_id == 1:
             _log(doc_id, "→ Iniciando Dados Básicos...")
             resultado = comprasnet_dados_basicos.executar(
-                dados, venc, pagina=pagina, playwright=playwright_obj
+                dados, venc, pagina=pagina, playwright=playwright_obj, deve_parar=deve_parar
             )
             _verificar_resultado(resultado, "Dados Básicos")
         elif etapa_id == 2:
@@ -2324,22 +2398,44 @@ def _executar_uma_etapa(
             vpd_manual = str(doc.get("vpd_manual", "") or "").strip()
             if vpd_manual:
                 dados["VPD_MANUAL"] = vpd_manual
-            resultado = comprasnet_principal_orcamento.executar(
-                dados, deve_parar=deve_parar, pagina=pagina, playwright=playwright_obj
+            _parar_se_solicitado("Principal com Orçamento")
+            results = run_principal_orcamento_pilot(
+                pagina,
+                dados,
+                PrincipalPilotOptions(
+                    dry_run=False,
+                    artifact_dir=DEFAULT_ARTIFACT_DIR,
+                    capture_manifest=True,
+                ),
+                deve_parar=deve_parar,
             )
-            _verificar_resultado(resultado, "Principal com Orçamento")
+            _parar_se_solicitado("Principal com Orçamento")
+            if not results:
+                raise RuntimeError(_detalhar_erro_execucao("Principal com Orçamento", "nenhuma ação executada"))
+            falhas = [result for result in results if not result.ok]
+            for result in results:
+                prefixo = "✓" if result.ok else "⚠"
+                _log(doc_id, f"{prefixo} {result.step_name}: {result.message}")
+            if falhas:
+                motivos = [f"{result.step_name}: {result.message}" for result in falhas]
+                if any("Principal com Orçamento requer conferência manual:" in result.message for result in falhas):
+                    mensagem = "\n".join(result.message for result in falhas if result.message)
+                else:
+                    mensagem = montar_mensagem_conferencia_manual(pagina, dados, motivos)
+                _verificar_resultado({"status": "alerta", "mensagem": mensagem}, "Principal com Orçamento")
         elif etapa_id == 3:
             _log(doc_id, "→ Iniciando Dedução...")
             resultado = comprasnet_deducao.executar(
-                dados, venc_deducao, apuracao, lf_numero,
+                dados, venc_deducao, apuracao, lf_dob001_numero,
                 deve_parar=deve_parar, pagina=pagina, playwright=playwright_obj,
+                pular_confirmar_aba=True,
             )
             _verificar_resultado(resultado, "Dedução")
         elif etapa_id == 4:
             _log(doc_id, "→ Iniciando Dados de Pagamento...")
             dados_pagamento = {
                 **dados,
-                "_lf_numero": lf_numero,
+                "_lf_numero": lf_pagamento_numero,
                 "_vencimento_documento": venc,
                 "_tipos_documento_lf": _web_config_service().carregar_configuracoes_web().get("tiposDocumentoLf", []),
             }
@@ -2349,7 +2445,7 @@ def _executar_uma_etapa(
                 conta_banco=conta_banco,
                 conta_agencia=conta_agencia,
                 conta_conta=conta_conta,
-                pagina=pagina, playwright=playwright_obj
+                pagina=pagina, playwright=playwright_obj, deve_parar=deve_parar
             )
             _verificar_resultado(resultado, "Dados de Pagamento")
         elif etapa_id == 5:
@@ -2362,6 +2458,8 @@ def _executar_uma_etapa(
         else:
             raise ValueError(f"Etapa desconhecida: {etapa_id}")
 
+        _parar_se_solicitado(_ETAPAS_NOMES.get(etapa_id, f"Etapa {etapa_id}"))
+
         # "divergencia": etapa terminou (não para a automação) porém com
         # divergências a conferir. Caso contrário, "concluido" normal.
         _atualizar_etapa(doc_id, etapa_id, "divergencia" if houve_divergencia else "concluido")
@@ -2373,6 +2471,13 @@ def _executar_uma_etapa(
             _log(doc_id, f"✓ Etapa {etapa_id} concluída.")
         for msg in _gerar_logs_etapa_sucesso(dados, etapa_id, venc):
             _log_s(doc_id, msg)
+
+    except ExecucaoInterrompida as exc:
+        _atualizar_etapa(doc_id, etapa_id, "aguardando")
+        mensagem = str(exc) or f"{_ETAPAS_NOMES.get(etapa_id, f'Etapa {etapa_id}')} interrompido pelo usuário."
+        _log(doc_id, f"⏸ {mensagem}")
+        _log_s(doc_id, f"STOP {mensagem}")
+        raise
 
     except Exception as exc:
         _atualizar_etapa(doc_id, etapa_id, "erro")
@@ -2491,6 +2596,8 @@ def _task_executar_etapa(doc_id: str, etapa_id: int):
     try:
         playwright_obj, pagina = _comprasnet_base().conectar()
         _executar_uma_etapa(doc_id, etapa_id, playwright_obj, pagina)
+    except ExecucaoInterrompida:
+        _log(doc_id, "Execução interrompida pelo usuário.")
     except Exception as exc:
         _log(doc_id, _detalhar_erro_execucao(f"Etapa {etapa_id}", exc))
         log.exception("Erro na execução da etapa %s", etapa_id)
@@ -2535,7 +2642,7 @@ def _task_executar_deducao(doc_id: str, ded_id: int, payload_dict: dict):
                 venc_deducao = str(doc["dates"].get("vencimento", "") or "")
                 apuracao     = str(doc["dates"].get("apuracao", "") or "")
 
-        lf_numero = str(doc.get("lf_numero", "") or "")
+        lf_dob001_numero = str(doc.get("lf_dob001_numero", "") or doc.get("lf_numero", "") or "")
         def deve_parar():
             current = _local_cache_service().obter_documento(doc_id)
             return bool(current.get("cancel_requested", False)) if current else False
@@ -2552,7 +2659,7 @@ def _task_executar_deducao(doc_id: str, ded_id: int, payload_dict: dict):
         playwright_obj, pagina = _comprasnet_base().conectar()
         import comprasnet.deducao as comprasnet_deducao
         resultado = comprasnet_deducao.executar(
-            dados_fake, venc_deducao, apuracao, lf_numero,
+            dados_fake, venc_deducao, apuracao, lf_dob001_numero,
             deve_parar=deve_parar, pagina=pagina, playwright=playwright_obj,
             pular_confirmar_aba=True,
         )
@@ -2562,6 +2669,12 @@ def _task_executar_deducao(doc_id: str, ded_id: int, payload_dict: dict):
 
         doc = _local_cache_service().obter_documento(doc_id)
         if not doc: return
+
+        if doc.get("cancel_requested"):
+            doc["deducoes_status"][str(ded_id)] = "aguardando"
+            _local_cache_service().salvar_documento(doc_id, doc)
+            _log(doc_id, f"⏸ Dedução {ded_id} pausada.")
+            return
 
         if status_res == "erro":
             doc["deducoes_status"][str(ded_id)] = "erro"
@@ -3927,7 +4040,16 @@ def _abrir_consulta_processos_solar(pagina: Any) -> Any:
     if alvo_imediato is not None:
         return alvo_imediato
 
-    # Tenta navegar o frame de conteúdo diretamente (funciona mesmo com processo já aberto)
+    # Clica no menu "Consulta de Processos/Solicitações" (caminho preferido, sempre tentado primeiro)
+    _clicar_menu_consulta_processo_solar(pagina)
+    fim_menu = time.time() + 8
+    while time.time() < fim_menu:
+        alvo = _target_consulta_solar(pagina)
+        if alvo is not None:
+            return alvo
+        time.sleep(0.25)
+
+    # Fallback: tenta navegar o frame de conteúdo diretamente (aba já aberta com processo carregado)
     frame_conteudo = _frame_conteudo_solar(pagina)
     if frame_conteudo is not None:
         try:
@@ -3940,14 +4062,6 @@ def _abrir_consulta_processos_solar(pagina: Any) -> Any:
                 time.sleep(0.25)
         except Exception:
             pass
-
-    _clicar_menu_consulta_processo_solar(pagina)
-    fim_menu = time.time() + 8
-    while time.time() < fim_menu:
-        alvo = _target_consulta_solar(pagina)
-        if alvo is not None:
-            return alvo
-        time.sleep(0.25)
 
     try:
         _navegar_consulta_processo_solar(pagina)
@@ -4706,7 +4820,10 @@ def salvar_preenchimento_documento(doc_id: str, payload: ExecucaoPayload, backgr
     if doc.get("is_running"):
         raise HTTPException(status_code=409, detail="Não é possível salvar durante uma execução em andamento.")
 
-    doc["lf_numero"] = payload.lfNumero
+    lf_legacy, lf_pagamento_numero, lf_dob001_numero = _resolver_lfs_payload(payload)
+    doc["lf_numero"] = lf_legacy
+    doc["lf_pagamento_numero"] = lf_pagamento_numero
+    doc["lf_dob001_numero"] = lf_dob001_numero
     doc["ugr_numero"] = payload.ugrNumero
     doc["vencimento_documento"] = payload.vencimentoDocumento
     doc["usar_conta_pdf"] = payload.usarContaPdf
@@ -4764,7 +4881,10 @@ def executar_todas(doc_id: str, payload: ExecucaoPayload, background_tasks: Back
 
     doc["is_running"] = True
     doc["cancel_requested"] = False
-    doc["lf_numero"] = payload.lfNumero
+    lf_legacy, lf_pagamento_numero, lf_dob001_numero = _resolver_lfs_payload(payload)
+    doc["lf_numero"] = lf_legacy
+    doc["lf_pagamento_numero"] = lf_pagamento_numero
+    doc["lf_dob001_numero"] = lf_dob001_numero
     doc["ugr_numero"] = payload.ugrNumero
     doc["vencimento_documento"] = payload.vencimentoDocumento
     doc["usar_conta_pdf"] = payload.usarContaPdf
@@ -4796,8 +4916,11 @@ def executar_etapa(doc_id: str, etapa_id: int, payload: ExecucaoPayload, backgro
 
     doc["is_running"] = True
     doc["cancel_requested"] = False
-    if payload.lfNumero:
-        doc["lf_numero"] = payload.lfNumero
+    lf_legacy, lf_pagamento_numero, lf_dob001_numero = _resolver_lfs_payload(payload)
+    if lf_legacy:
+        doc["lf_numero"] = lf_legacy
+    doc["lf_pagamento_numero"] = lf_pagamento_numero
+    doc["lf_dob001_numero"] = lf_dob001_numero
     if payload.ugrNumero:
         doc["ugr_numero"] = payload.ugrNumero
     if payload.vencimentoDocumento:
@@ -4819,6 +4942,172 @@ def executar_etapa(doc_id: str, etapa_id: int, payload: ExecucaoPayload, backgro
     return _montar_documento_processado(doc_id, doc)
 
 
+@app.post("/api/dev/documentos/{doc_id}/principal-orcamento-piloto")
+def executar_principal_orcamento_piloto_dev(
+    doc_id: str,
+    payload: DevPrincipalOrcamentoPayload,
+) -> dict[str, Any]:
+    doc = _obter_documento_cache_ou_turso(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento não encontrado.")
+
+    dados = dict(doc.get("dados_extraidos") or {})
+    vpd_manual = str(doc.get("vpd_manual", "") or "").strip()
+    if vpd_manual:
+        dados["VPD_MANUAL"] = vpd_manual
+
+    playwright_obj = None
+    try:
+        from automation_core.comprasnet_principal import (
+            DEFAULT_ARTIFACT_DIR,
+            PrincipalPilotOptions,
+            run_principal_orcamento_pilot,
+        )
+
+        playwright_obj, pagina = _comprasnet_base().conectar()
+        artifact_dir = str(payload.artifactDir or DEFAULT_ARTIFACT_DIR).strip()
+        results = run_principal_orcamento_pilot(
+            pagina,
+            dados,
+            PrincipalPilotOptions(
+                dry_run=bool(payload.dryRun),
+                artifact_dir=artifact_dir,
+                capture_manifest=True,
+            ),
+        )
+        steps = []
+        for result in results:
+            steps.append({
+                "stepName": result.step_name,
+                "ok": result.ok,
+                "message": result.message,
+                "fields": [
+                    {
+                        "fieldName": field.field_name,
+                        "ok": field.ok,
+                        "finalValue": field.final_value,
+                        "message": field.message,
+                        "attempts": [
+                            {
+                                "attempt": attempt.attempt,
+                                "expected": attempt.expected,
+                                "observed": attempt.observed,
+                                "ok": attempt.ok,
+                                "message": attempt.message,
+                            }
+                            for attempt in field.attempts
+                        ],
+                    }
+                    for field in result.fields
+                ],
+            })
+        ok = bool(steps) and all(step["ok"] for step in steps)
+        return {
+            "success": ok,
+            "dryRun": bool(payload.dryRun),
+            "artifactDir": artifact_dir,
+            "steps": steps,
+            "mensagem": (
+                "Piloto Principal com Orçamento executado."
+                if ok
+                else "Piloto Principal com Orçamento encontrou falhas."
+            ),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("Falha no piloto dev do Principal com Orçamento")
+        raise HTTPException(
+            status_code=500,
+            detail=_detalhar_erro_execucao("Piloto Principal com Orçamento", exc),
+        ) from exc
+    finally:
+        if playwright_obj is not None:
+            try:
+                playwright_obj.stop()
+            except Exception:
+                pass
+
+
+@app.post("/api/dev/principal-orcamento/snapshot")
+def capturar_principal_orcamento_snapshot_dev(payload: DevPcoSnapshotPayload) -> dict[str, Any]:
+    playwright_obj = None
+    try:
+        from scripts.inspecionar_pco import DEFAULT_OUT_DIR, capture_pco_snapshot
+
+        playwright_obj, pagina = _comprasnet_base().conectar(abrir_se_fechado=False)
+        artifact_dir = str(payload.artifactDir or DEFAULT_OUT_DIR).strip()
+        snapshot = capture_pco_snapshot(pagina, artifact_dir, payload.prefix or "registro-dev")
+        counts = snapshot.get("counts") or {}
+        return {
+            "success": True,
+            "artifactDir": snapshot.get("outputDir", artifact_dir),
+            "jsonPath": snapshot.get("jsonPath", ""),
+            "htmlPath": snapshot.get("htmlPath", ""),
+            "screenshotPath": snapshot.get("screenshotPath", ""),
+            "url": snapshot.get("url", ""),
+            "title": snapshot.get("title", ""),
+            "counts": counts,
+            "blueBars": snapshot.get("blueBars", []),
+            "mensagem": (
+                f"Captura PCO salva: {counts.get('visibleFields', 0)} campos visíveis, "
+                f"{counts.get('blueBars', 0)} barras de empenho."
+            ),
+        }
+    except Exception as exc:
+        log.exception("Falha ao capturar snapshot dev do Principal com Orçamento")
+        raise HTTPException(
+            status_code=500,
+            detail=_detalhar_erro_execucao("Captura Principal com Orçamento", exc),
+        ) from exc
+    finally:
+        if playwright_obj is not None:
+            try:
+                playwright_obj.stop()
+            except Exception:
+                pass
+
+
+@app.post("/api/dev/dob001/snapshot")
+def capturar_dob001_snapshot_dev(payload: DevPcoSnapshotPayload) -> dict[str, Any]:
+    playwright_obj = None
+    try:
+        from scripts.inspecionar_dob001 import DEFAULT_OUT_DIR, capture_dob001_snapshot
+
+        playwright_obj, pagina = _comprasnet_base().conectar(abrir_se_fechado=False)
+        artifact_dir = str(payload.artifactDir or DEFAULT_OUT_DIR).strip()
+        snapshot = capture_dob001_snapshot(pagina, artifact_dir, payload.prefix or "registro-dev")
+        counts = snapshot.get("counts") or {}
+        return {
+            "success": True,
+            "artifactDir": snapshot.get("outputDir", artifact_dir),
+            "jsonPath": snapshot.get("jsonPath", ""),
+            "htmlPath": snapshot.get("htmlPath", ""),
+            "screenshotPath": snapshot.get("screenshotPath", ""),
+            "url": snapshot.get("url", ""),
+            "title": snapshot.get("title", ""),
+            "counts": counts,
+            "blueBars": [],
+            "deducaoIds": snapshot.get("deducaoIds", []),
+            "mensagem": (
+                f"Captura DOB001 salva: {counts.get('visibleFields', 0)} campos visíveis, "
+                f"{counts.get('deducoes', 0)} dedução(ões)."
+            ),
+        }
+    except Exception as exc:
+        log.exception("Falha ao capturar snapshot dev do DOB001")
+        raise HTTPException(
+            status_code=500,
+            detail=_detalhar_erro_execucao("Captura DOB001", exc),
+        ) from exc
+    finally:
+        if playwright_obj is not None:
+            try:
+                playwright_obj.stop()
+            except Exception:
+                pass
+
+
 @app.post("/api/documentos/{doc_id}/executar-deducao/{ded_id}")
 def executar_deducao_individual(doc_id: str, ded_id: int, payload: ExecucaoPayload, background_tasks: BackgroundTasks) -> dict[str, Any]:
     doc = _obter_documento_cache_ou_turso(doc_id)
@@ -4835,8 +5124,10 @@ def executar_deducao_individual(doc_id: str, ded_id: int, payload: ExecucaoPaylo
 
     doc["is_running"] = True
     doc["cancel_requested"] = False
-    if payload.lfNumero:
-        doc["lf_numero"] = payload.lfNumero
+    lf_legacy, _, lf_dob001_numero = _resolver_lfs_payload(payload)
+    if lf_legacy:
+        doc["lf_numero"] = lf_legacy
+    doc["lf_dob001_numero"] = lf_dob001_numero
     if payload.ugrNumero:
         doc["ugr_numero"] = payload.ugrNumero
     if payload.vencimentoDocumento:
@@ -4873,11 +5164,12 @@ def parar_execucao(doc_id: str) -> dict[str, Any]:
     if not doc:
         raise HTTPException(status_code=404, detail="Documento não encontrado.")
 
-    doc["cancel_requested"] = True
+    doc = _pausar_execucao_documento(doc)
     _local_cache_service().salvar_documento(doc_id, doc)
     _sincronizar_documento_remoto(doc_id, doc)
+    _log(doc_id, "⏸ Automação pausada pelo usuário.")
     resultado = _montar_documento_processado(doc_id, doc)
-    return {**resultado, "success": True, "mensagem": "Solicitação de parada enviada."}
+    return {**resultado, "success": True, "mensagem": "Automação pausada."}
 
 
 @app.post("/api/registros-liquidacao")

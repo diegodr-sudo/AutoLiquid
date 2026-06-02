@@ -87,6 +87,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   perguntarLimparMes: true,
   temaWeb: "light",
   nivelLog: "desenvolvedor",
+  registroDevMode: false,
   tursoDatabaseUrl: "",
   tursoAuthToken: "",
   nomeUsuario: "",
@@ -1543,6 +1544,30 @@ export function ConfiguracoesModal({
                           </button>
                         </div>
                       </div>
+                    </section>
+
+                    <section className="rounded-2xl border border-amber-500/20 bg-amber-500/5 px-4 py-4">
+                      <label className="flex cursor-pointer items-start justify-between gap-4">
+                        <span className="flex min-w-0 items-start gap-3">
+                          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-amber-500/20 bg-background/80 text-amber-700">
+                            <Bug className="h-5 w-5" />
+                          </span>
+                          <span>
+                            <span className="block text-sm font-semibold text-foreground">Modo desenvolvedor no Registro</span>
+                            <span className="mt-1 block text-sm text-muted-foreground">
+                              Mostra o laboratório de upload, captura e execução do Principal com Orçamento na tela Registro.
+                            </span>
+                          </span>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={settings.registroDevMode}
+                          onChange={(event) =>
+                            setSettings((current) => ({ ...current, registroDevMode: event.target.checked }))
+                          }
+                          className="mt-1 h-4 w-4 shrink-0 rounded border-glass-border text-primary focus:ring-primary/30"
+                        />
+                      </label>
                     </section>
 
                     <section className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-4">

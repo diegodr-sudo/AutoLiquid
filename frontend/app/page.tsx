@@ -2,7 +2,7 @@
 
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, FileUp, Info, Loader2, MessageSquare, Minus, Pencil, Plus, RefreshCw, Save, Settings2, Table, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, CalendarDays, CheckCircle2, ChevronDown, ChevronRight, ExternalLink, FileUp, Info, Loader2, MessageSquare, Minus, Pencil, Play, Plus, RefreshCw, Save, Search, Settings2, Table, Trash2, X } from "lucide-react";
 import { Header } from "@/components/header";
 import { DateFields } from "@/components/date-fields";
 import { UploadZone } from "@/components/upload-zone";
@@ -12,6 +12,7 @@ import { ConfiguracoesModal } from "@/components/configuracoes-modal";
 import { DashboardModal } from "@/components/dashboard-modal";
 import { FeriasModal } from "@/components/ferias-modal";
 import { DashboardHistorico } from "@/components/dashboard-historico";
+import { FilaExecucao } from "@/components/fila-execucao";
 import { GlassButton } from "@/components/glass-card";
 import { GlobalScopeIcon } from "@/components/global-scope-icon";
 import { SimpleTooltip } from "@/components/ui/simple-tooltip";
@@ -40,7 +41,14 @@ import {
   loginAutoLiquid,
   fetchQueueServersConfig,
   fetchRocketChatNotifications,
+  capturarDob001SnapshotDev,
+  capturarPrincipalOrcamentoSnapshotDev,
+  executarPrincipalOrcamentoPilotoDev,
+  executarDeducao,
   type BackendStartupProgress,
+  type DocumentoProcessado,
+  type DevPcoSnapshotResult,
+  type DevPrincipalOrcamentoPilotResult,
   type DashboardInfo,
   type FilaProcessosInfo,
   MOCK_PROCESS_DATES,
@@ -83,6 +91,7 @@ import {
   type TableKey,
   type ProcessDates,
   type VersaoInfo,
+  type Deducao,
   uploadPDF,
 } from "@/lib/data";
 import { readStoredAuthSession } from "@/lib/auth-store";
@@ -628,6 +637,19 @@ function loadQueueViewedRows(): Record<string, boolean> {
   } catch {
     return {};
   }
+}
+
+function loadRegistroDevMode(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("dev") === "1") {
+      return true;
+    }
+  } catch {
+    // segue desligado ate a configuracao persistida carregar
+  }
+  return false;
 }
 
 function firstNameOf(value: string): string {
@@ -1406,6 +1428,16 @@ export default function HomePage() {
   const [dates, setDates] = useState<ProcessDates>(MOCK_PROCESS_DATES);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [registroDevMode, setRegistroDevMode] = useState(() => loadRegistroDevMode());
+  const [registroDevFile, setRegistroDevFile] = useState<File | null>(null);
+  const [registroDevUploading, setRegistroDevUploading] = useState(false);
+  const [registroDevRunning, setRegistroDevRunning] = useState(false);
+  const [registroDevCapturing, setRegistroDevCapturing] = useState(false);
+  const [registroDevDocumentoId, setRegistroDevDocumentoId] = useState("");
+  const [registroDevDocumento, setRegistroDevDocumento] = useState<DocumentoProcessado | null>(null);
+  const [registroDevError, setRegistroDevError] = useState("");
+  const [registroDevResult, setRegistroDevResult] = useState<DevPrincipalOrcamentoPilotResult | null>(null);
+  const [registroDevSnapshot, setRegistroDevSnapshot] = useState<DevPcoSnapshotResult | null>(null);
   const [isTabelasOpen, setIsTabelasOpen] = useState(false);
   const [tabelasInitialTab, setTabelasInitialTab] = useState<TableKey>("contratos");
   const [tabelasVisibleTabs, setTabelasVisibleTabs] = useState<TableKey[] | undefined>(undefined);
@@ -1456,6 +1488,7 @@ export default function HomePage() {
   const [carregandoFila, setCarregandoFila] = useState(false);
   const [erroFila, setErroFila] = useState("");
   const [queueServers, setQueueServers] = useState<QueueServerConfig[]>(() => loadQueueServerConfigs());
+  const [queueServersReady, setQueueServersReady] = useState(false);
   const [visibleQueueColumns, setVisibleQueueColumns] = useState<Array<keyof QueueDisplayRow>>(() => loadVisibleQueueColumns());
   const [compactQueueColumns, setCompactQueueColumns] = useState(() => loadCompactQueueColumns());
   const [queueColumnWidths, setQueueColumnWidths] = useState<Partial<Record<keyof QueueDisplayRow, number>>>(() => loadQueueColumnWidths());
@@ -1745,16 +1778,21 @@ export default function HomePage() {
   };
 
   const loadRemoteQueueServers = async () => {
-    const data = await fetchQueueServersConfig();
-    if (queueServersDirtyRef.current) {
+    try {
+      const data = await fetchQueueServersConfig();
+      if (queueServersDirtyRef.current) {
+        queueServersSyncedRef.current = true;
+        setQueueServersReady(true);
+        return;
+      }
+      if (data.servidores.length > 0) {
+        skipNextQueueServersSaveRef.current = true;
+        setQueueServers(data.servidores);
+      }
       queueServersSyncedRef.current = true;
-      return;
+    } finally {
+      setQueueServersReady(true);
     }
-    if (data.servidores.length > 0) {
-      skipNextQueueServersSaveRef.current = true;
-      setQueueServers(data.servidores);
-    }
-    queueServersSyncedRef.current = true;
   };
 
   const loadRemoteAlertaServicoConfig = async () => {
@@ -1889,6 +1927,7 @@ export default function HomePage() {
       setBrowserName(settingsResult.value.navegador === "edge" ? "Edge" : "Chrome");
       setNomeUsuario((current) => current || settingsResult.value.nomeUsuario || "");
       setNfServicoAlertaDiasUteis(settingsResult.value.nfServicoAlertaDiasUteis ?? 3);
+      setRegistroDevMode(Boolean(settingsResult.value.registroDevMode));
       setAlertaServicoConfig((current) => ({
         ...current,
         diasUteisPadrao: current.diasUteisPadrao || settingsResult.value.nfServicoAlertaDiasUteis || 3,
@@ -1962,6 +2001,9 @@ export default function HomePage() {
   const carregarFilaInicial = async (options: { background?: boolean } = {}) => {
     const startedAt = Date.now();
     const carregar = async () => {
+      if (!queueServersSyncedRef.current) {
+        await loadRemoteQueueServers();
+      }
       const data = await loadFilaProcessosOnce(false);
       applyFilaProcessos(data, { force: true });
       logStartupTiming("fila inicial", startedAt);
@@ -2945,6 +2987,7 @@ export default function HomePage() {
     loadRemoteQueueServers().catch(() => {
       if (ativo) {
         queueServersSyncedRef.current = true;
+        setQueueServersReady(true);
       }
     });
     loadRemoteAlertaServicoConfig().catch(() => {
@@ -2962,7 +3005,7 @@ export default function HomePage() {
   }, [startupConcluido, apiDisponivel]);
 
   useEffect(() => {
-    if (!startupConcluido || !apiDisponivel || filaProcessos) {
+    if (!startupConcluido || !apiDisponivel || !queueServersReady || filaProcessos) {
       return;
     }
 
@@ -2979,7 +3022,7 @@ export default function HomePage() {
       ativo = false;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startupConcluido, apiDisponivel, filaProcessos]);
+  }, [startupConcluido, apiDisponivel, queueServersReady, filaProcessos]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3361,6 +3404,10 @@ export default function HomePage() {
     if (!startupConcluido || !apiDisponivel || activeMainTab !== "painel") {
       return;
     }
+    if (!queueServersReady) {
+      setCarregandoFila(true);
+      return;
+    }
     if (filaProcessos) {
       setCarregandoFila(false);
       return;
@@ -3387,7 +3434,7 @@ export default function HomePage() {
       ativo = false;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startupConcluido, apiDisponivel, activeMainTab, filaProcessos]);
+  }, [startupConcluido, apiDisponivel, activeMainTab, queueServersReady, filaProcessos]);
 
   useEffect(() => {
     if (!startupConcluido || !apiDisponivel || activeMainTab !== "painel") {
@@ -3613,6 +3660,130 @@ export default function HomePage() {
       );
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  const handleRegistroDevProcessar = async () => {
+    if (!registroDevFile) {
+      setRegistroDevError("Selecione um PDF antes de processar no laboratório.");
+      return;
+    }
+    setRegistroDevUploading(true);
+    setRegistroDevError("");
+    setRegistroDevResult(null);
+    setRegistroDevSnapshot(null);
+    setRegistroDevDocumento(null);
+    try {
+      const result = await uploadPDF(registroDevFile, dates);
+      if (!result.success || !result.documentoId) {
+        setRegistroDevError(result.mensagem || "Não foi possível processar o PDF no laboratório.");
+        return;
+      }
+      setRegistroDevDocumentoId(result.documentoId);
+      const documentoDev = await fetchDocumentoProcessado(result.documentoId);
+      setRegistroDevDocumento(documentoDev);
+    } catch (error) {
+      setRegistroDevError(error instanceof Error ? error.message : "Falha ao processar PDF no laboratório.");
+    } finally {
+      setRegistroDevUploading(false);
+    }
+  };
+
+  const handleRegistroDevRecarregarDocumento = async () => {
+    if (!registroDevDocumentoId) {
+      setRegistroDevError("Processe um PDF no laboratório antes de recarregar.");
+      return;
+    }
+    setRegistroDevError("");
+    try {
+      const documentoDev = await fetchDocumentoProcessado(registroDevDocumentoId);
+      setRegistroDevDocumento(documentoDev);
+    } catch (error) {
+      setRegistroDevError(error instanceof Error ? error.message : "Falha ao recarregar documento do laboratório.");
+    }
+  };
+
+  const handleRegistroDevExecutarPco = async () => {
+    if (!registroDevDocumentoId) {
+      setRegistroDevError("Processe um PDF no laboratório antes de executar o piloto.");
+      return;
+    }
+    setRegistroDevRunning(true);
+    setRegistroDevError("");
+    setRegistroDevResult(null);
+    try {
+      const result = await executarPrincipalOrcamentoPilotoDev(registroDevDocumentoId, {
+        dryRun: false,
+      });
+      setRegistroDevResult(result);
+      void handleRegistroDevRecarregarDocumento();
+      if (!result.success) {
+        setRegistroDevError(result.mensagem || "O piloto encontrou falhas.");
+      }
+    } catch (error) {
+      setRegistroDevError(error instanceof Error ? error.message : "Falha ao executar piloto Principal com Orçamento.");
+    } finally {
+      setRegistroDevRunning(false);
+    }
+  };
+
+  const handleRegistroDevExecutarDeducao = async (deducao: Deducao) => {
+    if (!registroDevDocumentoId || !registroDevDocumento) {
+      setRegistroDevError("Processe um PDF no laboratório antes de executar uma dedução.");
+      return;
+    }
+    setRegistroDevRunning(true);
+    setRegistroDevError("");
+    try {
+      await executarDeducao(registroDevDocumentoId, deducao.id, {
+        lfNumero: registroDevDocumento.lfNumero ?? "",
+        lfDob001Numero: registroDevDocumento.lfDob001Numero ?? registroDevDocumento.lfNumero ?? "",
+        ugrNumero: registroDevDocumento.ugrNumero ?? "",
+        vencimentoDocumento: registroDevDocumento.vencimentoDocumento ?? "",
+      });
+      void handleRegistroDevRecarregarDocumento();
+    } catch (error) {
+      setRegistroDevError(error instanceof Error ? error.message : `Falha ao executar dedução ${deducao.siafi}.`);
+    } finally {
+      setRegistroDevRunning(false);
+    }
+  };
+
+  const handleRegistroDevCapturarPco = async () => {
+    setRegistroDevCapturing(true);
+    setRegistroDevError("");
+    setRegistroDevSnapshot(null);
+    try {
+      const result = await capturarPrincipalOrcamentoSnapshotDev({
+        prefix: registroDevDocumentoId ? `doc-${registroDevDocumentoId}` : "registro-dev",
+      });
+      setRegistroDevSnapshot(result);
+      if (!result.success) {
+        setRegistroDevError(result.mensagem || "Não foi possível capturar a tela PCO.");
+      }
+    } catch (error) {
+      setRegistroDevError(error instanceof Error ? error.message : "Falha ao capturar tela Principal com Orçamento.");
+    } finally {
+      setRegistroDevCapturing(false);
+    }
+  };
+
+  const handleRegistroDevCapturarDob001 = async () => {
+    setRegistroDevCapturing(true);
+    setRegistroDevError("");
+    setRegistroDevSnapshot(null);
+    try {
+      const result = await capturarDob001SnapshotDev({
+        prefix: registroDevDocumentoId ? `doc-${registroDevDocumentoId}` : "registro-dev",
+      });
+      setRegistroDevSnapshot(result);
+      if (!result.success) {
+        setRegistroDevError(result.mensagem || "Não foi possível capturar a tela DOB001.");
+      }
+    } catch (error) {
+      setRegistroDevError(error instanceof Error ? error.message : "Falha ao capturar tela DOB001.");
+    } finally {
+      setRegistroDevCapturing(false);
     }
   };
 
@@ -5094,6 +5265,345 @@ export default function HomePage() {
                 )}
               </div>
 
+              {registroDevMode && registroUploadMode === "comprasnet" ? (
+                <div className="min-w-0 rounded-2xl border border-dashed border-orange-500/35 bg-orange-500/5 p-4 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.4)]">
+                  <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-orange-700">
+                        Registro de desenvolvedor
+                      </p>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Teste isolado do novo Principal com Orçamento. Processa o PDF aqui e executa o piloto no Chrome atual, confirmando a etapa.
+                      </p>
+                    </div>
+                    {!isTauriRuntime() ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRegistroDevMode(false);
+                          try {
+                            window.localStorage.removeItem("autoliquid_registro_dev_mode");
+                          } catch {}
+                        }}
+                        className="inline-flex h-8 shrink-0 items-center rounded-lg border border-glass-border bg-background px-3 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+                      >
+                        Ocultar
+                      </button>
+                    ) : null}
+                  </div>
+
+                  <UploadZone
+                    key={`dev-${uploadResetKey}`}
+                    onFileSelect={(file) => {
+                      setRegistroDevFile(file);
+                      setRegistroDevError("");
+                      setRegistroDevResult(null);
+                      setRegistroDevSnapshot(null);
+                      setRegistroDevDocumento(null);
+                      if (file) setRegistroDevDocumentoId("");
+                    }}
+                    acceptedFormats={[".pdf"]}
+                    title="PDF para laboratório PCO"
+                    description="usa a extração normal, sem abrir a conferência"
+                    compact
+                    disabled={!apiDisponivel || registroDevUploading || registroDevRunning || registroDevCapturing}
+                  />
+
+                  <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto] xl:items-center">
+                    <div className="min-w-0 text-sm">
+                      {registroDevError ? (
+                        <p className="text-destructive">{registroDevError}</p>
+                      ) : registroDevDocumentoId ? (
+                        <p className="truncate text-muted-foreground">
+                          Documento preparado: <span className="font-mono text-foreground">{registroDevDocumentoId}</span>
+                        </p>
+                      ) : (
+                        <p className="text-muted-foreground">
+                          Abra o documento no Comprasnet como no fluxo normal antes de executar o piloto.
+                        </p>
+                      )}
+                    </div>
+
+                    <GlassButton
+                      type="button"
+                      variant="secondary"
+                      onClick={handleRegistroDevProcessar}
+                      disabled={!registroDevFile || registroDevUploading || registroDevRunning || registroDevCapturing || !apiDisponivel}
+                    >
+                      {registroDevUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
+                      {registroDevUploading ? "Processando..." : "Processar dev"}
+                    </GlassButton>
+
+                    <GlassButton
+                      type="button"
+                      variant="secondary"
+                      onClick={handleRegistroDevCapturarPco}
+                      disabled={registroDevUploading || registroDevRunning || registroDevCapturing || !apiDisponivel}
+                    >
+                      {registroDevCapturing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                      {registroDevCapturing ? "Capturando..." : "Capturar PCO"}
+                    </GlassButton>
+
+                    <GlassButton
+                      type="button"
+                      variant="secondary"
+                      onClick={handleRegistroDevCapturarDob001}
+                      disabled={registroDevUploading || registroDevRunning || registroDevCapturing || !apiDisponivel}
+                    >
+                      {registroDevCapturing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                      {registroDevCapturing ? "Capturando..." : "Capturar DOB001"}
+                    </GlassButton>
+
+                    <GlassButton
+                      type="button"
+                      onClick={handleRegistroDevExecutarPco}
+                      disabled={!registroDevDocumentoId || registroDevUploading || registroDevRunning || registroDevCapturing || !apiDisponivel}
+                    >
+                      {registroDevRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                      {registroDevRunning ? "Executando..." : "Executar PCO piloto"}
+                    </GlassButton>
+                  </div>
+
+                  {registroDevDocumento ? (
+                    <div className="mt-5 space-y-4">
+                      <div className="grid gap-3 md:grid-cols-4">
+                        {[
+                          ["Processo", registroDevDocumento.documento.processo || "-"],
+                          ["Credor", registroDevDocumento.documento.nomeCredor || "-"],
+                          ["Bruto", formatCurrency(registroDevDocumento.resumo.bruto)],
+                          ["Empenhos", String(registroDevDocumento.empenhos.length)],
+                        ].map(([label, value]) => (
+                          <div key={label} className="min-w-0 rounded-xl border border-glass-border bg-background/70 px-3 py-2">
+                            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                              {label}
+                            </p>
+                            <p className="mt-1 truncate text-sm font-medium text-foreground">{value}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(280px,340px)]">
+                        <FilaExecucao
+                          etapas={registroDevDocumento.etapas}
+                          deducoes={registroDevDocumento.deducoes}
+                          apuracaoDate={registroDevDocumento.dates.apuracao}
+                          vencimentoDate={registroDevDocumento.dates.vencimento}
+                          isExecutando={registroDevRunning}
+                          statusMensagem={
+                            registroDevRunning
+                              ? "Executando piloto Principal com Orçamento..."
+                              : "Laboratório dev pronto"
+                          }
+                          onExecutarTudo={handleRegistroDevExecutarPco}
+                          onExecutarEtapa={(etapa) => {
+                            const nome = etapa.nome.toLowerCase();
+                            if (nome.includes("principal") || nome.includes("orçamento") || nome.includes("orcamento")) {
+                              void handleRegistroDevExecutarPco();
+                              return;
+                            }
+                            setRegistroDevError("No laboratório atual, só o piloto Principal com Orçamento está ligado.");
+                          }}
+                          onExecutarDeducao={(ded) => void handleRegistroDevExecutarDeducao(ded)}
+                          onApropriarSIAFI={() => {
+                            setRegistroDevError("A apropriação SIAFI não roda pelo laboratório PCO.");
+                          }}
+                        />
+
+                        <div className="flex min-w-0 flex-col gap-3 rounded-2xl border border-glass-border bg-background/70 p-4">
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-orange-700">
+                              Ferramentas dev
+                            </p>
+                            <p className="mt-1 text-sm text-muted-foreground">
+                              Capturas e execução isolada sobre a aba atual do Comprasnet.
+                            </p>
+                          </div>
+
+                          <div className="grid gap-2">
+                            <GlassButton
+                              type="button"
+                              variant="secondary"
+                              onClick={handleRegistroDevCapturarPco}
+                              disabled={registroDevUploading || registroDevRunning || registroDevCapturing || !apiDisponivel}
+                              className="w-full justify-start"
+                            >
+                              {registroDevCapturing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                              {registroDevCapturing ? "Capturando PCO..." : "Capturar tela PCO"}
+                            </GlassButton>
+
+                            <GlassButton
+                              type="button"
+                              variant="secondary"
+                              onClick={handleRegistroDevCapturarDob001}
+                              disabled={registroDevUploading || registroDevRunning || registroDevCapturing || !apiDisponivel}
+                              className="w-full justify-start"
+                            >
+                              {registroDevCapturing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                              {registroDevCapturing ? "Capturando DOB001..." : "Capturar tela DOB001"}
+                            </GlassButton>
+
+                            <GlassButton
+                              type="button"
+                              variant="secondary"
+                              onClick={handleRegistroDevRecarregarDocumento}
+                              disabled={registroDevUploading || registroDevRunning || registroDevCapturing || !apiDisponivel}
+                              className="w-full justify-start"
+                            >
+                              <RefreshCw className="h-4 w-4" />
+                              Recarregar documento
+                            </GlassButton>
+
+                            <GlassButton
+                              type="button"
+                              onClick={handleRegistroDevExecutarPco}
+                              disabled={!registroDevDocumentoId || registroDevUploading || registroDevRunning || registroDevCapturing || !apiDisponivel}
+                              className="w-full justify-start"
+                            >
+                              {registroDevRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                              {registroDevRunning ? "Executando piloto..." : "Executar PCO confirmado"}
+                            </GlassButton>
+
+                            <GlassButton
+                              type="button"
+                              variant="ghost"
+                              onClick={() => router.push(`/conferencia?id=${encodeURIComponent(registroDevDocumentoId)}`)}
+                              disabled={!registroDevDocumentoId}
+                              className="w-full justify-start border border-glass-border bg-background/40"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                              Abrir conferência completa
+                            </GlassButton>
+                          </div>
+
+                          <div className="rounded-xl border border-glass-border bg-muted/20 p-3 text-xs text-muted-foreground">
+                            <p className="font-medium text-foreground">Plano PCO</p>
+                            <div className="mt-2 space-y-1">
+                              {registroDevDocumento.empenhos.length ? (
+                                registroDevDocumento.empenhos.map((empenho, index) => (
+                                  <p key={`${empenho.numero}-${index}`} className="truncate">
+                                    {empenho.numero || "-"} · {empenho.situacao || "-"} · {typeof empenho.valor === "number" ? formatCurrency(empenho.valor) : "-"}
+                                  </p>
+                                ))
+                              ) : (
+                                <p>Nenhum empenho extraído.</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-4 lg:grid-cols-2">
+                        <div className="rounded-2xl border border-glass-border bg-background/70 p-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                            Notas e faturas
+                          </p>
+                          <div className="mt-3 max-h-48 space-y-2 overflow-auto pr-1 text-sm">
+                            {registroDevDocumento.notasFiscais.length ? (
+                              registroDevDocumento.notasFiscais.map((nota) => (
+                                <div key={nota.id} className="rounded-lg border border-glass-border bg-background/60 px-3 py-2">
+                                  <p className="truncate font-medium text-foreground">
+                                    {nota.nota} · {nota.tipo}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">{formatCurrency(nota.valor)} · {nota.emissao}</p>
+                                </div>
+                              ))
+                            ) : (
+                              <p className="text-muted-foreground">Nenhuma nota extraída.</p>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border border-glass-border bg-background/70 p-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                            Pendências
+                          </p>
+                          <div className="mt-3 max-h-48 space-y-2 overflow-auto pr-1 text-sm">
+                            {registroDevDocumento.pendencias.length ? (
+                              registroDevDocumento.pendencias.map((pendencia) => (
+                                <div key={pendencia.id} className="rounded-lg border border-glass-border bg-background/60 px-3 py-2">
+                                  <p className="truncate font-medium text-foreground">{pendencia.titulo}</p>
+                                  <p className="text-xs text-muted-foreground">{pendencia.descricao}</p>
+                                </div>
+                              ))
+                            ) : (
+                              <p className="text-muted-foreground">Nenhuma pendência registrada.</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {registroDevSnapshot ? (
+                    <div className="mt-4 rounded-xl border border-sky-500/25 bg-sky-500/5 p-3 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-semibold text-sky-800">
+                          {registroDevSnapshot.mensagem}
+                        </span>
+                        <span className="truncate text-muted-foreground">
+                          JSON: {registroDevSnapshot.jsonPath}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid gap-2 text-muted-foreground md:grid-cols-3">
+                        <span>Campos visíveis: {registroDevSnapshot.counts.visibleFields ?? 0}</span>
+                        <span>{registroDevSnapshot.counts.deducoes !== undefined ? "Deduções" : "Barras"}: {registroDevSnapshot.counts.deducoes ?? registroDevSnapshot.counts.blueBars ?? 0}</span>
+                        <span>Botões: {registroDevSnapshot.counts.buttons ?? 0}</span>
+                      </div>
+                      {registroDevSnapshot.deducaoIds?.length ? (
+                        <div className="mt-2 text-muted-foreground">
+                          Deduções capturadas: {registroDevSnapshot.deducaoIds.slice(0, 12).join(", ")}
+                        </div>
+                      ) : null}
+                      {registroDevSnapshot.blueBars?.length ? (
+                        <div className="mt-2 max-h-28 space-y-1 overflow-auto pr-1 text-muted-foreground">
+                          {registroDevSnapshot.blueBars.slice(0, 6).map((bar, index) => (
+                            <p key={`${bar.empenho || "bar"}-${index}`} className="truncate">
+                              {bar.expanded ? "aberta" : "fechada"} · {bar.empenho || "sem empenho"} · sub {bar.subelemento || "-"} · {bar.valor || "-"}
+                            </p>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {registroDevResult ? (
+                    <div className="mt-4 rounded-xl border border-glass-border bg-background/70 p-3 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className={registroDevResult.success ? "font-semibold text-emerald-700" : "font-semibold text-orange-700"}>
+                          {registroDevResult.mensagem}
+                        </span>
+                        <span className="truncate text-muted-foreground">
+                          Diagnóstico: {registroDevResult.artifactDir}
+                        </span>
+                      </div>
+                      <div className="mt-3 max-h-56 space-y-2 overflow-auto pr-1">
+                        {registroDevResult.steps.map((step) => (
+                          <div key={step.stepName} className="rounded-lg border border-glass-border bg-muted/20 px-3 py-2">
+                            <p className="truncate font-medium text-foreground">
+                              {step.ok ? "OK" : "Falha"} · {step.stepName}
+                            </p>
+                            {step.message ? (
+                              <p className="mt-1 truncate text-muted-foreground">
+                                {step.message}
+                              </p>
+                            ) : null}
+                            {step.fields.length ? (
+                              <div className="mt-1 space-y-1 text-muted-foreground">
+                                {step.fields.map((field) => (
+                                  <p key={field.fieldName} className="truncate">
+                                    {field.ok ? "✓" : "!"} {field.fieldName}: {field.finalValue || field.message || "sem valor"}
+                                  </p>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
             </div>
 
             {/* Coluna direita: dashboard */}
@@ -6390,6 +6900,7 @@ export default function HomePage() {
             setNomeUsuario((current) => auth.session?.nome || auth.session?.username || current || settings.nomeUsuario || "");
             setNfServicoAlertaDiasUteis(settings.nfServicoAlertaDiasUteis ?? 3);
             setFecharAbaFila(Boolean(settings.fecharAbaFila));
+            setRegistroDevMode(Boolean(settings.registroDevMode));
             void loadRemoteAlertaServicoConfig();
             try {
               const rocket = await fetchRocketChatNotifications();

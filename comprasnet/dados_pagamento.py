@@ -16,6 +16,15 @@ _OB_FATURA_BANCO = "001"
 _OB_FATURA_AGENCIA = "3582"
 
 
+class ExecucaoInterrompida(Exception):
+    pass
+
+
+def _verificar_interrupcao(deve_parar=None) -> None:
+    if deve_parar and deve_parar():
+        raise ExecucaoInterrompida("Dados de Pagamento interrompido pelo usuário.")
+
+
 def _documentos_para_observacao(dados_extraidos: dict) -> list[tuple[str, str]]:
     documentos: list[tuple[str, str]] = []
     for nota in dados_extraidos.get("Notas Fiscais", []):
@@ -733,7 +742,8 @@ def _preencher_data_pagamento(pagina, data_ddmmaaaa: str) -> None:
     preencher_data(pagina, "Data de Pagamento:", data_ddmmaaaa)
 
 
-def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, conta_banco="", conta_agencia="", conta_conta="", pagina=None, playwright=None):
+def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, conta_banco="", conta_agencia="", conta_conta="", pagina=None, playwright=None, deve_parar=None):
+    _verificar_interrupcao(deve_parar)
     sessao_propria = pagina is None
     if sessao_propria:
         playwright, pagina = conectar()
@@ -748,12 +758,14 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
 
         _clicar_aba_dados_pagamento(pagina)
         _esperar_dados_pagamento_prontos(pagina)
+        _verificar_interrupcao(deve_parar)
 
         print(f"[1] Data de Pagamento: {data_pagamento}")
         try:
             _preencher_data_pagamento(pagina, data_pagamento)
         except Exception as e:
             erros.append(f"Erro ao preencher Data de Pagamento: {e}")
+        _verificar_interrupcao(deve_parar)
 
         print("[2] Validando favorecido e valor...")
         cnpj_pdf = _BANCO_BRASIL_CNPJ if documento_com_lf else re.sub(r"\D", "", str(dados_extraidos.get("CNPJ", "") or ""))
@@ -762,6 +774,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
             print(f"  Documento com LF: alterando favorecido para Banco do Brasil ({_BANCO_BRASIL_CNPJ_FORMATADO})")
             if not _preencher_favorecido_lista_pagamento(pagina, _BANCO_BRASIL_CNPJ):
                 erros.append("Não foi possível alterar o favorecido para Banco do Brasil antes do Pré-Doc.")
+        _verificar_interrupcao(deve_parar)
 
         # Valor liquido esperado = soma das NFs - soma das deducoes
         # O portal exibe o valor liquido na Lista de Favorecidos, nunca o bruto da NF.
@@ -829,6 +842,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
 
         if erros:
             return {"status": "alerta", "mensagem": "\n".join(erros)}
+        _verificar_interrupcao(deve_parar)
 
         print("[3] 1Âº Confirmar Dados de Pagamento...")
         try:
@@ -836,10 +850,12 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
             print("  1Âº save concluÃ­do.")
         except Exception as e:
             print(f"  Aviso ao 1Âº confirmar: {e}")
+        _verificar_interrupcao(deve_parar)
 
         print("[4] Abrindo PrÃ©-Doc...")
         _clicar_predoc(pagina)
         print("  Modal PrÃ©-Doc aberto.")
+        _verificar_interrupcao(deve_parar)
 
         print("[5] Atualizando Processo...")
         proc_pdf = str(dados_extraidos.get("Processo", "") or "")
@@ -855,6 +871,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
             _selecionar_tipo_ob_modal(pagina, "OB Fatura")
             _preencher_lf_modal(pagina, lf_numero)
             _preencher_banco_pagador_modal(pagina, _OB_FATURA_BANCO)
+        _verificar_interrupcao(deve_parar)
 
         # Domicílio Bancário do Favorecido — sempre preenche:
         #   usar_conta_pdf=True  → usa valores do PDF (Banco/Agência/Conta extraídos)
@@ -891,11 +908,13 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
                 erros.append(f"Erro ao preencher dados bancários do favorecido: {e}")
         else:
             print("[7] Sem dados bancários disponíveis para preencher.")
+        _verificar_interrupcao(deve_parar)
 
         print("[8] Preenchendo ObservaÃ§Ã£o...")
         obs = _montar_observacao(dados_extraidos)
         if not _preencher_observacao_modal(pagina, obs):
             erros.append("Campo ObservaÃ§Ã£o nÃ£o encontrado no modal.")
+        _verificar_interrupcao(deve_parar)
 
         print("[9] Salvando modal...")
         try:
@@ -903,6 +922,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
             print("  Modal salvo com sucesso.")
         except Exception as e:
             erros.append(f"Erro ao salvar o modal: {e}")
+        _verificar_interrupcao(deve_parar)
 
         print("[10] 2Âº Confirmar Dados de Pagamento...")
         try:
@@ -920,7 +940,10 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
 
         if erros:
             return {"status": "alerta", "mensagem": "\n".join(erros)}
+        _verificar_interrupcao(deve_parar)
         return {"status": "sucesso", "mensagem": "Dados de Pagamento preenchidos e confirmados!"}
+    except ExecucaoInterrompida as e:
+        return {"status": "interrompido", "mensagem": str(e)}
     except Exception as e:
         return {"status": "erro", "mensagem": str(e)}
     finally:

@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AlertTriangle, Banknote, CheckCircle2, ChevronDown, ChevronRight, FileUp, Loader2, Play, Upload, Users, X } from "lucide-react";
+import { AlertTriangle, Banknote, CheckCircle2, FileUp, Loader2, Play, Upload, Users, X } from "lucide-react";
 import { Header } from "@/components/header";
 import { DocumentoPanel } from "@/components/documento-panel";
 import { NotasFiscaisTable } from "@/components/notas-fiscais-table";
@@ -47,7 +47,6 @@ import {
   executarEtapa,
   executarDeducao,
   apropriarSIAFI,
-  salvarPreenchimentoDocumento,
   atualizarPendenciaDocumento,
   registrarLiquidacao,
   descartarRegistroLiquidacaoPendente,
@@ -127,6 +126,14 @@ const REGISTRO_LIQUIDACAO_PENDENTE_KEY = "autoliquid_registro_liquidacao_pendent
 const IGNORAR_RETORNO_PENDENCIA_SESSION_KEY = "autoliquid_ignorar_retorno_pendencia_sessao";
 const RETORNO_PENDENCIA_DISPENSADO_KEY = "autoliquid_retorno_pendencia_dispensado";
 const DEFAULT_TIPOS_DOCUMENTO_LF = ["NF Serviço", "Fatura", "Boleto"];
+const MUNICIPIOS_DOB001: Record<string, string> = {
+  "8179": "Joinville",
+  "8093": "Curitibanos",
+  "8027": "Araranguá",
+  "5549": "Barra do Sul",
+  "8465": "Gov. Celso Ramos",
+  "8327": "São José",
+};
 
 function normalizarTipoDocumentoLf(valor: string) {
   return valor.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -149,6 +156,7 @@ function ConferenciaPageContent() {
   const conclusaoEncaminhamentoCopyingRef = useRef(false);
   // Ref para proteger polling: não sobrescreve pendências enquanto um toggle está em voo
   const pendenciaToggleInFlightRef = useRef(false);
+  const pendenciaTogglePendingRef = useRef<Map<string, { latest: boolean; saving: boolean }>>(new Map());
   // Ref para bloquear chamadas tardias de registrarLiquidacaoPendente após a finalização
   const liquidacaoFinalizadaRef = useRef(false);
   const [documento, setDocumento] = useState<Documento>(MOCK_DOCUMENTO);
@@ -182,13 +190,15 @@ function ConferenciaPageContent() {
   const [nomeUsuario, setNomeUsuario] = useState<string | null>(null);
   const [tiposDocumentoLf, setTiposDocumentoLf] = useState<string[]>(DEFAULT_TIPOS_DOCUMENTO_LF);
   const [pendencias, setPendencias] = useState<PendenciaDocumento[]>([]);
+  const [pendenciasLocaisResolvidas, setPendenciasLocaisResolvidas] = useState<Record<string, boolean>>({});
   const [statusGeral, setStatusGeral] = useState<StatusGeralDocumento>({
     tipo: "atencao",
     titulo: "Carregando documento",
     descricao: "O resumo operacional do documento será exibido em instantes.",
   });
   const [abrindoChrome, setAbrindoChrome] = useState(false);
-  const [lfNumero, setLfNumero] = useState("");
+  const [lfPagamentoNumero, setLfPagamentoNumero] = useState("");
+  const [lfDob001Numero, setLfDob001Numero] = useState("");
   const [ugrNumero, setUgrNumero] = useState("");
   const [vencimentoDocumento, setVencimentoDocumento] = useState("");
   /** Quando false, o documento opcional não tem LF/vencimento e segue como nota fiscal comum. */
@@ -205,9 +215,8 @@ function ConferenciaPageContent() {
   const [tocouConta, setTocouConta] = useState(false);
   const [tocouFatura, setTocouFatura] = useState(false);
   const [tocouVpd, setTocouVpd] = useState(false);
-  const [salvandoPendencias, setSalvandoPendencias] = useState(false);
   const [pendenciaToggleId, setPendenciaToggleId] = useState<string | null>(null);
-  const [pendenciasExpanded, setPendenciasExpanded] = useState(true);
+  const [, setPendenciasExpanded] = useState(true);
   // ── Dialog de conclusão (NP + dificuldade) ──
   const [conclusaoAberta, setConclusaoAberta] = useState(false);
   const [conclusaoTipo, setConclusaoTipo] = useState<RegistroLiquidacaoTipoDocumento>("NP");
@@ -216,7 +225,7 @@ function ConferenciaPageContent() {
   const [conclusaoSaving, setConclusaoSaving] = useState(false);
   const [conclusaoErro, setConclusaoErro] = useState("");
   const [conclusaoNotice, setConclusaoNotice] = useState("");
-  const precisaLF = deducoes.some((deducao) => deducao.siafi === "DOB001");
+  const precisaLfDob001 = deducoes.some((deducao) => deducao.siafi === "DOB001");
   const precisaUGR = requiresCentroCusto;
   const _temPendenciaVpd = pendencias.some(
     (p) => p.titulo.toLowerCase().includes("vpd não encontrado")
@@ -234,14 +243,24 @@ function ConferenciaPageContent() {
     return tiposLfNormalizados.some((tipoConfig) => tipoNota.includes(tipoConfig));
   });
   const documentoTemLfOpcional = Boolean(tipoLfEncontrado);
-  const documentoComLfAtivo = precisaLF || (documentoTemLfOpcional && documentoTemLf);
-  const documentoUsaLfComVencimento = documentoTemLfOpcional && documentoComLfAtivo;
-  const mostraBlocoLf = precisaLF || documentoTemLfOpcional;
+  const documentoComLfPagamentoAtivo = documentoTemLfOpcional && documentoTemLf;
+  const documentoUsaLfComVencimento = documentoTemLfOpcional && documentoComLfPagamentoAtivo;
+  const municipiosDob001 = Array.from(new Set(
+    deducoes
+      .filter((deducao) => deducao.siafi === "DOB001")
+      .map((deducao) => {
+        const codigo = String(deducao.codigo || "").trim().replace(/^0+/, "");
+        return deducao.municipio || MUNICIPIOS_DOB001[codigo] || "";
+      })
+      .filter(Boolean)
+  ));
+  const labelLfDob001 = `LF da DOB001${municipiosDob001.length > 0 ? ` - ${municipiosDob001.join(", ")}` : ""}`;
   const contaPdfDisponivel = Boolean(documento.bancoPdf || documento.agenciaPdf || documento.contaPdf);
   const contaManualCompleta = Boolean(
     contaBanco.trim() && contaAgencia.trim() && contaConta.trim()
   );
   const dadosBancariosResolvidos = usarContaPdf ? contaPdfDisponivel : contaManualCompleta;
+  const precisaDadosBancariosPagamento = !documentoComLfPagamentoAtivo && !dadosBancariosResolvidos;
 
   useEffect(() => {
     return () => {
@@ -273,7 +292,8 @@ function ConferenciaPageContent() {
         descricao: "Não foi possível montar o resumo operacional deste documento.",
       }
     );
-    setLfNumero(payload.lfNumero ?? "");
+    setLfPagamentoNumero(payload.lfPagamentoNumero ?? payload.lfNumero ?? "");
+    setLfDob001Numero(payload.lfDob001Numero ?? payload.lfNumero ?? "");
     setUgrNumero(payload.ugrNumero ?? "");
     setVencimentoDocumento(formatarDataComBarras(payload.vencimentoDocumento ?? ""));
     setVpd(payload.vpd ?? "");
@@ -307,7 +327,7 @@ function ConferenciaPageContent() {
       );
       setStatusMensagem(
         payload.cancelRequested
-          ? "Parada solicitada. A etapa atual será concluída antes da interrupção."
+          ? "Automação pausada."
           : etapaEmExecucao
             ? `Executando ${etapaEmExecucao.nome}...`
             : deducaoEmExecucao
@@ -521,45 +541,73 @@ function ConferenciaPageContent() {
 
   const handleTogglePendenciaResolvida = async (pendencia: PendenciaDocumento, resolvida: boolean) => {
     if (!documentoId) return;
-    // Guard: bloqueia duplo-clique e cliques enquanto outro toggle está em progresso
-    if (pendenciaToggleId !== null) return;
     if (pendencia.id.startsWith("local-")) {
-      setErro("Essa pendência é concluída preenchendo o campo correspondente no próprio painel.");
-      setPendenciasExpanded(true);
+      setErro("");
+      setPendenciasLocaisResolvidas((current) => ({
+        ...current,
+        [pendencia.id]: resolvida,
+      }));
       return;
     }
 
     setErro("");
-    setPendenciaToggleId(pendencia.id);
     pendenciaToggleInFlightRef.current = true;
-    // Deep copy para rollback correto em caso de erro
-    const pendenciasAntes = pendencias.map((p) => ({ ...p }));
-    // Atualização otimista: reflete visualmente antes da resposta do servidor
     setPendencias((current) =>
       current.map((item) =>
         item.id === pendencia.id ? { ...item, resolvida } : item
       )
     );
-    try {
-      const payload = await atualizarPendenciaDocumento(documentoId, pendencia.id, resolvida);
-      // Atualização cirúrgica: aplica só a pendência alterada do servidor,
-      // sem sobrescrever todo o estado (evita race condition com o polling).
-      const pendenciaServidor = payload.pendencias?.find((p) => p.id === pendencia.id);
-      setPendencias((current) =>
-        current.map((item) =>
-          item.id === pendencia.id
-            ? (pendenciaServidor ?? { ...item, resolvida })
-            : item
-        )
-      );
-      // Atualiza statusGeral e resumo que podem ter mudado com a resolução da pendência
-      if (payload.statusGeral) setStatusGeral(payload.statusGeral);
-      if (payload.resumo !== undefined) setResumo(payload.resumo);
-    } catch (error) {
-      setPendencias(pendenciasAntes);
-      setErro(error instanceof Error ? error.message : "Não foi possível atualizar a pendência agora.");
-    } finally {
+
+    const pending = pendenciaTogglePendingRef.current;
+    const existing = pending.get(pendencia.id);
+    pending.set(pendencia.id, { latest: resolvida, saving: existing?.saving ?? false });
+    if (existing?.saving) return;
+
+    pending.set(pendencia.id, { latest: resolvida, saving: true });
+    setPendenciaToggleId(pendencia.id);
+
+    let intent = resolvida;
+    while (true) {
+      try {
+        const payload = await atualizarPendenciaDocumento(documentoId, pendencia.id, intent);
+        const currentPending = pending.get(pendencia.id);
+        if (!currentPending || currentPending.latest === intent) {
+          const pendenciaServidor = payload.pendencias?.find((p) => p.id === pendencia.id);
+          setPendencias((current) =>
+            current.map((item) =>
+              item.id === pendencia.id
+                ? (pendenciaServidor ?? { ...item, resolvida: intent })
+                : item
+            )
+          );
+          if (payload.statusGeral) setStatusGeral(payload.statusGeral);
+          if (payload.resumo !== undefined) setResumo(payload.resumo);
+          pending.delete(pendencia.id);
+          break;
+        }
+        intent = currentPending.latest;
+        pending.set(pendencia.id, { latest: intent, saving: true });
+      } catch (error) {
+        const currentPending = pending.get(pendencia.id);
+        if (!currentPending || currentPending.latest === intent) {
+          setPendencias((current) =>
+            current.map((item) =>
+              item.id === pendencia.id ? { ...item, resolvida: pendencia.resolvida } : item
+            )
+          );
+          pending.delete(pendencia.id);
+          setErro(error instanceof Error ? error.message : "Não foi possível atualizar a pendência agora.");
+          break;
+        }
+        intent = currentPending.latest;
+        pending.set(pendencia.id, { latest: intent, saving: true });
+      }
+    }
+
+    if (pending.size === 0) {
       pendenciaToggleInFlightRef.current = false;
+      setPendenciaToggleId(null);
+    } else {
       setPendenciaToggleId(null);
     }
   };
@@ -571,7 +619,7 @@ function ConferenciaPageContent() {
     const ultimoLog = payload.logs.at(-1)?.toLowerCase() ?? "";
 
     if (ultimoLog.includes("parada solicitada")) {
-      return "Execução interrompida após a etapa atual.";
+      return "Execução interrompida.";
     }
 
     if (payload.etapas.some((etapa) => etapa.status === "erro")) {
@@ -708,7 +756,8 @@ function ConferenciaPageContent() {
 
   useEffect(() => {
     setUgrNumero("");
-    setLfNumero("");
+    setLfPagamentoNumero("");
+    setLfDob001Numero("");
     setVencimentoDocumento("");
     setUsarContaPdf(true);
     setContaBanco("");
@@ -722,10 +771,10 @@ function ConferenciaPageContent() {
   }, [documentoId]);
 
   useEffect(() => {
-    if (precisaUGR || precisaLF || precisaVpd || documentoComLfAtivo || !dadosBancariosResolvidos) {
+    if (precisaUGR || precisaLfDob001 || precisaVpd || documentoComLfPagamentoAtivo || precisaDadosBancariosPagamento) {
       setPendenciasExpanded(true);
     }
-  }, [precisaUGR, precisaLF, precisaVpd, documentoComLfAtivo, dadosBancariosResolvidos]);
+  }, [precisaUGR, precisaLfDob001, precisaVpd, documentoComLfPagamentoAtivo, precisaDadosBancariosPagamento]);
 
   useEffect(() => {
     if (!documentoId || !isExecutando) return;
@@ -752,9 +801,10 @@ function ConferenciaPageContent() {
   }, [documentoId, isExecutando]);
 
   const executeAll = async (
-    lfInformada = documentoTemLfOpcional && !documentoComLfAtivo ? "" : lfNumero,
+    lfPagamentoInformada = documentoComLfPagamentoAtivo ? lfPagamentoNumero : "",
+    lfDob001Informada = lfDob001Numero,
     ugrInformada = ugrNumero,
-    vencimentoInformado = documentoTemLfOpcional && !documentoComLfAtivo ? "" : vencimentoDocumento,
+    vencimentoInformado = documentoComLfPagamentoAtivo ? vencimentoDocumento : "",
     usarPdf = usarContaPdf,
     banco = contaBanco,
     agencia = contaAgencia,
@@ -776,7 +826,9 @@ function ConferenciaPageContent() {
       // estale. O polling (useEffect abaixo) detecta a conclusão real.
       await executarTodas(documentoId, {
         signal: controller.signal,
-        lfNumero: lfInformada,
+        lfNumero: lfDob001Informada || lfPagamentoInformada,
+        lfPagamentoNumero: lfPagamentoInformada,
+        lfDob001Numero: lfDob001Informada,
         ugrNumero: ugrInformada,
         vencimentoDocumento: vencimentoInformado,
         usarContaPdf: usarPdf,
@@ -788,7 +840,7 @@ function ConferenciaPageContent() {
     } catch (error) {
       console.error("Erro ao executar:", error);
       if (controller.signal.aborted) {
-        setStatusMensagem("Parada solicitada. Atualizando andamento da automação...");
+        setStatusMensagem("Automação pausada.");
       } else {
         // Falha na própria chamada HTTP — encerra imediatamente.
         setErro(
@@ -808,9 +860,10 @@ function ConferenciaPageContent() {
 
   const executeEtapa = async (
     etapa: EtapaExecucao,
-    lfInformada = documentoTemLfOpcional && !documentoComLfAtivo ? "" : lfNumero,
+    lfPagamentoInformada = documentoComLfPagamentoAtivo ? lfPagamentoNumero : "",
+    lfDob001Informada = lfDob001Numero,
     ugrInformada = ugrNumero,
-    vencimentoInformado = documentoTemLfOpcional && !documentoComLfAtivo ? "" : vencimentoDocumento,
+    vencimentoInformado = documentoComLfPagamentoAtivo ? vencimentoDocumento : "",
     usarPdf = usarContaPdf,
     banco = contaBanco,
     agencia = contaAgencia,
@@ -835,7 +888,9 @@ function ConferenciaPageContent() {
       // atualizar o estado real a cada 2,5 s e detecta a conclusão.
       await executarEtapa(documentoId, etapa.id, {
         signal: controller.signal,
-        lfNumero: lfInformada,
+        lfNumero: lfDob001Informada || lfPagamentoInformada,
+        lfPagamentoNumero: lfPagamentoInformada,
+        lfDob001Numero: lfDob001Informada,
         ugrNumero: ugrInformada,
         vencimentoDocumento: vencimentoInformado,
         usarContaPdf: usarPdf,
@@ -847,7 +902,7 @@ function ConferenciaPageContent() {
     } catch (error) {
       console.error("Erro ao executar etapa:", error);
       if (controller.signal.aborted) {
-        setStatusMensagem("Parada solicitada. Atualizando andamento da automação...");
+        setStatusMensagem("Automação pausada.");
       } else {
         // Falha na própria chamada HTTP — encerra imediatamente.
         setErro(
@@ -879,22 +934,29 @@ function ConferenciaPageContent() {
       }
     }
 
-    if ((contexto === "todas" || etapa?.id === 3) && precisaLF && !lfNumero.trim()) {
-      faltas.push("LF");
+    if ((contexto === "todas" || etapa?.id === 3) && precisaLfDob001 && !lfDob001Numero.trim()) {
+      faltas.push("LF da dedução DOB001");
       if (!mensagemSemClique && !tocouLf) {
-        mensagemSemClique = "Preencha a LF na aba Pendências antes de continuar.";
+        mensagemSemClique = "Preencha a LF da dedução DOB001 na aba Pendências antes de continuar.";
       }
     }
 
     if (contexto === "todas" || etapa?.id === 4) {
-      if (documentoUsaLfComVencimento && !vencimentoDocumento.trim()) {
-        faltas.push(temFatura ? "vencimento da fatura" : "vencimento da LF");
-        if (!mensagemSemClique && !tocouFatura) {
-          mensagemSemClique = "Revise os dados de LF na aba Pendências antes de executar.";
+      if (documentoComLfPagamentoAtivo && !lfPagamentoNumero.trim()) {
+        faltas.push("LF dos Dados de Pagamento");
+        if (!mensagemSemClique && !tocouLf) {
+          mensagemSemClique = "Preencha a LF dos Dados de Pagamento na aba Pendências antes de executar.";
         }
       }
 
-      if (!dadosBancariosResolvidos) {
+      if (documentoUsaLfComVencimento && !vencimentoDocumento.trim()) {
+        faltas.push(temFatura ? "vencimento da fatura nos Dados de Pagamento" : "vencimento da LF dos Dados de Pagamento");
+        if (!mensagemSemClique && !tocouFatura) {
+          mensagemSemClique = "Revise os dados da LF de Dados de Pagamento na aba Pendências antes de executar.";
+        }
+      }
+
+      if (precisaDadosBancariosPagamento) {
         faltas.push("dados bancários");
         if (!mensagemSemClique && !tocouConta) {
           mensagemSemClique = "Escolha ou preencha os dados bancários na aba Pendências antes de executar.";
@@ -927,6 +989,11 @@ function ConferenciaPageContent() {
 
   const handleExecutarDeducao = async (deducao: Deducao) => {
     if (!documentoId) return;
+    if (deducao.siafi === "DOB001" && !lfDob001Numero.trim()) {
+      setErro("Preencha a LF da dedução DOB001 na aba Pendências antes de executar esta dedução.");
+      setPendenciasExpanded(true);
+      return;
+    }
     execucaoAbortControllerRef.current?.abort();
     const controller = new AbortController();
     execucaoAbortControllerRef.current = controller;
@@ -939,7 +1006,8 @@ function ConferenciaPageContent() {
       const datasOverride = datasDeducoes[deducao.id];
       await executarDeducao(documentoId, deducao.id, {
         signal: controller.signal,
-        lfNumero,
+        lfNumero: lfDob001Numero,
+        lfDob001Numero,
         ugrNumero,
         vencimentoDocumento,
         dataApuracao: datasOverride?.apuracao || "",
@@ -948,7 +1016,7 @@ function ConferenciaPageContent() {
     } catch (error) {
       console.error("Erro ao executar dedução:", error);
       if (controller.signal.aborted) {
-        setStatusMensagem("Parada solicitada. Atualizando andamento da automação...");
+        setStatusMensagem("Automação pausada.");
       } else {
         setErro(
           error instanceof Error ? error.message : "Erro ao executar a dedução."
@@ -967,54 +1035,26 @@ function ConferenciaPageContent() {
   const handlePararExecucao = async () => {
     if (!documentoId || !isExecutando) return;
 
+    execucaoAbortControllerRef.current?.abort();
+    setIsExecutando(false);
+    setParadaSolicitada(true);
+    setEtapaAtivaId(null);
+    setDeducaoAtivaId(null);
+    setStatusMensagem("Automação pausada.");
+    setErro("");
+
     try {
       const payload = await pararExecucao(documentoId);
-      execucaoAbortControllerRef.current?.abort();
       aplicarPayload(payload);
-      setErro("");
-      setStatusMensagem(payload.mensagem);
+      setStatusMensagem(payload.mensagem || "Automação pausada.");
     } catch (error) {
       console.error("Erro ao solicitar parada:", error);
+      setParadaSolicitada(false);
       setErro(
         error instanceof Error
           ? error.message
           : "Erro ao solicitar a interrupção da execução."
       );
-    }
-  };
-
-  const handleSalvarPreenchimento = async () => {
-    if (!documentoId) return;
-    setSalvandoPendencias(true);
-    setErro("");
-
-    try {
-      const lfParaSalvar = documentoTemLfOpcional && !documentoComLfAtivo ? "" : lfNumero;
-      const vencimentoParaSalvar = documentoTemLfOpcional && !documentoComLfAtivo ? "" : vencimentoDocumento;
-      const payload = await salvarPreenchimentoDocumento(documentoId, {
-        lfNumero: lfParaSalvar,
-        ugrNumero,
-        vencimentoDocumento: vencimentoParaSalvar,
-        usarContaPdf,
-        contaBanco,
-        contaAgencia,
-        contaConta,
-        vpd,
-        codigoOperacional,
-      });
-      setPendencias(payload.pendencias ?? []);
-      setPendenciasExpanded(false);
-      setStatusMensagem("Preenchimento operacional salvo.");
-    } catch (error) {
-      console.error("Erro ao salvar preenchimento:", error);
-      setPendenciasExpanded(true);
-      setErro(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível salvar os campos de pendência."
-      );
-    } finally {
-      setSalvandoPendencias(false);
     }
   };
 
@@ -1105,11 +1145,18 @@ function ConferenciaPageContent() {
   const pendenciasBaseVisiveis = pendencias.filter((pendencia) => {
     const titulo = String(pendencia.titulo ?? "").toLowerCase();
 
+    if (titulo.startsWith("etapa com erro:") || titulo.startsWith("dedução com erro:")) {
+      return false;
+    }
+
     if (titulo.includes("ugr obrigatória") && ugrNumero.trim()) {
       return false;
     }
 
-    if (titulo.includes("lf obrigatória") && lfNumero.trim()) {
+    if (
+      (titulo.includes("lf obrigatória") || titulo.includes("lf da dedução dob001"))
+      && lfDob001Numero.trim()
+    ) {
       return false;
     }
 
@@ -1133,13 +1180,14 @@ function ConferenciaPageContent() {
       pendenciasLocais.push({
         id: "local-lf-vencimento",
         tipo: "atencao",
-        titulo: "Vencimento da LF não informado",
-        descricao: "Se este documento usa LF, informe o vencimento antes de executar os dados de pagamento.",
+        titulo: "Vencimento da LF dos Dados de Pagamento não informado",
+        descricao: "Como os Dados de Pagamento usarão LF, informe o vencimento antes de executar essa etapa.",
         origem: "configuracao",
+        resolvida: Boolean(pendenciasLocaisResolvidas["local-lf-vencimento"]),
       });
     }
 
-    if (!dadosBancariosResolvidos) {
+    if (precisaDadosBancariosPagamento) {
       pendenciasLocais.push({
         id: "local-banco",
         tipo: "bloqueio",
@@ -1148,6 +1196,7 @@ function ConferenciaPageContent() {
           ? "Selecione uma conta válida do PDF ou troque para preenchimento manual."
           : "Preencha banco, agência e conta para concluir Dados de Pagamento.",
         origem: "configuracao",
+        resolvida: Boolean(pendenciasLocaisResolvidas["local-banco"]),
       });
     }
   }
@@ -1259,7 +1308,8 @@ function ConferenciaPageContent() {
             : null,
           deducoes: deducoes.map((d) => ({ siafi: d.siafi, tipo: d.tipo, status: d.status })),
           pendencias: pendencias.map((p) => ({ id: p.id, tipo: p.tipo, titulo: p.titulo })),
-          lfNumero: lfNumero || null,
+          lfPagamentoNumero: lfPagamentoNumero || null,
+          lfDob001Numero: lfDob001Numero || null,
           ugrNumero: ugrNumero || null,
           vencimentoDocumento: vencimentoDocumento || null,
           contaBanco: contaBanco || null,
@@ -1333,37 +1383,11 @@ function ConferenciaPageContent() {
                     {bolsaTabAtiva === "pendencias" && (
                       <div className="space-y-4">
                         <div className="rounded-2xl border border-glass-border/70 bg-background/55 px-5 py-4">
-                          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-                              Preenchimento Operacional
-                            </p>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => setPendenciasExpanded((current) => !current)}
-                                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-glass-border bg-background/75 text-muted-foreground transition-colors hover:text-foreground"
-                                aria-label={pendenciasExpanded ? "Recolher preenchimento operacional" : "Expandir preenchimento operacional"}
-                              >
-                                {pendenciasExpanded ? (
-                                  <ChevronDown className="h-4 w-4" />
-                                ) : (
-                                  <ChevronRight className="h-4 w-4" />
-                                )}
-                              </button>
-                              <GlassButton
-                                variant="secondary"
-                                size="sm"
-                                onClick={() => void handleSalvarPreenchimento()}
-                                disabled={salvandoPendencias || isExecutando}
-                                className="shrink-0"
-                              >
-                                {salvandoPendencias ? "Salvando..." : "Salvar"}
-                              </GlassButton>
-                            </div>
-                          </div>
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                            Preenchimento Operacional
+                          </p>
 
-                          {pendenciasExpanded ? (
-                            <div className="mt-5 space-y-5">
+                          <div className="mt-5 space-y-5">
                               <div className="grid gap-x-6 gap-y-5 lg:grid-cols-2">
                                 <div className="space-y-3">
                                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
@@ -1491,11 +1515,6 @@ function ConferenciaPageContent() {
                                 </div>
                               </div>
                             </div>
-                          ) : (
-                            <p className="mt-3 text-sm text-muted-foreground">
-                              As definições operacionais estão recolhidas. Expanda se quiser revisar ou alterar os campos antes da execução.
-                            </p>
-                          )}
                         </div>
 
                         <PendenciasPanel
@@ -1900,250 +1919,227 @@ function ConferenciaPageContent() {
               pendenciaToggleId={pendenciaToggleId}
               pendenciasExtraContent={
                 <div className="rounded-2xl border border-glass-border/70 bg-background/55 px-5 py-4">
-                  {/* ── Header ── */}
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-                      Preenchimento Operacional
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setPendenciasExpanded((current) => !current)}
-                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-glass-border bg-background/75 text-muted-foreground transition-colors hover:text-foreground"
-                        aria-label={pendenciasExpanded ? "Recolher preenchimento operacional" : "Expandir preenchimento operacional"}
-                      >
-                        {pendenciasExpanded ? (
-                          <ChevronDown className="h-4 w-4" />
-                        ) : (
-                          <ChevronRight className="h-4 w-4" />
-                        )}
-                      </button>
-                      <GlassButton
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => void handleSalvarPreenchimento()}
-                        disabled={salvandoPendencias || isExecutando}
-                        className="shrink-0"
-                      >
-                        {salvandoPendencias ? "Salvando..." : "Salvar"}
-                      </GlassButton>
-                    </div>
-                  </div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                    Preenchimento Operacional
+                  </p>
 
-                  {pendenciasExpanded ? (
-                    <div className="mt-5 divide-y divide-glass-border/40 [&>*]:pt-5 [&>*:first-child]:pt-0">
+                  <div className="mt-5 divide-y divide-glass-border/40 [&>*]:pt-5 [&>*:first-child]:pt-0">
 
-                      {/* ── Grid de campos pequenos (LF, UGR, VPD) ── */}
-                      {(mostraBlocoLf || precisaUGR || mostrarVpd) && (
-                        <div className="grid gap-x-6 gap-y-5 lg:grid-cols-2">
-
-                          {mostraBlocoLf && (
-                            <div className="space-y-3">
-                              <div className="flex items-center justify-between">
-                                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">LF</p>
-                                {documentoTemLfOpcional && !precisaLF && (
-                                  <label className="flex cursor-pointer items-center gap-2">
-                                    <span className="text-xs text-muted-foreground">
-                                      {temFatura ? "Esta fatura tem LF?" : "Este documento tem LF?"}
-                                    </span>
-                                    <Switch
-                                      checked={documentoTemLf}
-                                      onCheckedChange={(checked) => {
-                                        setDocumentoTemLf(checked);
-                                        if (!checked) {
-                                          setLfNumero("");
-                                          setVencimentoDocumento("");
-                                        }
-                                      }}
-                                    />
-                                  </label>
-                                )}
-                              </div>
-                              {documentoComLfAtivo && (
+                      <div className="space-y-6">
+                        {(precisaLfDob001 || mostrarVpd) && (
+                          <section className="space-y-3">
+                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Dedução</p>
+                            <div className="grid gap-3 lg:grid-cols-2">
+                              {precisaLfDob001 && (
                                 <div className="space-y-2">
                                   <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-                                    LF
+                                    {labelLfDob001}
                                   </label>
                                   <Input
-                                    value={lfNumero}
+                                    value={lfDob001Numero}
                                     maxLength={12}
                                     placeholder="Ex.: 2026LF00123"
                                     onFocus={() => setTocouLf(true)}
                                     onChange={(event) => {
                                       setTocouLf(true);
-                                      setLfNumero(event.target.value);
+                                      setLfDob001Numero(event.target.value);
                                     }}
                                   />
                                 </div>
                               )}
-                              {documentoUsaLfComVencimento && (
+
+                              {mostrarVpd && (
                                 <div className="space-y-2">
                                   <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-                                    {temFatura ? "Vencimento da fatura" : "Vencimento da LF"}
+                                    Conta VPD
                                   </label>
                                   <Input
-                                    value={vencimentoDocumento}
-                                    placeholder="dd/mm/aaaa"
-                                    onFocus={() => setTocouFatura(true)}
+                                    value={vpd}
+                                    placeholder="Ex.: 311130200"
+                                    onFocus={() => setTocouVpd(true)}
                                     onChange={(event) => {
-                                      setTocouFatura(true);
-                                      setVencimentoDocumento(formatarDataComBarras(event.target.value));
+                                      setTocouVpd(true);
+                                      setVpd(event.target.value);
                                     }}
                                   />
                                 </div>
                               )}
-                              {documentoTemLfOpcional && !documentoComLfAtivo && (
-                                <p className="text-xs text-muted-foreground">
-                                  Pagamento sem LF - seguirá como nota fiscal comum.
-                                </p>
+                            </div>
+                          </section>
+                        )}
+
+                        <section className="space-y-3 border-t border-glass-border/40 pt-5">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Dados de Pagamento</p>
+                            {documentoTemLfOpcional && (
+                              <label className="flex w-fit cursor-pointer items-center gap-2 rounded-full border border-glass-border bg-background/70 px-3 py-1.5">
+                                <span className="text-xs font-medium text-muted-foreground">Usar LF</span>
+                                <Switch
+                                  checked={documentoTemLf}
+                                  onCheckedChange={(checked) => {
+                                    setDocumentoTemLf(checked);
+                                    if (!checked) {
+                                      setLfPagamentoNumero("");
+                                      setVencimentoDocumento("");
+                                    }
+                                  }}
+                                />
+                              </label>
+                            )}
+                          </div>
+
+                          {documentoComLfPagamentoAtivo ? (
+                            <div className="grid gap-3 lg:grid-cols-2">
+                              <div className="space-y-2">
+                                <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                  LF dos Dados de Pagamento
+                                </label>
+                                <Input
+                                  value={lfPagamentoNumero}
+                                  maxLength={12}
+                                  placeholder="Ex.: 2026LF00123"
+                                  onFocus={() => setTocouLf(true)}
+                                  onChange={(event) => {
+                                    setTocouLf(true);
+                                    setLfPagamentoNumero(event.target.value);
+                                  }}
+                                />
+                              </div>
+
+                              <div className="space-y-2">
+                                <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                  {temFatura ? "Vencimento da fatura" : "Vencimento da LF"}
+                                </label>
+                                <Input
+                                  value={vencimentoDocumento}
+                                  placeholder="dd/mm/aaaa"
+                                  onFocus={() => setTocouFatura(true)}
+                                  onChange={(event) => {
+                                    setTocouFatura(true);
+                                    setVencimentoDocumento(formatarDataComBarras(event.target.value));
+                                  }}
+                                />
+                              </div>
+
+                              <p className="text-xs text-muted-foreground lg:col-span-2">
+                                Favorecido: Banco do Brasil (00.000.000/0001-91).
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="space-y-3">
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setTocouConta(true);
+                                    setUsarContaPdf(true);
+                                  }}
+                                  className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                                    usarContaPdf
+                                      ? "border-primary bg-primary/10 text-primary"
+                                      : "border-glass-border bg-background text-muted-foreground hover:bg-secondary/50"
+                                  }`}
+                                >
+                                  Conta do PDF
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setTocouConta(true);
+                                    setUsarContaPdf(false);
+                                    if (!contaBanco && documento.bancoPdf) setContaBanco(documento.bancoPdf);
+                                    if (!contaAgencia && documento.agenciaPdf) setContaAgencia(documento.agenciaPdf);
+                                    if (!contaConta && documento.contaPdf) setContaConta(documento.contaPdf);
+                                  }}
+                                  className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                                    !usarContaPdf
+                                      ? "border-primary bg-primary/10 text-primary"
+                                      : "border-glass-border bg-background text-muted-foreground hover:bg-secondary/50"
+                                  }`}
+                                >
+                                  Manual
+                                </button>
+                              </div>
+
+                              {usarContaPdf ? (
+                                <div className="rounded-xl border border-glass-border/50 bg-secondary/10 px-3 py-3 text-sm text-muted-foreground">
+                                  {contaPdfDisponivel
+                                    ? [documento.bancoPdf && `Banco ${documento.bancoPdf}`, documento.agenciaPdf && `Ag. ${documento.agenciaPdf}`, documento.contaPdf && `Conta ${documento.contaPdf}`].filter(Boolean).join(" · ")
+                                    : "Conta não identificada no PDF."}
+                                </div>
+                              ) : (
+                                <div className="grid gap-3 md:grid-cols-3">
+                                  <div className="space-y-2">
+                                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                      Banco
+                                    </label>
+                                    <Input
+                                      value={contaBanco}
+                                      placeholder={documento.bancoPdf || "Ex.: 001"}
+                                      onFocus={() => setTocouConta(true)}
+                                      onChange={(e) => {
+                                        setTocouConta(true);
+                                        setContaBanco(e.target.value);
+                                      }}
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                      Agência
+                                    </label>
+                                    <Input
+                                      value={contaAgencia}
+                                      placeholder={documento.agenciaPdf || "Ex.: 0001-9"}
+                                      onFocus={() => setTocouConta(true)}
+                                      onChange={(e) => {
+                                        setTocouConta(true);
+                                        setContaAgencia(e.target.value);
+                                      }}
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                      Conta
+                                    </label>
+                                    <Input
+                                      value={contaConta}
+                                      placeholder={documento.contaPdf || "Ex.: 12345-6"}
+                                      onFocus={() => setTocouConta(true)}
+                                      onChange={(e) => {
+                                        setTocouConta(true);
+                                        setContaConta(e.target.value);
+                                      }}
+                                    />
+                                  </div>
+                                </div>
                               )}
                             </div>
                           )}
+                        </section>
 
-                          {precisaUGR && (
-                            <div className="space-y-3">
-                              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Centro de Custo</p>
-                              <div className="space-y-2">
-                                <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-                                  UGR
-                                </label>
-                                <Input
-                                  value={ugrNumero}
-                                  maxLength={6}
-                                  placeholder="Ex.: 153424"
-                                  onFocus={() => setTocouUgr(true)}
-                                  onChange={(event) => {
-                                    setTocouUgr(true);
-                                    setUgrNumero(event.target.value);
-                                  }}
-                                />
-                              </div>
-                            </div>
-                          )}
-
-                          {mostrarVpd && (
-                            <div className="space-y-3">
-                              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">VPD</p>
-                              <div className="space-y-2">
-                                <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-                                  Conta VPD
-                                </label>
-                                <Input
-                                  value={vpd}
-                                  placeholder="Ex.: 311130200"
-                                  onFocus={() => setTocouVpd(true)}
-                                  onChange={(event) => {
-                                    setTocouVpd(true);
-                                    setVpd(event.target.value);
-                                  }}
-                                />
-
-                              </div>
-                            </div>
-                          )}
-
-                        </div>
-                      )}
-
-                      {/* ── Dados Bancários ── */}
-                      <div className="space-y-3">
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Dados Bancários</p>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setTocouConta(true);
-                                setUsarContaPdf(true);
-                              }}
-                              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
-                                usarContaPdf
-                                  ? "border-primary bg-primary/10 text-primary"
-                                  : "border-glass-border bg-background text-muted-foreground hover:bg-secondary/50"
-                              }`}
-                            >
-                              Conta do PDF
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setTocouConta(true);
-                                setUsarContaPdf(false);
-                                if (!contaBanco && documento.bancoPdf) setContaBanco(documento.bancoPdf);
-                                if (!contaAgencia && documento.agenciaPdf) setContaAgencia(documento.agenciaPdf);
-                                if (!contaConta && documento.contaPdf) setContaConta(documento.contaPdf);
-                              }}
-                              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
-                                !usarContaPdf
-                                  ? "border-primary bg-primary/10 text-primary"
-                                  : "border-glass-border bg-background text-muted-foreground hover:bg-secondary/50"
-                              }`}
-                            >
-                              Preencher manualmente
-                            </button>
-                          </div>
-                        </div>
-
-                        {usarContaPdf ? (
-                          <div className="rounded-xl border border-glass-border/50 bg-secondary/10 px-3 py-3 text-sm text-muted-foreground">
-                            {contaPdfDisponivel
-                              ? [documento.bancoPdf && `Banco ${documento.bancoPdf}`, documento.agenciaPdf && `Ag. ${documento.agenciaPdf}`, documento.contaPdf && `Conta ${documento.contaPdf}`].filter(Boolean).join(" · ")
-                              : "Nenhuma conta foi identificada no PDF. Troque para preenchimento manual."}
-                          </div>
-                        ) : (
-                          <div className="grid gap-3 md:grid-cols-3">
-                            <div className="space-y-2">
+                        {precisaUGR && (
+                          <section className="space-y-3 border-t border-glass-border/40 pt-5">
+                            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Centro de Custo</p>
+                            <div className="max-w-md space-y-2">
                               <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-                                Banco
+                                UGR
                               </label>
                               <Input
-                                value={contaBanco}
-                                placeholder={documento.bancoPdf || "Ex.: 001"}
-                                onFocus={() => setTocouConta(true)}
-                                onChange={(e) => {
-                                  setTocouConta(true);
-                                  setContaBanco(e.target.value);
+                                value={ugrNumero}
+                                maxLength={6}
+                                placeholder="Ex.: 153424"
+                                onFocus={() => setTocouUgr(true)}
+                                onChange={(event) => {
+                                  setTocouUgr(true);
+                                  setUgrNumero(event.target.value);
                                 }}
                               />
                             </div>
-                            <div className="space-y-2">
-                              <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-                                Agência
-                              </label>
-                              <Input
-                                value={contaAgencia}
-                                placeholder={documento.agenciaPdf || "Ex.: 0001-9"}
-                                onFocus={() => setTocouConta(true)}
-                                onChange={(e) => {
-                                  setTocouConta(true);
-                                  setContaAgencia(e.target.value);
-                                }}
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-                                Conta
-                              </label>
-                              <Input
-                                value={contaConta}
-                                placeholder={documento.contaPdf || "Ex.: 12345-6"}
-                                onFocus={() => setTocouConta(true)}
-                                onChange={(e) => {
-                                  setTocouConta(true);
-                                  setContaConta(e.target.value);
-                                }}
-                              />
-                            </div>
-                          </div>
+                          </section>
                         )}
                       </div>
 
-                    </div>
-                  ) : (
-                    <p className="mt-3 text-sm text-muted-foreground">
-                      As definições operacionais estão recolhidas. Expanda se quiser revisar ou alterar os campos antes da execução.
-                    </p>
-                  )}
+                  </div>
                 </div>
               }
               onLimparLogs={() => {

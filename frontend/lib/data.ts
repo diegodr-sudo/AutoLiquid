@@ -120,6 +120,7 @@ export interface Deducao {
   id: number
   tipo: string
   codigo: string
+  municipio?: string
   siafi: string
   rendimento?: string
   baseCalculo: number
@@ -187,6 +188,7 @@ export interface AppSettings {
   perguntarLimparMes: boolean
   temaWeb: "light" | "dark" | "system"
   nivelLog: "simples" | "desenvolvedor"
+  registroDevMode: boolean
   tursoDatabaseUrl: string
   tursoAuthToken: string
   nomeUsuario: string
@@ -216,6 +218,8 @@ export interface RocketChatNotifications {
 export interface DocumentoProcessado {
   id: string
   lfNumero: string
+  lfPagamentoNumero?: string
+  lfDob001Numero?: string
   ugrNumero: string
   vencimentoDocumento: string
   usarContaPdf?: boolean
@@ -397,6 +401,64 @@ export interface SimulacaoRegraDataDeducao {
   vencimento: string
   pagamento: string
   observacao: string
+}
+
+export interface DevPrincipalOrcamentoPilotAttempt {
+  attempt: number
+  expected: string
+  observed: string
+  ok: boolean
+  message: string
+}
+
+export interface DevPrincipalOrcamentoPilotField {
+  fieldName: string
+  ok: boolean
+  finalValue: string
+  message: string
+  attempts: DevPrincipalOrcamentoPilotAttempt[]
+}
+
+export interface DevPrincipalOrcamentoPilotStep {
+  stepName: string
+  ok: boolean
+  message: string
+  fields: DevPrincipalOrcamentoPilotField[]
+}
+
+export interface DevPrincipalOrcamentoPilotResult {
+  success: boolean
+  dryRun: boolean
+  artifactDir: string
+  mensagem: string
+  steps: DevPrincipalOrcamentoPilotStep[]
+}
+
+export interface DevPcoSnapshotResult {
+  success: boolean
+  artifactDir: string
+  jsonPath: string
+  htmlPath: string
+  screenshotPath: string
+  url: string
+  title: string
+  counts: {
+    fields?: number
+    visibleFields?: number
+    buttons?: number
+    blueBars?: number
+    deducoes?: number
+  }
+  blueBars: Array<{
+    empenho?: string
+    subelemento?: string
+    liquidado?: string
+    valor?: string
+    expanded?: boolean
+    text?: string
+  }>
+  deducaoIds?: string[]
+  mensagem: string
 }
 
 export interface FilaAlerta {
@@ -1241,6 +1303,8 @@ export async function executarTodas(
   options: {
     signal?: AbortSignal
     lfNumero?: string
+    lfPagamentoNumero?: string
+    lfDob001Numero?: string
     ugrNumero?: string
     vencimentoDocumento?: string
     usarContaPdf?: boolean
@@ -1260,6 +1324,8 @@ export async function executarTodas(
       },
       body: JSON.stringify({
         lfNumero: options.lfNumero ?? "",
+        lfPagamentoNumero: options.lfPagamentoNumero ?? options.lfNumero ?? "",
+        lfDob001Numero: options.lfDob001Numero ?? options.lfNumero ?? "",
         ugrNumero: options.ugrNumero ?? "",
         vencimentoDocumento: options.vencimentoDocumento ?? "",
         usarContaPdf: options.usarContaPdf ?? true,
@@ -1283,6 +1349,8 @@ export async function executarEtapa(
   options: {
     signal?: AbortSignal
     lfNumero?: string
+    lfPagamentoNumero?: string
+    lfDob001Numero?: string
     ugrNumero?: string
     vencimentoDocumento?: string
     usarContaPdf?: boolean
@@ -1302,6 +1370,8 @@ export async function executarEtapa(
       },
       body: JSON.stringify({
         lfNumero: options.lfNumero ?? "",
+        lfPagamentoNumero: options.lfPagamentoNumero ?? options.lfNumero ?? "",
+        lfDob001Numero: options.lfDob001Numero ?? options.lfNumero ?? "",
         ugrNumero: options.ugrNumero ?? "",
         vencimentoDocumento: options.vencimentoDocumento ?? "",
         usarContaPdf: options.usarContaPdf ?? true,
@@ -1315,6 +1385,70 @@ export async function executarEtapa(
     {
       timeoutMs: EXECUTION_API_TIMEOUT_MS,
       signal: options.signal,
+    }
+  )
+}
+
+export async function executarPrincipalOrcamentoPilotoDev(
+  documentoId: string,
+  options: { dryRun?: boolean; artifactDir?: string } = {}
+): Promise<DevPrincipalOrcamentoPilotResult> {
+  return apiFetch<DevPrincipalOrcamentoPilotResult>(
+    `/api/dev/documentos/${encodeURIComponent(documentoId)}/principal-orcamento-piloto`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        dryRun: options.dryRun ?? false,
+        artifactDir: options.artifactDir ?? "",
+      }),
+    },
+    {
+      timeoutMs: EXECUTION_API_TIMEOUT_MS,
+    }
+  )
+}
+
+export async function capturarPrincipalOrcamentoSnapshotDev(
+  options: { prefix?: string; artifactDir?: string } = {}
+): Promise<DevPcoSnapshotResult> {
+  return apiFetch<DevPcoSnapshotResult>(
+    "/api/dev/principal-orcamento/snapshot",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prefix: options.prefix ?? "registro-dev",
+        artifactDir: options.artifactDir ?? "",
+      }),
+    },
+    {
+      timeoutMs: EXECUTION_API_TIMEOUT_MS,
+    }
+  )
+}
+
+export async function capturarDob001SnapshotDev(
+  options: { prefix?: string; artifactDir?: string } = {}
+): Promise<DevPcoSnapshotResult> {
+  return apiFetch<DevPcoSnapshotResult>(
+    "/api/dev/dob001/snapshot",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prefix: options.prefix ?? "registro-dev",
+        artifactDir: options.artifactDir ?? "",
+      }),
+    },
+    {
+      timeoutMs: EXECUTION_API_TIMEOUT_MS,
     }
   )
 }
@@ -1341,6 +1475,8 @@ export async function executarDeducao(
   options: {
     signal?: AbortSignal
     lfNumero?: string
+    lfPagamentoNumero?: string
+    lfDob001Numero?: string
     ugrNumero?: string
     vencimentoDocumento?: string
     dataApuracao?: string
@@ -1354,6 +1490,8 @@ export async function executarDeducao(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         lfNumero: options.lfNumero ?? "",
+        lfPagamentoNumero: options.lfPagamentoNumero ?? options.lfNumero ?? "",
+        lfDob001Numero: options.lfDob001Numero ?? options.lfNumero ?? "",
         ugrNumero: options.ugrNumero ?? "",
         vencimentoDocumento: options.vencimentoDocumento ?? "",
         usarContaPdf: true,
@@ -1375,6 +1513,8 @@ export async function salvarPreenchimentoDocumento(
   documentoId: string,
   options: {
     lfNumero?: string
+    lfPagamentoNumero?: string
+    lfDob001Numero?: string
     ugrNumero?: string
     vencimentoDocumento?: string
     usarContaPdf?: boolean
@@ -1392,6 +1532,8 @@ export async function salvarPreenchimentoDocumento(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         lfNumero: options.lfNumero ?? "",
+        lfPagamentoNumero: options.lfPagamentoNumero ?? options.lfNumero ?? "",
+        lfDob001Numero: options.lfDob001Numero ?? options.lfNumero ?? "",
         ugrNumero: options.ugrNumero ?? "",
         vencimentoDocumento: options.vencimentoDocumento ?? "",
         usarContaPdf: options.usarContaPdf ?? true,

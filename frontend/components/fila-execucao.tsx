@@ -324,12 +324,12 @@ export function FilaExecucao({
         {isExecutando && (
           <GlassButton
             variant="ghost"
-            className="mt-3 w-full border border-destructive/25 bg-destructive/10 text-destructive hover:bg-destructive/15"
+            className="mt-3 w-full border border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15 disabled:opacity-80"
             onClick={onPararExecucao}
             disabled={!onPararExecucao || paradaSolicitada}
           >
             <Square className="h-4 w-4" />
-            {paradaSolicitada ? "Parada solicitada" : "Parar após a etapa atual"}
+            PARAR agora
           </GlassButton>
         )}
 

@@ -21,6 +21,7 @@ CONFIG_APP_PADRAO = {
     "perguntar_limpar_mes": True,
     "tema_web": "light",
     "nivel_log": "desenvolvedor",
+    "registro_dev_mode": False,
     "turso_database_url": "",
     "turso_auth_token": "",
     "nome_usuario": "",
