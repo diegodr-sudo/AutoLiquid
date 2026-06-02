@@ -1345,6 +1345,233 @@ def _verificar_interrupcao(deve_parar=None):
         raise ExecucaoInterrompida("ExecuÃ§Ã£o interrompida pelo usuÃ¡rio durante DeduÃ§Ã£o.")
 
 
+def _registro_dev_ativo() -> bool:
+    try:
+        from services.config_service import carregar_config_app
+        return bool(carregar_config_app().get("registro_dev_mode"))
+    except Exception:
+        return False
+
+
+def _capturar_ddf055_dev(pagina, etapa: str, did: str = "") -> None:
+    """Captura snapshot DDF055 somente no modo dev, sem interromper a automação."""
+    if not _registro_dev_ativo():
+        return
+    try:
+        from scripts.inspecionar_ddf055 import DEFAULT_OUT_DIR, capture_ddf055_snapshot
+        prefix_parts = ["auto"]
+        if did:
+            prefix_parts.append(f"did-{did}")
+        prefix_parts.append(str(etapa or "etapa"))
+        snapshot = capture_ddf055_snapshot(
+            pagina,
+            DEFAULT_OUT_DIR,
+            "-".join(prefix_parts),
+        )
+        print(f"    [Dev DDF055] Snapshot {etapa}: {snapshot.get('jsonPath')}")
+    except Exception as exc:
+        print(f"    [Dev DDF055] Falha ao capturar snapshot {etapa}: {exc}")
+
+
+def _situacao_deducao_aplicada_basica(pagina, did: str, siafi: str) -> bool:
+    """Checagem curta usada quando a espera AJAX formal da situação falha."""
+    try:
+        estado = pagina.evaluate(
+            """([deducaoId, situacaoEsperada]) => {
+                const norm = (s) => String(s || '').normalize('NFD')
+                    .replace(/[\\u0300-\\u036f]/g, '').toUpperCase().trim();
+                const esperado = norm(situacaoEsperada);
+                const sel = document.getElementById('sfdeducaocodsit' + deducaoId);
+                const op = sel?.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+                const painel = document.getElementById(`${situacaoEsperada}_${deducaoId}`);
+                const codigo = document.getElementById('txtinscra' + deducaoId);
+                const natureza = document.getElementById('txtinscrb' + deducaoId);
+                const aba = document.getElementById('aba-deducao' + deducaoId);
+                const confirmar = document.getElementById('confirma-dados-deducao-' + deducaoId);
+                return {
+                    ok: !!sel
+                        && norm(sel.value) === esperado
+                        && (!op || norm(op.text || op.value) === esperado)
+                        && (!!painel || !!codigo || !!natureza)
+                        && !!confirmar,
+                    value: sel ? String(sel.value || '') : '',
+                    text: op ? String(op.text || op.value || '') : '',
+                    painel: painel ? painel.id : '',
+                    temCodigo: !!codigo,
+                    temNatureza: !!natureza,
+                    aba: String(aba?.textContent || '').trim(),
+                    temConfirmar: !!confirmar,
+                };
+            }""",
+            [did, siafi],
+        ) or {}
+        if estado.get("ok"):
+            return True
+        print(f"    [DDF055] Estado da situação ainda incompleto: {estado}")
+    except Exception as exc:
+        print(f"    [DDF055] Falha ao verificar situação básica: {exc}")
+    return False
+
+
+def _abrir_predoc_ddf055(pagina, did: str, erros: list) -> str:
+    """Abre o Pré-Doc DDF055 chamando diretamente o JS do portal."""
+    try:
+        resultado = pagina.evaluate(
+            """(deducaoId) => {
+                const visivel = (el) => !!el && (!!el.offsetParent || el.getClientRects().length > 0);
+                if (typeof clickBtnRemoverOuCriarNovoPreDoc === 'function') {
+                    clickBtnRemoverOuCriarNovoPreDoc(String(deducaoId), null);
+                    return 'funcao-direta';
+                }
+                const wrapper = document.getElementById('deducao-predoc-wrapper' + deducaoId);
+                const btn = wrapper && Array.from(wrapper.querySelectorAll('button, a, [role="button"]'))
+                    .find((el) => visivel(el) && String(el.getAttribute('onclick') || '').toLowerCase().includes('predoc'));
+                if (!btn) return '';
+                btn.click();
+                return 'botao-wrapper';
+            }""",
+            did,
+        ) or ""
+        if not resultado:
+            erros.append("Pré-Doc DDF055: botão/função do portal não encontrado.")
+            return ""
+        print(f"      pré-doc DDF055 acionado: {resultado}")
+        pagina.wait_for_function(
+            """(deducaoId) => {
+                const visivel = (el) => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 && r.height === 0) return false;
+                    const s = window.getComputedStyle(el);
+                    return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+                };
+                return [
+                    'sfpredoccodtipodarf',
+                    'sfpredoccodrecurso',
+                    'sfpredocdtprdoapuracao',
+                    'sfpredoctxtprocesso',
+                    'sfpredoctxtobser',
+                    'sfpredoctipo',
+                ].some((prefixo) => visivel(document.getElementById(prefixo + deducaoId)));
+            }""",
+            arg=did,
+            timeout=15000,
+        )
+        return _obter_pdid_do_did(pagina, did, apenas_visiveis=True) or did
+    except Exception as exc:
+        erros.append(f"Pré-Doc DDF055 — abrir: {exc}")
+        return ""
+
+
+def _fixar_valor_receita_darf(pagina, did: str, valor_receita_br: str, erros: list) -> bool:
+    """Reaplica o Valor da Receita e atualiza totais da linha de recolhedor."""
+    rid = _obter_rid(pagina, did)
+    if not rid:
+        erros.append(f"Valor da Receita DARF: recolhedor não encontrado para did={did}.")
+        return False
+    fid = f"vlrPrincipal{did}{rid}"
+    try:
+        atual = pagina.evaluate(
+            """([deducaoId, fieldId, valor]) => {
+                const el = document.getElementById(fieldId);
+                if (!el) return '';
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                if (setter) setter.call(el, valor); else el.value = valor;
+                el.defaultValue = valor;
+                el.setAttribute('value', valor);
+                el.setAttribute('data-valor-vlrreceita', valor);
+                if (window.jQuery) {
+                    try { jQuery(el).val(valor); } catch (_) {}
+                }
+                const total = 'R$ ' + valor;
+                const totalPrincipal = document.getElementById('total-vlrPrincipal-' + deducaoId);
+                const totalInformar = document.getElementById('valor-total-informar-' + deducaoId);
+                if (totalPrincipal) totalPrincipal.textContent = total;
+                if (totalInformar) totalInformar.textContent = total;
+                const invalido = el.closest('td, .form-group, .col-md-2, .col-md-3, .col-md-4');
+                if (invalido) {
+                    invalido.querySelectorAll('.help-block, .invalid-feedback, .text-danger').forEach((item) => {
+                        const txt = String(item.textContent || '').toLowerCase();
+                        if (txt.includes('obrigat') || txt.includes('zero') || txt.includes('vazio')) {
+                            item.textContent = '';
+                            item.style.display = 'none';
+                        }
+                    });
+                }
+                return String(el.value || '');
+            }""",
+            [did, fid, valor_receita_br],
+        )
+    except Exception as exc:
+        erros.append(f"Valor da Receita final ({fid}): falha ao fixar valor: {exc}")
+        return False
+    if not _valor_campo_equivalente(atual, valor_receita_br):
+        erros.append(f"Valor da Receita final ({fid}): esperado {valor_receita_br}, ficou {atual or 'vazio'}.")
+        return False
+    return True
+
+
+def _fixar_campos_variaveis_ddf055(
+    pagina,
+    did: str,
+    codigo_darf: str,
+    natureza: str,
+    erros: list,
+) -> bool:
+    """Reaplica Código DARF e Natureza sem disparar AJAX/validações do portal."""
+    campos = {}
+    if codigo_darf:
+        campos[f"txtinscra{did}"] = str(codigo_darf)
+    if natureza and natureza != "—":
+        campos[f"txtinscrb{did}"] = str(natureza)
+    if not campos:
+        return True
+    try:
+        resultado = pagina.evaluate(
+            """(campos) => {
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                const saida = {};
+                for (const [id, valor] of Object.entries(campos || {})) {
+                    const el = document.getElementById(id);
+                    if (!el) {
+                        saida[id] = '__NAO_ENCONTRADO__';
+                        continue;
+                    }
+                    if (setter) setter.call(el, valor); else el.value = valor;
+                    el.defaultValue = valor;
+                    el.setAttribute('value', valor);
+                    if (window.jQuery) {
+                        try { jQuery(el).val(valor); } catch (_) {}
+                    }
+                    const grupo = el.closest('.form-group, .col-md-2, .col-md-3, .col-md-4, td') || el.parentElement;
+                    if (grupo) {
+                        grupo.querySelectorAll('.help-block, .invalid-feedback, .text-danger').forEach((item) => {
+                            const txt = String(item.textContent || '').toLowerCase();
+                            if (txt.includes('obrigat') || txt.includes('required')) {
+                                item.textContent = '';
+                                item.style.display = 'none';
+                            }
+                        });
+                    }
+                    saida[id] = String(el.value || '').trim();
+                }
+                return saida;
+            }""",
+            campos,
+        ) or {}
+    except Exception as exc:
+        erros.append(f"DDF055 campos variáveis: falha ao fixar DARF/Natureza: {exc}")
+        return False
+
+    ok = True
+    for fid, esperado in campos.items():
+        atual = str(resultado.get(fid) or "").strip()
+        if atual != str(esperado).strip():
+            erros.append(f"DDF055 campos variáveis ({fid}): esperado {esperado}, ficou {atual or 'vazio'}.")
+            ok = False
+    return ok
+
+
 def _select(pagina, fid: str, texto: str, erros: list, label: str = ""):
     """
     Seleciona opção em <select> (ou Select2) pelo id exato.
@@ -1377,7 +1604,6 @@ def _select(pagina, fid: str, texto: str, erros: list, label: str = ""):
                 if (!op) return false;
                 sel.value = op.value;
                 sel.dispatchEvent(new Event('change', {bubbles: true}));
-                if (typeof $ !== 'undefined') $(sel).trigger('change');
                 return true;
             }""",
             [fid, texto_lower, texto_norm],
@@ -1386,6 +1612,47 @@ def _select(pagina, fid: str, texto: str, erros: list, label: str = ""):
             erros.append(f"{label or fid}: opção '{texto}' não encontrada")
     except Exception as e:
         erros.append(f"{label or fid}: {e}")
+
+
+def _aguardar_situacao_deducao_aplicada(
+    pagina,
+    did: str,
+    siafi: str,
+    timeout_ms: int = 25000,
+) -> bool:
+    """Aguarda o AJAX do select Situação trocar o HTML da aba Dedução e estabilizar."""
+    try:
+        pagina.wait_for_function(
+            """([deducaoId, situacaoEsperada]) => {
+                const visivel = (el) => !!el && (!!el.offsetParent || el.getClientRects().length > 0);
+                const norm = (s) => String(s || '').normalize('NFD')
+                    .replace(/[\\u0300-\\u036f]/g, '').toUpperCase().trim();
+                const esperado = norm(situacaoEsperada);
+                const sel = document.getElementById('sfdeducaocodsit' + deducaoId);
+                if (!sel || norm(sel.value) !== esperado) return false;
+
+                const op = sel.options[sel.selectedIndex];
+                if (!op || norm(op.text || op.value) !== esperado) return false;
+
+                const aba = document.getElementById('aba-deducao' + deducaoId);
+                const painel = document.getElementById(`${situacaoEsperada}_${deducaoId}`);
+                const confirmar = document.getElementById('confirma-dados-deducao-' + deducaoId);
+                const descricao = document.getElementById('descricaoSituacao' + deducaoId);
+                const descricaoOk = !descricao || String(descricao.textContent || '').trim() !== '-';
+                const codigoDarf = document.getElementById('txtinscra' + deducaoId);
+                const natureza = document.getElementById('txtinscrb' + deducaoId);
+
+                return visivel(confirmar)
+                    && (!aba || norm(aba.textContent).includes(esperado))
+                    && (!!painel || !!codigoDarf || !!natureza)
+                    && descricaoOk;
+            }""",
+            [did, siafi],
+            timeout=timeout_ms,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def _select_com_fallback(pagina, fid: str, opcoes: list[str], erros: list, label: str = "") -> str:
@@ -1978,6 +2245,23 @@ def _abrir_predoc_resiliente(pagina, did: str, erros: list) -> str:
                 const candidatos = Array.from(
                     document.querySelectorAll('button, a, span, i, [role="button"]')
                 );
+
+                // Estratégia 0: botão exato do Pré-Doc dentro do wrapper da dedução.
+                // No DDF055 o botão correto é:
+                // #deducao-predoc-wrapper{did} .tooltipAdicionarPredoc
+                {
+                    const wrapper = document.getElementById(`deducao-predoc-wrapper${deducaoId}`);
+                    const direto = wrapper && Array.from(
+                        wrapper.querySelectorAll('button, a, [role="button"]')
+                    ).find((el) => {
+                        if (!visivel(el)) return false;
+                        const classe = normalizar(el.className || '');
+                        const onclick = normalizar(el.getAttribute?.('onclick') || '');
+                        return classe.includes('tooltipadicionarpredoc')
+                            || onclick.includes('predoc');
+                    });
+                    if (direto && clicar(direto)) return 'wrapper-predoc';
+                }
 
                 // ── Estratégia 0 (mais segura): procura o botão dentro do container do did ──
                 // Usa confirma-dados-deducao-{did} como âncora e sobe até 12 níveis
@@ -2741,10 +3025,199 @@ def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
     return _confirmar_com_datas_atomico(pagina, did, data_venc, erros)
 
 
-def _confirmar_com_datas_atomico(pagina, did: str, data_ddmmaaaa: str, erros: list) -> bool:
+def _preencher_deducao_darf_total_ddf055(
+    pagina,
+    ded: dict,
+    idx: int,
+    total: int,
+    siafi: str,
+    data_venc: str,
+    data_apuracao: str,
+    processo: str,
+    cnpj_fmt: str,
+    dados: dict,
+    erros: list,
+    recurso: str = "0",
+    deve_parar=None,
+) -> bool:
+    """Fluxo específico DDF055.
+
+    Replica a sequência observada manualmente nas capturas:
+    criar dedução -> selecionar DDF055 -> abrir Pré-Doc -> depois recolhedor.
+    """
+    valor_item_br = _formatar_valor_br(_ded_valor(ded))
+    base_calculo_br = _formatar_valor_br(_ded_base_calculo(ded))
+    codigo_darf = _ded_codigo(ded)
+    natureza = str(ded.get("Rendimento", "") or "").strip()
+    observacao = _montar_observacao_darf(dados, "IN 1234/12")
+
+    detalhe_codigo = f"  Código={codigo_darf}" if codigo_darf else ""
+    detalhe_rendimento = f"  Rendimento={natureza}" if natureza and natureza != "—" else ""
+    print(
+        f"  → {siafi} [{idx+1}/{total}]"
+        f"{detalhe_codigo}{detalhe_rendimento}  Valor={valor_item_br}  Venc={data_venc}"
+    )
+
+    _verificar_interrupcao(deve_parar)
+    _garantir_sem_deducao_em_edicao(pagina, timeout_ms=8000)
+
+    did = _clicar_nova_deducao(pagina)
+    _verificar_interrupcao(deve_parar)
+    if not did:
+        erros.append(f"{siafi}: não obteve ID da nova dedução após clicar no '+'.")
+        return False
+    print(f"    did={did} (fluxo DDF055)")
+    _capturar_ddf055_dev(pagina, "dev-01-formulario-criado", did)
+
+    try:
+        _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=20000)
+    except Exception:
+        pass
+
+    _situacao_ok = False
+    for tentativa in range(1, 4):
+        _select(pagina, f"sfdeducaocodsit{did}", siafi, erros, f"Situação ({siafi})")
+        _capturar_ddf055_dev(pagina, f"dev-02-apos-select-tentativa-{tentativa}", did)
+        if (
+            _aguardar_situacao_deducao_aplicada(pagina, did, siafi, timeout_ms=5000)
+            or _situacao_deducao_aplicada_basica(pagina, did, siafi)
+        ):
+            _situacao_ok = True
+            _capturar_ddf055_dev(pagina, f"dev-03-situacao-aplicada-tentativa-{tentativa}", did)
+            break
+        print(f"    [DDF055] Situação não estabilizou na tentativa {tentativa}/3.")
+        time.sleep(1.0)
+
+    if not _situacao_ok:
+        _capturar_ddf055_dev(pagina, "dev-04-situacao-nao-aceita", did)
+        erros.append(f"{siafi}: portal não aceitou situação {siafi} após 3 tentativas.")
+        return False
+
+    _verificar_interrupcao(deve_parar)
+
+    print("    [DDF055] Abrindo Pré-Doc antes do recolhedor...")
+    pdid_expandido = _abrir_predoc_ddf055(pagina, did, erros)
+    if not pdid_expandido:
+        _capturar_ddf055_dev(pagina, "dev-05-predoc-nao-abriu", did)
+        erros.append(f"{siafi}: Pré-Doc não abriu (did={did}).")
+        return False
+    print(f"      pre-doc aberto: pdid={pdid_expandido}")
+    _capturar_ddf055_dev(pagina, "dev-05-predoc-aberto", did)
+
+    _verificar_interrupcao(deve_parar)
+
+    _fill(pagina, f"sfdeducaocodugpgto{did}", _UG_TOMADORA, erros, "UG Pagadora")
+    _fill_money(pagina, f"sfdeducaovlr{did}", valor_item_br, erros, "Valor do Item")
+    _select(pagina, f"sfdeducaopossui_acrescimo{did}", "NÃO", erros, "Possui Acréscimo")
+
+    if not _fixar_campos_variaveis_ddf055(pagina, did, str(codigo_darf or ""), natureza, erros):
+        _capturar_ddf055_dev(pagina, "dev-06-campos-variaveis-iniciais-falharam", did)
+        return False
+
+    predoc_ok = _preencher_predoc_darf(
+        pagina,
+        did,
+        apuracao=data_apuracao,
+        processo=processo,
+        observacao=observacao,
+        erros=erros,
+        recurso=recurso,
+        vinculacao="400",
+    )
+    if not predoc_ok:
+        _capturar_ddf055_dev(pagina, "dev-06-predoc-nao-preenchido", did)
+        erros.append(f"{siafi}: Pré-Doc não preenchido.")
+        return False
+
+    _capturar_ddf055_dev(pagina, "dev-06-predoc-preenchido", did)
+    _verificar_interrupcao(deve_parar)
+
+    print(f"    [DDF055] Abrindo/preenchendo recolhedor após Pré-Doc...")
+    if not _preencher_recolhedor_darf(
+        pagina, did, cnpj_fmt, base_calculo_br, valor_item_br, erros
+    ):
+        _capturar_ddf055_dev(pagina, "dev-07-recolhedor-falhou", did)
+        erros.append(f"{siafi}: não conseguiu preencher o recolhedor/valores (did={did}).")
+        return False
+
+    # O AJAX do recolhedor pode tocar no formulário; reaplica os campos do topo
+    # e o Pré-Doc antes da confirmação.
+    _fill(pagina, f"sfdeducaocodugpgto{did}", _UG_TOMADORA, erros, "UG Pagadora final")
+    _fill_money(pagina, f"sfdeducaovlr{did}", valor_item_br, erros, "Valor do Item final")
+    _select(pagina, f"sfdeducaopossui_acrescimo{did}", "NÃO", erros, "Possui Acréscimo final")
+    if not _fixar_campos_variaveis_ddf055(pagina, did, str(codigo_darf or ""), natureza, erros):
+        _capturar_ddf055_dev(pagina, "dev-08-campos-variaveis-pos-recolhedor-falharam", did)
+        return False
+    _preencher_predoc_darf(
+        pagina,
+        did,
+        apuracao=data_apuracao,
+        processo=processo,
+        observacao=observacao,
+        erros=erros,
+        recurso=recurso,
+        vinculacao="400",
+    )
+
+    rid_final = _obter_rid(pagina, did)
+    if not _preencher_recolhedor_darf(
+        pagina,
+        did,
+        cnpj_fmt,
+        base_calculo_br,
+        valor_item_br,
+        erros,
+        rid_pre_aberto=rid_final,
+    ):
+        _capturar_ddf055_dev(pagina, "dev-08-recolhedor-final-falhou", did)
+        erros.append(f"{siafi}: Valor da Receita não fixou na revalidação final (did={did}).")
+        return False
+    if not _fixar_valor_receita_darf(pagina, did, valor_item_br, erros):
+        _capturar_ddf055_dev(pagina, "dev-08-valor-receita-final-falhou", did)
+        return False
+
+    _fill_date_silente(pagina, f"sfdeducaodtvenc{did}", data_venc, erros, "Data de Vencimento")
+    _fill_date_silente(pagina, f"sfdeducaodtpgtoreceb{did}", data_venc, erros, "Data de Pagamento")
+    if not _fixar_campos_variaveis_ddf055(pagina, did, str(codigo_darf or ""), natureza, erros):
+        _capturar_ddf055_dev(pagina, "dev-08-campos-variaveis-final-falharam", did)
+        return False
+    _fixar_valor_receita_darf(pagina, did, valor_item_br, erros)
+
+    _capturar_ddf055_dev(pagina, "dev-08-antes-confirmar", did)
+    _verificar_interrupcao(deve_parar)
+    print(f"    [DDF055] Confirmando {siafi} (did={did})")
+    rid_confirmar = _obter_rid(pagina, did)
+    campos_valor_confirmar = (
+        {f"vlrPrincipal{did}{rid_confirmar}": valor_item_br}
+        if rid_confirmar else {}
+    )
+    if codigo_darf:
+        campos_valor_confirmar[f"txtinscra{did}"] = str(codigo_darf)
+    if natureza and natureza != "—":
+        campos_valor_confirmar[f"txtinscrb{did}"] = natureza
+    return _confirmar_com_datas_atomico(
+        pagina,
+        did,
+        data_venc,
+        erros,
+        situacao=siafi,
+        campos_valor=campos_valor_confirmar,
+    )
+
+
+def _confirmar_com_datas_atomico(
+    pagina,
+    did: str,
+    data_ddmmaaaa: str,
+    erros: list,
+    situacao: str = "",
+    campos_valor: dict | None = None,
+) -> bool:
     """
     Seta as datas de vencimento/pagamento via JS (sem eventos) e imediatamente
     clica o botão Confirmar via Playwright (clique trusted — isTrusted=true).
+    Quando informado, reaplica também a Situação no mesmo passo. O portal pode
+    limpar o select depois dos AJAX de recolhedor/pré-doc, especialmente em DDF055.
 
     Estratégia em dois passos:
     1. JS: setter via prototype → seta campo type='date' com ISO sem disparar eventos
@@ -2784,7 +3257,7 @@ def _confirmar_com_datas_atomico(pagina, did: str, data_ddmmaaaa: str, erros: li
         # Passo 1 — seta as duas datas silenciosamente (sem eventos)
         try:
             resultado = pagina.evaluate(
-                """([did, iso]) => {
+                """([did, iso, situacaoEsperada, camposValor]) => {
                     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
                     const setData = (id) => {
                         const el = document.getElementById(id);
@@ -2794,15 +3267,61 @@ def _confirmar_com_datas_atomico(pagina, did: str, data_ddmmaaaa: str, erros: li
                         el.setAttribute('value', iso);
                         return el.value;
                     };
+                    const norm = (s) => String(s || '')
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .toLowerCase()
+                        .trim();
+                    const setSituacao = () => {
+                        const alvo = norm(situacaoEsperada);
+                        if (!alvo) return 'SEM_SITUACAO_ESPERADA';
+                        const sel = document.getElementById('sfdeducaocodsit' + did);
+                        if (!sel) return 'SITUACAO_NAO_ENCONTRADA';
+                        const op = Array.from(sel.options).find((item) =>
+                            norm(item.text) === alvo
+                            || norm(item.value) === alvo
+                            || norm(item.text).includes(alvo)
+                        );
+                        if (!op) return 'SITUACAO_OPCAO_NAO_ENCONTRADA:' + situacaoEsperada;
+                        sel.value = op.value;
+                        sel.setAttribute('value', op.value);
+                        return (sel.options[sel.selectedIndex]?.text || sel.value || '').trim();
+                    };
+                    const situacaoVal = setSituacao();
                     const vencVal = setData('sfdeducaodtvenc' + did);
                     const pgtoVal = setData('sfdeducaodtpgtoreceb' + did);
+                    const valoresSetados = [];
+                    let valorPrincipalSetado = '';
+                    for (const [id, valor] of Object.entries(camposValor || {})) {
+                        const el = document.getElementById(id);
+                        if (!el) {
+                            valoresSetados.push(id + '=NAO_ENCONTRADO');
+                            continue;
+                        }
+                        if (setter) setter.call(el, valor); else el.value = valor;
+                        el.defaultValue = valor;
+                        el.setAttribute('value', valor);
+                        if (id.startsWith('vlrPrincipal')) {
+                            el.setAttribute('data-valor-vlrreceita', valor);
+                            valorPrincipalSetado = valor;
+                        }
+                        valoresSetados.push(id + '=' + String(el.value || ''));
+                    }
+                    if (valorPrincipalSetado) {
+                        const total = 'R$ ' + valorPrincipalSetado;
+                        const totalPrincipal = document.getElementById('total-vlrPrincipal-' + did);
+                        const totalInformar = document.getElementById('valor-total-informar-' + did);
+                        if (totalPrincipal) totalPrincipal.textContent = total;
+                        if (totalInformar) totalInformar.textContent = total;
+                    }
                     const btn = document.getElementById('confirma-dados-deducao-' + did);
-                    if (!btn) return 'SEM_BTN:venc=' + vencVal + ':pgto=' + pgtoVal;
-                    if (btn.disabled) return 'BTN_DISABLED:venc=' + vencVal + ':pgto=' + pgtoVal;
+                    const extra = valoresSetados.length ? ':valores=' + valoresSetados.join('|') : '';
+                    if (!btn) return 'SEM_BTN:situacao=' + situacaoVal + ':venc=' + vencVal + ':pgto=' + pgtoVal + extra;
+                    if (btn.disabled) return 'BTN_DISABLED:situacao=' + situacaoVal + ':venc=' + vencVal + ':pgto=' + pgtoVal + extra;
                     btn.scrollIntoView({ block: 'center' });
-                    return 'OK:venc=' + vencVal + ':pgto=' + pgtoVal;
+                    return 'OK:situacao=' + situacaoVal + ':venc=' + vencVal + ':pgto=' + pgtoVal + extra;
                 }""",
-                [did, iso],
+                [did, iso, situacao, campos_valor or {}],
             ) or "EVAL_ERRO"
         except Exception as e_eval:
             resultado = f"EVAL_ERRO:{e_eval}"
@@ -2871,6 +3390,23 @@ def _preencher_deducao_darf_total(
     recurso: str = "0",
     deve_parar=None,
 ):
+    if siafi == "DDF055":
+        return _preencher_deducao_darf_total_ddf055(
+            pagina,
+            ded,
+            idx,
+            total,
+            siafi,
+            data_venc=data_venc,
+            data_apuracao=data_apuracao,
+            processo=processo,
+            cnpj_fmt=cnpj_fmt,
+            dados=dados,
+            erros=erros,
+            recurso=recurso,
+            deve_parar=deve_parar,
+        )
+
     valor_item_br = _formatar_valor_br(_ded_valor(ded))
     base_calculo_br = _formatar_valor_br(_ded_base_calculo(ded))
     codigo_pdf = _ded_codigo(ded)
@@ -2897,6 +3433,8 @@ def _preencher_deducao_darf_total(
                      "O portal pode não ter criado um novo formulário.")
         return False
     print(f"    did={did}")
+    if siafi == "DDF055":
+        _capturar_ddf055_dev(pagina, "01-formulario-criado", did)
 
     # Espera o formulário estabilizar ANTES de selecionar — sem isso, quando
     # DDF055 é o único tipo de dedução, o AJAX ainda não carregou as opções
@@ -2910,6 +3448,13 @@ def _preencher_deducao_darf_total(
     _situacao_ok = False
     for _tent_sit in range(3):
         _select(pagina, f"sfdeducaocodsit{did}", siafi, erros, f"Situação ({siafi})")
+        if siafi == "DDF055":
+            _capturar_ddf055_dev(pagina, f"02-apos-select-tentativa-{_tent_sit+1}", did)
+        if _aguardar_situacao_deducao_aplicada(pagina, did, siafi, timeout_ms=25000):
+            _situacao_ok = True
+            if siafi == "DDF055":
+                _capturar_ddf055_dev(pagina, f"03-situacao-aplicada-tentativa-{_tent_sit+1}", did)
+            break
         time.sleep(0.8)
         try:
             _texto_sit = pagina.evaluate(
@@ -2924,8 +3469,12 @@ def _preencher_deducao_darf_total(
             print(f"    [{siafi}] Situação ainda '{_texto_sit}' — retry {_tent_sit+1}/3")
         except Exception:
             _situacao_ok = True  # não conseguiu verificar, assume ok
+            if siafi == "DDF055":
+                _capturar_ddf055_dev(pagina, f"03-verificacao-indisponivel-tentativa-{_tent_sit+1}", did)
             break
     if not _situacao_ok:
+        if siafi == "DDF055":
+            _capturar_ddf055_dev(pagina, "04-situacao-nao-aceita", did)
         erros.append(f"{siafi}: portal não aceitou situação {siafi} após 3 tentativas.")
         return False
 
@@ -2969,6 +3518,8 @@ def _preencher_deducao_darf_total(
 
     # Aguarda o AJAX de expansão terminar antes de preencher os campos
     time.sleep(1.5)
+    if siafi == "DDF055":
+        _capturar_ddf055_dev(pagina, "05-pos-pre-expansao", did)
     _verificar_interrupcao(deve_parar)
 
     # ── Campos principais (formulário de dedução) ─────────────────────────────
@@ -3060,7 +3611,7 @@ def _preencher_deducao_darf_total(
 
     # ── Confirmar (atômico: seta datas + clica no mesmo tick JS) ─────────────
     print(f"    Confirmando {siafi} (did={did})")
-    return _confirmar_com_datas_atomico(pagina, did, data_venc, erros)
+    return _confirmar_com_datas_atomico(pagina, did, data_venc, erros, situacao=siafi)
 
 
 

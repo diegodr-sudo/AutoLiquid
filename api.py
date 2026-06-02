@@ -5108,6 +5108,46 @@ def capturar_dob001_snapshot_dev(payload: DevPcoSnapshotPayload) -> dict[str, An
                 pass
 
 
+@app.post("/api/dev/ddf055/snapshot")
+def capturar_ddf055_snapshot_dev(payload: DevPcoSnapshotPayload) -> dict[str, Any]:
+    playwright_obj = None
+    try:
+        from scripts.inspecionar_ddf055 import DEFAULT_OUT_DIR, capture_ddf055_snapshot
+
+        playwright_obj, pagina = _comprasnet_base().conectar(abrir_se_fechado=False)
+        artifact_dir = str(payload.artifactDir or DEFAULT_OUT_DIR).strip()
+        snapshot = capture_ddf055_snapshot(pagina, artifact_dir, payload.prefix or "registro-dev")
+        counts = snapshot.get("counts") or {}
+        return {
+            "success": True,
+            "artifactDir": snapshot.get("outputDir", artifact_dir),
+            "jsonPath": snapshot.get("jsonPath", ""),
+            "htmlPath": snapshot.get("htmlPath", ""),
+            "screenshotPath": snapshot.get("screenshotPath", ""),
+            "url": snapshot.get("url", ""),
+            "title": snapshot.get("title", ""),
+            "counts": counts,
+            "blueBars": [],
+            "deducaoIds": snapshot.get("deducaoIds", []),
+            "mensagem": (
+                f"Captura DDF055 salva: {counts.get('visibleFields', 0)} campos visíveis, "
+                f"{counts.get('deducoes', 0)} dedução(ões)."
+            ),
+        }
+    except Exception as exc:
+        log.exception("Falha ao capturar snapshot dev do DDF055")
+        raise HTTPException(
+            status_code=500,
+            detail=_detalhar_erro_execucao("Captura DDF055", exc),
+        ) from exc
+    finally:
+        if playwright_obj is not None:
+            try:
+                playwright_obj.stop()
+            except Exception:
+                pass
+
+
 @app.post("/api/documentos/{doc_id}/executar-deducao/{ded_id}")
 def executar_deducao_individual(doc_id: str, ded_id: int, payload: ExecucaoPayload, background_tasks: BackgroundTasks) -> dict[str, Any]:
     doc = _obter_documento_cache_ou_turso(doc_id)

@@ -1453,6 +1453,27 @@ export async function capturarDob001SnapshotDev(
   )
 }
 
+export async function capturarDdf055SnapshotDev(
+  options: { prefix?: string; artifactDir?: string } = {}
+): Promise<DevPcoSnapshotResult> {
+  return apiFetch<DevPcoSnapshotResult>(
+    "/api/dev/ddf055/snapshot",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prefix: options.prefix ?? "registro-dev",
+        artifactDir: options.artifactDir ?? "",
+      }),
+    },
+    {
+      timeoutMs: EXECUTION_API_TIMEOUT_MS,
+    }
+  )
+}
+
 export async function apropriarSIAFI(
   documentoId: string,
   options: { signal?: AbortSignal } = {}

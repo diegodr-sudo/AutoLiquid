@@ -41,6 +41,7 @@ import {
   loginAutoLiquid,
   fetchQueueServersConfig,
   fetchRocketChatNotifications,
+  capturarDdf055SnapshotDev,
   capturarDob001SnapshotDev,
   capturarPrincipalOrcamentoSnapshotDev,
   executarPrincipalOrcamentoPilotoDev,
@@ -3787,6 +3788,25 @@ export default function HomePage() {
     }
   };
 
+  const handleRegistroDevCapturarDdf055 = async () => {
+    setRegistroDevCapturing(true);
+    setRegistroDevError("");
+    setRegistroDevSnapshot(null);
+    try {
+      const result = await capturarDdf055SnapshotDev({
+        prefix: registroDevDocumentoId ? `doc-${registroDevDocumentoId}` : "registro-dev",
+      });
+      setRegistroDevSnapshot(result);
+      if (!result.success) {
+        setRegistroDevError(result.mensagem || "Não foi possível capturar a tela DDF055.");
+      }
+    } catch (error) {
+      setRegistroDevError(error instanceof Error ? error.message : "Falha ao capturar tela DDF055.");
+    } finally {
+      setRegistroDevCapturing(false);
+    }
+  };
+
   const handleAbrirChrome = async () => {
     setAbrindoChrome(true);
     setErro("");
@@ -5356,6 +5376,16 @@ export default function HomePage() {
 
                     <GlassButton
                       type="button"
+                      variant="secondary"
+                      onClick={handleRegistroDevCapturarDdf055}
+                      disabled={registroDevUploading || registroDevRunning || registroDevCapturing || !apiDisponivel}
+                    >
+                      {registroDevCapturing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                      {registroDevCapturing ? "Capturando..." : "Capturar DDF055"}
+                    </GlassButton>
+
+                    <GlassButton
+                      type="button"
                       onClick={handleRegistroDevExecutarPco}
                       disabled={!registroDevDocumentoId || registroDevUploading || registroDevRunning || registroDevCapturing || !apiDisponivel}
                     >
@@ -5440,6 +5470,17 @@ export default function HomePage() {
                             >
                               {registroDevCapturing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
                               {registroDevCapturing ? "Capturando DOB001..." : "Capturar tela DOB001"}
+                            </GlassButton>
+
+                            <GlassButton
+                              type="button"
+                              variant="secondary"
+                              onClick={handleRegistroDevCapturarDdf055}
+                              disabled={registroDevUploading || registroDevRunning || registroDevCapturing || !apiDisponivel}
+                              className="w-full justify-start"
+                            >
+                              {registroDevCapturing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                              {registroDevCapturing ? "Capturando DDF055..." : "Capturar tela DDF055"}
                             </GlassButton>
 
                             <GlassButton
