@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AlertTriangle, Banknote, CheckCircle2, FileUp, Loader2, Play, Upload, Users, X } from "lucide-react";
+import { AlertTriangle, Banknote, Camera, CheckCircle2, ChevronDown, FileUp, Loader2, Play, Upload, Users, X } from "lucide-react";
 import { Header } from "@/components/header";
 import { DocumentoPanel } from "@/components/documento-panel";
 import { NotasFiscaisTable } from "@/components/notas-fiscais-table";
@@ -29,7 +29,9 @@ import {
   fetchDocumentoProcessado,
   fetchAppSettings,
   openChromeSession,
-  openSiafiIncognito,
+  abrirSiafiTelaPreta,
+  executarSiafiAtulc,
+  capturarSiafiRegistroSnapshot,
   pararExecucao,
   type Documento,
   type Deducao,
@@ -56,6 +58,7 @@ import {
 import { readStoredAuthSession } from "@/lib/auth-store";
 import { useAuth } from "@/lib/auth-context";
 import { SimpleTooltip } from "@/components/ui/simple-tooltip";
+import { SiafiTerminal } from "@/components/siafi-terminal";
 
 const REGISTRO_NOTICE_PENDENTE_KEY = "autoliquid_registro_notice_pendente";
 
@@ -128,6 +131,14 @@ const REGISTRO_LIQUIDACAO_PENDENTE_KEY = "autoliquid_registro_liquidacao_pendent
 const IGNORAR_RETORNO_PENDENCIA_SESSION_KEY = "autoliquid_ignorar_retorno_pendencia_sessao";
 const RETORNO_PENDENCIA_DISPENSADO_KEY = "autoliquid_retorno_pendencia_dispensado";
 const DEFAULT_TIPOS_DOCUMENTO_LF = ["NF Serviço", "Fatura", "Boleto"];
+const MOSTRAR_BLOCO_REMESSAS_LEGADO = false;
+const SIAFI_REGISTRO_STEPS = [
+  { id: "dados-basicos", label: "Dados básicos" },
+  { id: "principal-com-orcamento", label: "Principal com orçamento" },
+  { id: "dados-de-pagamento", label: "Dados de pagamento" },
+  { id: "centro-de-custo", label: "Centro de custo" },
+] as const;
+type SiafiRegistroStepId = typeof SIAFI_REGISTRO_STEPS[number]["id"];
 const MUNICIPIOS_DOB001: Record<string, string> = {
   "8179": "Joinville",
   "8093": "Curitibanos",
@@ -172,6 +183,15 @@ function ConferenciaPageContent() {
   const [logsSimples, setLogsSimples] = useState<string[]>([]);
   const [remessasBolsa, setRemessasBolsa] = useState<RemessaBolsa[]>([]);
   const [uploadingRemessa, setUploadingRemessa] = useState(false);
+  const [gerandoLc, setGerandoLc] = useState(false);
+  const [abrindoSiafiTelaPreta, setAbrindoSiafiTelaPreta] = useState(false);
+  const [siafiTelaPretaPronta, setSiafiTelaPretaPronta] = useState(false);
+  const [siafiTerminalExecutionId, setSiafiTerminalExecutionId] = useState<string | null>(null);
+  const [siafiLcExecutionId, setSiafiLcExecutionId] = useState<string | null>(null);
+  const [codigoAcessoHod, setCodigoAcessoHod] = useState("");
+  const [registroSiafiExpandido, setRegistroSiafiExpandido] = useState(false);
+  const [capturaSiafiEtapa, setCapturaSiafiEtapa] = useState<SiafiRegistroStepId | null>(null);
+  const [capturaSiafiMensagem, setCapturaSiafiMensagem] = useState("");
   /** Código operacional da bolsa: 01 = Outros, 03 = Pesquisa e/ou Extensão */
   const [codigoOperacional, setCodigoOperacional] = useState<"01" | "03">("01");
   const [bolsaTabAtiva, setBolsaTabAtiva] = useState<"pendencias" | "remessas" | "empenhos">("pendencias");
@@ -1123,25 +1143,114 @@ function ConferenciaPageContent() {
     }
   };
 
-  const handleAbrirSiafi = async () => {
-    setAbrindoChrome(true);
+  const handleAbrirSiafiTelaPreta = async () => {
+    if (abrindoSiafiTelaPreta) return;
+
+    setAbrindoSiafiTelaPreta(true);
+    setSiafiTelaPretaPronta(false);
     setErro("");
-    setStatusMensagem("");
+    setStatusMensagem("Abrindo SIAFI em janela anônima...");
     try {
-      const result = await openSiafiIncognito();
-      setChromeStatus(result.chromeStatus);
-      if (result.siafiStatus === "login_required") {
-        setErro("O SIAFI está aberto mas aguardando login. Faça login na janela do SIAFI e clique em Executar novamente.");
-      } else if (result.siafiStatus === "tela_preta_clicado") {
-        setStatusMensagem("Clicado em Siafi Operacional — aguarde o download do aplicativo iniciar.");
-      } else if (result.siafiStatus === "pronto") {
-        setStatusMensagem("Aba do SIAFI já estava aberta — janela trazida para frente.");
+      const status = await abrirSiafiTelaPreta();
+      setChromeStatus(status.chromeStatus);
+      const codigoCapturado = status.codigoAcessoHod?.replace(/\D/g, "") ?? "";
+      if (codigoCapturado) {
+        setCodigoAcessoHod(codigoCapturado);
       }
+      if (status.execution_id) {
+        setSiafiTerminalExecutionId(status.execution_id);
+      }
+      setSiafiTelaPretaPronta(false);
+
+      if (status.siafiStatus === "tela_preta_clicado") {
+        setStatusMensagem(status.mensagem || "Código HOD enviado ao SIAFI tela preta.");
+        return;
+      }
+
+      if (status.siafiStatus === "login_required" || status.siafiStatus === "abrindo") {
+        setStatusMensagem(
+          status.mensagem ||
+            "SIAFI aberto em janela anônima. Faça login e clique em Abrir SIAFI tela preta novamente."
+        );
+        return;
+      }
+
+      setStatusMensagem(
+        status.mensagem ||
+          "Aba do SIAFI localizada. Se a tela preta ainda não abriu, clique em SIAFI Operacional e tente novamente."
+      );
     } catch (error) {
+      setSiafiTelaPretaPronta(false);
       setErro(error instanceof Error ? error.message : "Não foi possível abrir o SIAFI.");
+      setStatusMensagem("Falha ao abrir SIAFI tela preta.");
       setChromeStatus("erro");
     } finally {
-      setAbrindoChrome(false);
+      setAbrindoSiafiTelaPreta(false);
+    }
+  };
+
+  const handleGerarLcBolsa = async () => {
+    if (gerandoLc) return;
+
+    const credores = remessasBolsa.flatMap((remessa) =>
+      (remessa.bolsistas ?? [])
+        .filter((bolsista) =>
+          bolsista.cpf && bolsista.banco && bolsista.agencia && bolsista.conta && bolsista.valorNumerico > 0
+        )
+        .map((bolsista) => ({
+          cpf: bolsista.cpf,
+          banco: bolsista.banco,
+          agencia: bolsista.agencia,
+          conta: bolsista.conta,
+          valor: bolsista.valorNumerico,
+        }))
+    );
+
+    if (credores.length === 0) {
+      setErro("Carregue uma remessa de bolsa com bolsistas válidos antes de gerar a LC.");
+      return;
+    }
+
+    setGerandoLc(true);
+    setErro("");
+    setStatusMensagem("Gerando LC no terminal SIAFI...");
+    try {
+      const result = await executarSiafiAtulc({
+        credores,
+        codigo_acesso: codigoAcessoHod.trim(),
+        numero_lista: "",
+        ug_emitente: "153163",
+        gestao_emitente: "15237",
+        suprimento_fundos: "N",
+        tipo_pagamento: "1",
+      });
+      setSiafiLcExecutionId(result.execution_id);
+      setSiafiTerminalExecutionId(result.execution_id);
+      setStatusMensagem("Gerando LC no SIAFI...");
+    } catch (error) {
+      setErro(error instanceof Error ? error.message : "Não foi possível iniciar a geração da LC no SIAFI.");
+      setStatusMensagem("Falha ao iniciar geração da LC.");
+    } finally {
+      setGerandoLc(false);
+    }
+  };
+
+  const handleCapturarRegistroSiafi = async (stepId: SiafiRegistroStepId) => {
+    if (capturaSiafiEtapa) return;
+    setCapturaSiafiEtapa(stepId);
+    setCapturaSiafiMensagem("");
+    setErro("");
+    try {
+      const result = await capturarSiafiRegistroSnapshot({
+        prefix: `registro-siafi-${stepId}`,
+      });
+      setCapturaSiafiMensagem(result.mensagem || `Captura SIAFI salva em ${result.jsonPath || result.artifactDir}.`);
+      setStatusMensagem(result.mensagem || "Captura SIAFI salva.");
+    } catch (error) {
+      setErro(error instanceof Error ? error.message : "Não foi possível capturar a tela SIAFI.");
+      setStatusMensagem("Falha ao capturar tela SIAFI.");
+    } finally {
+      setCapturaSiafiEtapa(null);
     }
   };
 
@@ -1529,6 +1638,22 @@ function ConferenciaPageContent() {
                           onToggleResolvida={handleTogglePendenciaResolvida}
                           togglingPendenciaId={pendenciaToggleId}
                         />
+
+                        <SiafiTerminal
+                          executionId={siafiTerminalExecutionId}
+                          className="w-full"
+                          onConcluido={(resultado) => {
+                            if (resultado.ok) {
+                              setSiafiTelaPretaPronta(true);
+                              setStatusMensagem(resultado.mensagem || "Terminal SIAFI concluído.");
+                              setErro("");
+                            } else {
+                              setSiafiTelaPretaPronta(false);
+                              setStatusMensagem("Falha no terminal SIAFI.");
+                              setErro(resultado.mensagem || "Não foi possível concluir a ação no SIAFI.");
+                            }
+                          }}
+                        />
                       </div>
                     )}
 
@@ -1636,7 +1761,7 @@ function ConferenciaPageContent() {
                             </div>
                           )}
                         </section>
-                        {false && (
+                        {MOSTRAR_BLOCO_REMESSAS_LEGADO && (
                           <>
                 <section className="rounded-2xl border border-glass-border/70 bg-background/65 p-5">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -2170,57 +2295,160 @@ function ConferenciaPageContent() {
 
                 {/* Step cards */}
                 <div className="space-y-2 p-4">
-                  {/* Step 1: Gerar LC(s) */}
+                  {/* Step 1: Abrir SIAFI tela preta */}
                   <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-start gap-3 rounded-xl border border-primary/20 bg-primary/5 px-3 py-3">
                     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-bold text-primary">1</div>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-foreground">
+                          Abrir SIAFI tela preta
+                        </p>
+                        <span className="inline-flex rounded-full border border-glass-border bg-background/70 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                          {siafiTelaPretaPronta ? "Pronto" : "Aguardando"}
+                        </span>
+                      </div>
+	                      <p className="mt-1 text-xs text-muted-foreground">
+	                        Abre a janela anônima, permite login e aciona o SIAFI Operacional.
+	                      </p>
+	                      <Input
+	                        value={codigoAcessoHod}
+	                        onChange={(event) => setCodigoAcessoHod(event.target.value.replace(/\D/g, ""))}
+	                        placeholder="Código HOD capturado"
+	                        inputMode="numeric"
+	                        className="mt-2 h-8 text-xs"
+	                      />
+	                      <GlassButton
+	                        size="sm"
+	                        variant="secondary"
+	                        className="mt-2"
+                        onClick={() => void handleAbrirSiafiTelaPreta()}
+                        disabled={abrindoSiafiTelaPreta}
+                      >
+                        {abrindoSiafiTelaPreta ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                        {abrindoSiafiTelaPreta ? "Abrindo..." : "Abrir tela preta"}
+                      </GlassButton>
+                    </div>
+                  </div>
+
+                  {/* Step 2: Gerar LC(s) */}
+                  <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-start gap-3 rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-3 py-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-xs font-bold text-emerald-700">2</div>
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="text-sm font-semibold text-foreground">
                           {remessasBolsa.length > 1 ? "Gerar LCs" : "Gerar LC"}
                         </p>
                         <span className="inline-flex rounded-full border border-glass-border bg-background/70 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                          Aguardando
+                          {siafiLcExecutionId ? "Em execução" : "Aguardando"}
                         </span>
                       </div>
-                      <GlassButton
-                        size="sm"
+	                      <GlassButton
+	                        size="sm"
                         variant="secondary"
                         className="mt-2"
-                        onClick={() => void handleAbrirSiafi()}
-                        disabled={abrindoChrome}
+                        onClick={() => void handleGerarLcBolsa()}
+                        disabled={gerandoLc || remessasBolsa.length === 0}
                       >
-                        {abrindoChrome ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                        {abrindoChrome ? "Abrindo..." : "Executar"}
+                        {gerandoLc ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                        {gerandoLc ? "Gerando..." : "Gerar LC"}
                       </GlassButton>
                     </div>
                   </div>
 
-                  {/* Step 2: Registro no SIAFI */}
-                  <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-start gap-3 rounded-xl border border-glass-border/50 bg-background/40 px-3 py-3 opacity-60">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-bold text-muted-foreground">2</div>
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-sm font-semibold text-muted-foreground">Registro no SIAFI</p>
-                        <span className="inline-flex rounded-full border border-glass-border bg-background/70 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
-                          Aguardando
-                        </span>
-                      </div>
+                  {/* Step 3: Registro no SIAFI */}
+                  <div className="rounded-xl border border-sky-500/25 bg-sky-500/5 px-3 py-3">
+                    <div className="grid grid-cols-[2rem_minmax(0,1fr)_auto] items-start gap-3">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-500/15 text-xs font-bold text-sky-700">3</div>
+                      <button
+                        type="button"
+                        className="min-w-0 text-left"
+                        onClick={() => setRegistroSiafiExpandido((value) => !value)}
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-semibold text-foreground">Registro no SIAFI</p>
+                          <span className="inline-flex rounded-full border border-sky-500/25 bg-background/70 px-2 py-0.5 text-[11px] font-medium text-sky-700">
+                            Preenchimento SIAFI Web
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Roteiro separado do Comprasnet para mapear o outro site antes da automação.
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRegistroSiafiExpandido((value) => !value)}
+                        className="rounded-lg border border-glass-border bg-background/70 p-1.5 text-muted-foreground transition-colors hover:text-foreground"
+                        aria-label={registroSiafiExpandido ? "Recolher Registro no SIAFI" : "Expandir Registro no SIAFI"}
+                      >
+                        <ChevronDown className={`h-4 w-4 transition-transform ${registroSiafiExpandido ? "rotate-180" : ""}`} />
+                      </button>
                     </div>
+
+                    {registroSiafiExpandido ? (
+                      <div className="mt-3 space-y-2 border-t border-sky-500/15 pt-3">
+                        {SIAFI_REGISTRO_STEPS.map((step) => {
+                          const capturando = capturaSiafiEtapa === step.id;
+                          return (
+                            <div
+                              key={step.id}
+                              className="flex items-center gap-2 rounded-lg border border-glass-border/70 bg-background/70 px-2.5 py-2"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium text-foreground">
+                                  SIAFI Web - {step.label}
+                                </p>
+                                <p className="truncate text-[11px] text-muted-foreground">
+                                  Captura DOM, IDs, labels, botões, tabelas, iframes, HTML e screenshot.
+                                </p>
+                              </div>
+                              <SimpleTooltip content={`Capturar ${step.label} no SIAFI`} side="left">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleCapturarRegistroSiafi(step.id)}
+                                  disabled={Boolean(capturaSiafiEtapa)}
+                                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-sky-500/25 bg-sky-500/10 text-sky-700 transition-colors hover:bg-sky-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+                                  aria-label={`Capturar ${step.label} no SIAFI`}
+                                >
+                                  {capturando ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                                </button>
+                              </SimpleTooltip>
+                            </div>
+                          );
+                        })}
+                        {capturaSiafiMensagem ? (
+                          <p className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-2 text-xs text-emerald-700">
+                            {capturaSiafiMensagem}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
                 {/* Footer */}
                 <div className="border-t border-glass-border px-4 pb-4 pt-3">
-                  <GlassButton
-                    variant="success"
-                    size="lg"
-                    className="w-full"
-                    onClick={() => void handleAbrirSiafi()}
-                    disabled={abrindoChrome}
-                  >
-                    {abrindoChrome ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
-                    {abrindoChrome ? "Abrindo..." : "Executar tudo"}
-                  </GlassButton>
+                  <div className="grid gap-2">
+                    <GlassButton
+                      variant="secondary"
+                      size="lg"
+                      className="w-full"
+                      onClick={() => void handleAbrirSiafiTelaPreta()}
+                      disabled={abrindoSiafiTelaPreta}
+                    >
+                      {abrindoSiafiTelaPreta ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
+                      {abrindoSiafiTelaPreta ? "Abrindo..." : "Abrir SIAFI tela preta"}
+                    </GlassButton>
+                    <GlassButton
+                      variant="success"
+                      size="lg"
+                      className="w-full"
+                      onClick={() => void handleGerarLcBolsa()}
+                      disabled={gerandoLc || remessasBolsa.length === 0}
+                    >
+                      {gerandoLc ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
+                      {gerandoLc ? "Gerando..." : "Gerar LC"}
+                    </GlassButton>
+                  </div>
                   <div className="mt-3 space-y-1.5 rounded-xl border border-glass-border bg-secondary/20 px-3 py-2.5 text-sm">
                     <div className="flex justify-between gap-3">
                       <span className="text-muted-foreground">Remessas</span>

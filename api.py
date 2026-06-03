@@ -38,6 +38,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock, Thread
 from typing import Any
+from urllib.parse import urlencode, urljoin
 from uuid import uuid4
 
 # ── Carrega variáveis de ambiente do arquivo .env ─────────────────────────────
@@ -1451,6 +1452,12 @@ class FilaConclusaoPayload(BaseModel):
 
 class AbrirProcessoSolarPayload(BaseModel):
     numeroProcesso: str = ""
+
+
+class AiresProcessoPayload(BaseModel):
+    numeroProcesso: str = ""
+    pdfPaths: list[str] = Field(default_factory=list)
+    extrairPecasSolar: bool = False
 
 
 class QueueServerPayload(BaseModel):
@@ -3777,6 +3784,7 @@ def abrir_siafi_endpoint() -> dict[str, Any]:
                 "chromePorta": porta,
                 "url": resultado.get("url", _SIAFI_WEB_URL),
                 "siafiStatus": "tela_preta_clicado",
+                "codigoAcessoHod": resultado.get("codigo_acesso") or "",
                 "mensagem": "Clicado em Siafi Operacional — aguarde o download do aplicativo iniciar.",
             }
         if action == "focused":
@@ -4343,6 +4351,397 @@ def abrir_processo_solar_endpoint(payload: AbrirProcessoSolarPayload) -> dict[st
                 playwright.stop()
             except Exception:
                 pass
+
+
+def _frame_visualizacao_processo_solar(pagina: Any) -> Any | None:
+    for frame in list(getattr(pagina, "frames", []) or []):
+        try:
+            if frame.locator("a[onclick*='aba_pecas'], a[onclick*='visualizarDocumentosProcesso.do']").count() > 0:
+                return frame
+        except Exception:
+            continue
+    return None
+
+
+def _frame_pecas_solar(pagina: Any) -> Any | None:
+    for frame in list(getattr(pagina, "frames", []) or []):
+        if getattr(frame, "name", "") == "frameNPasta":
+            return frame
+        try:
+            texto = frame.locator("body").inner_text(timeout=500)
+        except Exception:
+            continue
+        if "Selecionar todos" in texto and ("Página 000" in texto or "FATURA" in texto.upper()):
+            return frame
+    return None
+
+
+def _abrir_aba_pecas_solar(pagina: Any) -> Any:
+    frame_aberto = _frame_pecas_solar(pagina)
+    if frame_aberto is not None:
+        try:
+            if _listar_pecas_fatura_solar(frame_aberto):
+                return frame_aberto
+        except Exception:
+            pass
+
+    frame = _frame_visualizacao_processo_solar(pagina)
+    if frame is None:
+        raise RuntimeError("Não encontrei a aba Peças no frame do processo Solar.")
+
+    clicou = False
+    for seletor in ("a[onclick*='aba_pecas']", "a[onclick*='visualizarDocumentosProcesso.do']"):
+        try:
+            locator = frame.locator(seletor)
+            if locator.count() > 0:
+                locator.first.click(timeout=6000)
+                clicou = True
+                break
+        except Exception:
+            continue
+
+    if not clicou:
+        raise RuntimeError("A aba Peças existe, mas não consegui clicar nela.")
+
+    fim = time.time() + 20
+    while time.time() < fim:
+        frame_pecas = _frame_pecas_solar(pagina)
+        if frame_pecas is not None:
+            try:
+                texto = frame_pecas.locator("body").inner_text(timeout=1000)
+                if "Selecionar todos" in texto or "FATURA" in texto.upper():
+                    return frame_pecas
+            except Exception:
+                return frame_pecas
+        time.sleep(0.3)
+    raise RuntimeError("Cliquei em Peças, mas a árvore de peças não abriu.")
+
+
+def _listar_pecas_fatura_solar(frame_pecas: Any) -> list[dict[str, str]]:
+    script = """
+    () => {
+      const norm = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const direto = (el, selector) => Array.from(el.children).find((child) => child.matches(selector));
+      const vistos = new Set();
+      return Array.from(document.querySelectorAll("li[data-p]"))
+        .map((li) => {
+          const label = direto(li, "span.i-nm.linkPecas") || direto(li, "span.i-nm") || li.querySelector("span.i-nm");
+          const tituloCompleto = norm(label?.childNodes?.[0]?.textContent || label?.textContent || li.textContent);
+          const dataP = li.getAttribute("data-p") || "";
+          const paginas = Array.from(li.querySelectorAll("li[data-p] span.i-nm"))
+            .map((node) => norm(node.textContent))
+            .filter((text) => /^P[aá]gina\\s+\\d+/i.test(text));
+          const params = Object.fromEntries(new URLSearchParams(dataP).entries());
+          return {
+            titulo: tituloCompleto,
+            dataP,
+            cdDocumento: params.cdDocumento || "",
+            nuDocumento: params.nuDocumento || "",
+            paginaInicial: params.nuPaginaInicial || "",
+            paginaFinal: params.nuPaginaFinal || "",
+            assinado: params.flAssinado || "",
+            paginas,
+          };
+        })
+        .filter((item) => /fatura/i.test(item.titulo))
+        .filter((item) => {
+          const key = item.dataP || `${item.titulo}|${item.paginaInicial}|${item.paginaFinal}`;
+          if (!key || vistos.has(key)) return false;
+          vistos.add(key);
+          return true;
+        })
+        .slice(0, 80);
+    }
+    """
+    try:
+        resultado = frame_pecas.evaluate(script)
+    except Exception:
+        return []
+    return [
+        {
+            "titulo": str(item.get("titulo") or ""),
+            "dataP": str(item.get("dataP") or ""),
+            "cdDocumento": str(item.get("cdDocumento") or ""),
+            "nuDocumento": str(item.get("nuDocumento") or ""),
+            "paginaInicial": str(item.get("paginaInicial") or ""),
+            "paginaFinal": str(item.get("paginaFinal") or ""),
+            "assinado": str(item.get("assinado") or ""),
+            "paginas": ", ".join(str(page) for page in (item.get("paginas") or [])),
+        }
+        for item in (resultado or [])
+        if isinstance(item, dict)
+    ]
+
+
+def _clicar_peca_por_datap_solar(frame_pecas: Any, data_p: str) -> bool:
+    try:
+        locator = frame_pecas.locator(f"li[data-p={json.dumps(data_p)}] > span.i-nm").first
+        if locator.count() > 0:
+            locator.scroll_into_view_if_needed(timeout=3000)
+            locator.click(timeout=6000)
+            return True
+    except Exception:
+        pass
+
+    script = """
+    (dataP) => {
+      const nodes = Array.from(document.querySelectorAll("li[data-p]"));
+      const li = nodes.find((item) => item.getAttribute("data-p") === dataP);
+      if (!li) return false;
+      const alvo = Array.from(li.children).find((child) =>
+        child.matches("span.i-nm.linkPecas, span.i-nm")
+      ) || li.querySelector("span[onclick*='_U.a']");
+      if (!alvo) return false;
+      alvo.click();
+      return true;
+    }
+    """
+    try:
+        return bool(frame_pecas.evaluate(script, data_p))
+    except Exception:
+        return False
+
+
+def _frame_conteudo_arquivo_solar(pagina: Any, data_p: str = "") -> Any | None:
+    cd_documento = ""
+    match = re.search(r"(?:^|&)cdDocumento=([^&]+)", data_p or "")
+    if match:
+        cd_documento = match.group(1)
+    for frame in list(getattr(pagina, "frames", []) or []):
+        url = str(getattr(frame, "url", "") or "")
+        if "getArquivo" not in url:
+            continue
+        if cd_documento and f"cdDocumento={cd_documento}" not in url:
+            continue
+        return frame
+    return None
+
+
+def _baixar_pdf_frame_arquivo_solar(pagina: Any, frame_arquivo: Any) -> tuple[bytes, str]:
+    resposta_html = pagina.context.request.get(frame_arquivo.url, timeout=10000)
+    html_bytes = resposta_html.body()
+    html_text = html_bytes.decode("iso-8859-1", errors="replace")
+    match = re.search(r"<iframe[^>]+src=[\"']([^\"']+)[\"']", html_text, re.IGNORECASE)
+    if not match:
+        raise RuntimeError("O visualizador da peça não informou o iframe do arquivo PDF.")
+    pdf_url = urljoin(frame_arquivo.url, html.unescape(match.group(1)))
+    resposta_pdf = pagina.context.request.get(pdf_url, timeout=10000)
+    pdf_bytes = resposta_pdf.body()
+    content_type = str(resposta_pdf.headers.get("content-type") or "")
+    if not pdf_bytes.startswith(b"%PDF") and "pdf" not in content_type.lower():
+        raise RuntimeError(f"A peça não retornou PDF bruto. Content-Type: {content_type or 'desconhecido'}.")
+    return pdf_bytes, pdf_url
+
+
+def _numero_fatura_titulo_peca_solar(titulo: str) -> str:
+    match = re.search(r"\bFATURA[_\s-]+(\d{4,})\b", str(titulo or ""), re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _chave_processo_pecas_solar(frame_pecas: Any) -> str:
+    try:
+        return str(
+            frame_pecas.evaluate(
+                "() => document.querySelector('#chaveProcesso')?.value || new URL(location.href).searchParams.get('chaveProcesso') || ''"
+            )
+            or ""
+        )
+    except Exception:
+        return ""
+
+
+def _baixar_pdf_materializado_peca_solar(pagina: Any, frame_pecas: Any, peca: dict[str, Any]) -> tuple[bytes, str]:
+    cd_documento = str(peca.get("cdDocumento") or "").strip()
+    if not cd_documento:
+        raise RuntimeError("A peça não informou cdDocumento para materialização.")
+
+    chave_processo = _chave_processo_pecas_solar(frame_pecas)
+    if not chave_processo:
+        raise RuntimeError("Não encontrei a chave do processo para materializar a peça.")
+
+    base_url = "https://solar.egestao.ufsc.br"
+    try:
+        base_url = re.match(r"^https?://[^/]+", str(frame_pecas.url or "")).group(0)  # type: ignore[union-attr]
+    except Exception:
+        pass
+
+    try:
+        pagina.context.request.get(
+            f"{base_url}/cpavPasta/documento/calcularMaterializacaoDocumentosSelecionados?"
+            + urlencode({"cdDocumentos": cd_documento}),
+            timeout=12000,
+        )
+    except Exception:
+        pass
+
+    pdf_url = (
+        f"{base_url}/cpavPasta/documento/materializarPDF/?"
+        + urlencode({"chaveProcesso": chave_processo, "cdDocumentos": cd_documento, "original": ""})
+    )
+    resposta = pagina.context.request.get(pdf_url, timeout=45000)
+    pdf_bytes = resposta.body()
+    content_type = str(resposta.headers.get("content-type") or "")
+    if not pdf_bytes.startswith(b"%PDF") and "pdf" not in content_type.lower():
+        raise RuntimeError(f"A materialização não retornou PDF. Content-Type: {content_type or 'desconhecido'}.")
+    return pdf_bytes, pdf_url
+
+
+def _baixar_fatura_peca_solar(pagina: Any, frame_pecas: Any, peca: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    from core.aires_faturas import extrair_fatura_aires_pdf_bytes
+
+    data_p = str(peca.get("dataP") or "")
+    numero_esperado = _numero_fatura_titulo_peca_solar(str(peca.get("titulo") or ""))
+    ultimo_erro = "A peça não abriu no visualizador."
+
+    for tentativa in range(1, 4):
+        frame_pecas_atual = _frame_pecas_solar(pagina) or frame_pecas
+        if not data_p or not _clicar_peca_por_datap_solar(frame_pecas_atual, data_p):
+            raise RuntimeError("Não consegui clicar na peça.")
+
+        frame_arquivo = None
+        fim = time.time() + 8
+        while time.time() < fim:
+            frame_arquivo = _frame_conteudo_arquivo_solar(pagina, data_p)
+            if frame_arquivo is not None:
+                break
+            time.sleep(0.25)
+        if frame_arquivo is None:
+            ultimo_erro = "A peça não abriu no visualizador."
+            continue
+
+        try:
+            pdf_bytes, pdf_url = _baixar_pdf_frame_arquivo_solar(pagina, frame_arquivo)
+            fatura = extrair_fatura_aires_pdf_bytes(pdf_bytes, origem=pdf_url)
+        except Exception as exc:
+            ultimo_erro = str(exc)
+            continue
+
+        numero_lido = str(fatura.get("numeroFatura") or "")
+        if numero_esperado and numero_lido and numero_lido != numero_esperado:
+            ultimo_erro = (
+                f"O visualizador retornou a fatura {numero_lido}, mas a peça esperada era {numero_esperado} "
+                f"(tentativa {tentativa}/3)."
+            )
+            continue
+        return fatura, pdf_url
+
+    raise RuntimeError(ultimo_erro)
+
+
+def _coletar_pecas_fatura_solar(pagina: Any, *, extrair_pdfs: bool = False) -> dict[str, Any]:
+    from core.aires_faturas import extrair_faturas_aires_pdf_bytes
+
+    frame_pecas = _abrir_aba_pecas_solar(pagina)
+    pecas = _listar_pecas_fatura_solar(frame_pecas)
+    faturas: list[dict[str, Any]] = []
+    rejeitados: list[dict[str, str]] = []
+
+    if not extrair_pdfs:
+        for peca in pecas:
+            peca["status"] = "listada"
+        return {"pecas": pecas, "faturas": faturas, "rejeitados": rejeitados}
+
+    for peca in pecas:
+        try:
+            pdf_bytes, pdf_url = _baixar_pdf_materializado_peca_solar(pagina, frame_pecas, peca)
+            faturas_pdf = extrair_faturas_aires_pdf_bytes(pdf_bytes, origem=pdf_url)
+            if not faturas_pdf:
+                raise RuntimeError("A peça materializada não contém fatura AIRES legível.")
+
+            numero_esperado = _numero_fatura_titulo_peca_solar(str(peca.get("titulo") or ""))
+            if numero_esperado:
+                faturas_pdf = [
+                    item for item in faturas_pdf if str(item.get("numeroFatura") or "") == numero_esperado
+                ]
+                if not faturas_pdf:
+                    raise RuntimeError(f"A peça materializada não retornou a fatura esperada {numero_esperado}.")
+
+            fatura = faturas_pdf[0]
+            fatura["peca"] = peca
+            faturas.append(fatura)
+            peca["arquivoUrl"] = pdf_url
+            peca["status"] = "extraida"
+            peca["numeroFatura"] = str(fatura.get("numeroFatura") or "")
+        except Exception as exc:
+            peca["status"] = "erro"
+            peca["erro"] = str(exc)
+            rejeitados.append({"origem": peca.get("titulo", ""), "motivo": str(exc)})
+
+    return {"pecas": pecas, "faturas": faturas, "rejeitados": rejeitados}
+
+
+@app.post("/api/dev/aires/processo/analisar")
+def analisar_processo_aires_dev(payload: AiresProcessoPayload) -> dict[str, Any]:
+    numero_processo = str(payload.numeroProcesso or "").strip()
+    if not numero_processo:
+        raise HTTPException(status_code=422, detail="Informe o número do processo.")
+
+    from core.aires_faturas import analisar_faturas_aires
+
+    resultado_pdf = analisar_faturas_aires([str(path) for path in (payload.pdfPaths or []) if str(path).strip()])
+    pecas_fatura: list[dict[str, str]] = []
+    faturas_solar: list[dict[str, Any]] = []
+    rejeitados_solar: list[dict[str, str]] = []
+    processo_info: dict[str, Any] | None = None
+
+    chrome_service = _chrome_service()
+    porta = obter_porta_chrome()
+    playwright = None
+    try:
+        chrome_service.instalar_bookmarklets_autoliquid()
+        if not chrome_service.chrome_esta_pronto(porta):
+            chrome_service.abrir_chrome(
+                porta,
+                aguardar=True,
+                timeout_s=20,
+                url_inicial=_SOLAR_BASE_URL,
+            )
+        playwright, pagina_base = chrome_service.conectar_chrome_cdp(porta, abrir_se_fechado=True)
+        contexto = pagina_base.context
+        pagina = _localizar_pagina_solar(contexto)
+        if pagina is None:
+            pagina = contexto.new_page()
+            pagina.goto(_SOLAR_BASE_URL, wait_until="domcontentloaded", timeout=45000)
+
+        processo_info = _abrir_processo_solar_na_pagina(pagina, numero_processo)
+        coleta = _coletar_pecas_fatura_solar(pagina, extrair_pdfs=bool(payload.extrairPecasSolar))
+        pecas_fatura = coleta.get("pecas", [])
+        faturas_solar = coleta.get("faturas", [])
+        rejeitados_solar = coleta.get("rejeitados", [])
+        try:
+            pagina.bring_to_front()
+        except Exception:
+            pass
+    except Exception as exc:
+        log.warning("Falha parcial ao consultar peças AIRES no Solar: %s", exc)
+        processo_info = {"processo": numero_processo, "erroSolar": str(exc)}
+    finally:
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
+
+    faturas = [*(resultado_pdf.get("faturas") or []), *faturas_solar]
+    rejeitados = [*(resultado_pdf.get("rejeitados") or []), *rejeitados_solar]
+    return {
+        "success": True,
+        "numeroProcesso": numero_processo,
+        "processo": processo_info or {"processo": numero_processo},
+        "pecasFatura": pecas_fatura,
+        "faturas": faturas,
+        "rejeitados": rejeitados,
+        "totais": {
+            "faturas": len(faturas),
+            "fornecedores": sum(len(item.get("fornecedores") or []) for item in faturas),
+            "concessionarias": sum(len(item.get("concessionarias") or []) for item in faturas),
+        },
+        "mensagem": (
+            f"{len(faturas)} fatura(s) AIRES analisada(s)."
+            if faturas
+            else "Processo consultado. O coletor de PDFs das peças fica preparado para a próxima etapa; informe caminhos de PDFs para validar a extração agora."
+        ),
+    }
 
 
 def _preencher_login_iss_pagina(pagina: Any, login: str, senha: str) -> dict[str, Any]:
@@ -5172,6 +5571,50 @@ def capturar_ddf055_snapshot_dev(payload: DevPcoSnapshotPayload) -> dict[str, An
         raise HTTPException(
             status_code=500,
             detail=_detalhar_erro_execucao("Captura DDF055", exc),
+        ) from exc
+    finally:
+        if playwright_obj is not None:
+            try:
+                playwright_obj.stop()
+            except Exception:
+                pass
+
+
+@app.post("/api/siafi/registro/snapshot")
+def capturar_siafi_registro_snapshot(payload: DevPcoSnapshotPayload) -> dict[str, Any]:
+    playwright_obj = None
+    try:
+        from scripts.inspecionar_siafi import (
+            DEFAULT_OUT_DIR,
+            capture_siafi_snapshot,
+            conectar_siafi_page,
+        )
+
+        playwright_obj, pagina = conectar_siafi_page()
+        artifact_dir = str(payload.artifactDir or DEFAULT_OUT_DIR).strip()
+        snapshot = capture_siafi_snapshot(pagina, artifact_dir, payload.prefix or "registro-siafi")
+        counts = snapshot.get("counts") or {}
+        return {
+            "success": True,
+            "artifactDir": snapshot.get("outputDir", artifact_dir),
+            "jsonPath": snapshot.get("jsonPath", ""),
+            "htmlPath": snapshot.get("htmlPath", ""),
+            "screenshotPath": snapshot.get("screenshotPath", ""),
+            "url": snapshot.get("url", ""),
+            "title": snapshot.get("title", ""),
+            "counts": counts,
+            "blueBars": [],
+            "mensagem": (
+                f"Captura SIAFI salva: {counts.get('visibleFields', 0)} campos visíveis, "
+                f"{counts.get('buttons', 0)} botões/links, "
+                f"{counts.get('iframes', 0)} iframe(s)."
+            ),
+        }
+    except Exception as exc:
+        log.exception("Falha ao capturar snapshot SIAFI")
+        raise HTTPException(
+            status_code=500,
+            detail=_detalhar_erro_execucao("Captura SIAFI", exc),
         ) from exc
     finally:
         if playwright_obj is not None:
@@ -6693,8 +7136,9 @@ def _siafi_close(execution_id: str) -> None:
 @app.post("/api/siafi/atulc/executar")
 def siafi_atulc_executar(body: dict[str, Any]) -> dict[str, Any]:
     """
-    Dispara a execução do ATULC em background e retorna um execution_id
+    Dispara a etapa inicial do ATULC em background e retorna um execution_id
     para acompanhar o progresso via SSE em /api/siafi/atulc/stream/{execution_id}.
+    Nesta fase, o backend apenas envia >atulc para o IBM HOD/WebStart ja aberto.
 
     Body esperado:
       {
@@ -6709,7 +7153,7 @@ def siafi_atulc_executar(body: dict[str, Any]) -> dict[str, Any]:
         "senha": null
       }
     """
-    from scripts.siafi_atulc import executar_atulc
+    from scripts.siafi_atulc import enviar_comando_atulc_hod_webstart
 
     execution_id = str(uuid4())
     q: Queue[str | None] = Queue()
@@ -6726,17 +7170,8 @@ def siafi_atulc_executar(body: dict[str, Any]) -> dict[str, Any]:
 
     def _run() -> None:
         try:
-            resultado = executar_atulc(
-                credores=body.get("credores", []),
+            resultado = enviar_comando_atulc_hod_webstart(
                 codigo_acesso=body.get("codigo_acesso", ""),
-                ug_emitente=body.get("ug_emitente", "153163"),
-                gestao_emitente=body.get("gestao_emitente", "15237"),
-                numero_lista=body.get("numero_lista", ""),
-                sequencial=body.get("sequencial", ""),
-                suprimento_fundos=body.get("suprimento_fundos", "N"),
-                tipo_pagamento=body.get("tipo_pagamento", "1"),
-                cpf_usuario=body.get("cpf_usuario"),
-                senha=body.get("senha"),
                 on_update=_callback,
             )
             _siafi_broadcast(execution_id, {"type": "resultado", **resultado})
@@ -6753,6 +7188,94 @@ def siafi_atulc_executar(body: dict[str, Any]) -> dict[str, Any]:
 
     Thread(target=_run, name=f"siafi-atulc-{execution_id[:8]}", daemon=True).start()
     return {"execution_id": execution_id}
+
+
+@app.post("/api/siafi/tela-preta/abrir")
+def siafi_tela_preta_abrir() -> dict[str, Any]:
+    """
+    Abre/foca o SIAFI Web, captura o Código de Acesso HOD e inicia o terminal
+    SIAFI tela preta sem executar transações como ATULC.
+    """
+    chrome_service = _chrome_service()
+    porta = obter_porta_chrome()
+    resultado_web = chrome_service.abrir_ou_focar_siafi(_SIAFI_WEB_URL)
+    action = resultado_web.get("action", "opened")
+
+    if action in {"opened", "login_required", "focused"}:
+        status_map = {
+            "opened": "abrindo",
+            "login_required": "login_required",
+            "focused": "pronto",
+        }
+        mensagem_map = {
+            "opened": "SIAFI aberto em janela anônima. Faça login e clique novamente em Abrir SIAFI tela preta.",
+            "login_required": "SIAFI aguardando login. Faça login e clique novamente em Abrir SIAFI tela preta.",
+            "focused": "SIAFI localizado, mas o código HOD ainda não foi capturado. Clique em SIAFI Operacional e tente novamente.",
+        }
+        return {
+            "success": True,
+            "chromeStatus": "pronto",
+            "chromePorta": porta,
+            "url": resultado_web.get("url", _SIAFI_WEB_URL),
+            "siafiStatus": status_map.get(action, "pronto"),
+            "mensagem": mensagem_map.get(action, "SIAFI localizado."),
+        }
+
+    codigo_acesso = re.sub(r"\D", "", str(resultado_web.get("codigo_acesso") or ""))
+    if not codigo_acesso:
+        return {
+            "success": False,
+            "chromeStatus": "pronto",
+            "chromePorta": porta,
+            "url": resultado_web.get("url", _SIAFI_WEB_URL),
+            "siafiStatus": "tela_preta_clicado",
+            "mensagem": "SIAFI Operacional foi acionado, mas não foi possível capturar o Código de Acesso HOD.",
+        }
+
+    from scripts.siafi_atulc import abrir_terminal_siafi
+
+    execution_id = str(uuid4())
+    q: Queue[str | None] = Queue()
+    with _SIAFI_ATULC_SESSIONS_LOCK:
+        _SIAFI_ATULC_SESSIONS[execution_id] = q
+
+    def _callback(acao: str, tela: list, estado: str) -> None:
+        _siafi_broadcast(execution_id, {
+            "type": "update",
+            "acao": acao,
+            "tela": tela,
+            "estado": estado,
+        })
+
+    def _run() -> None:
+        try:
+            resultado_terminal = abrir_terminal_siafi(
+                codigo_acesso=codigo_acesso,
+                on_update=_callback,
+            )
+            _siafi_broadcast(execution_id, {"type": "resultado", **resultado_terminal})
+        except Exception as exc:
+            _siafi_broadcast(execution_id, {
+                "type": "resultado",
+                "ok": False,
+                "mensagem": str(exc),
+                "estado": "excecao",
+                "tela": "",
+            })
+        finally:
+            _siafi_close(execution_id)
+
+    Thread(target=_run, name=f"siafi-terminal-{execution_id[:8]}", daemon=True).start()
+    return {
+        "success": True,
+        "chromeStatus": "pronto",
+        "chromePorta": porta,
+        "url": resultado_web.get("url", _SIAFI_WEB_URL),
+        "siafiStatus": "tela_preta_clicado",
+        "codigoAcessoHod": codigo_acesso,
+        "execution_id": execution_id,
+        "mensagem": "Código HOD capturado. Abrindo SIAFI tela preta no painel.",
+    }
 
 
 @app.get("/api/siafi/atulc/stream/{execution_id}")

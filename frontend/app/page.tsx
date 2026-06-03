@@ -5415,7 +5415,7 @@ export default function HomePage() {
                     disabled={!apiDisponivel || registroDevUploading || registroDevRunning || registroDevCapturing}
                   />
 
-                  <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto] xl:items-center">
+                  <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto_auto_auto] xl:items-center">
                     <div className="min-w-0 text-sm">
                       {registroDevError ? (
                         <p className="text-destructive">{registroDevError}</p>
@@ -5438,6 +5438,16 @@ export default function HomePage() {
                     >
                       {registroDevUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
                       {registroDevUploading ? "Processando..." : "Processar dev"}
+                    </GlassButton>
+
+                    <GlassButton
+                      type="button"
+                      variant="secondary"
+                      onClick={() => router.push("/processo-aires")}
+                      disabled={registroDevUploading || registroDevRunning || registroDevCapturing}
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                      Processo AIRES
                     </GlassButton>
 
                     <GlassButton
@@ -5536,6 +5546,17 @@ export default function HomePage() {
                           </div>
 
                           <div className="grid gap-2">
+                            <GlassButton
+                              type="button"
+                              variant="secondary"
+                              onClick={() => router.push("/processo-aires")}
+                              disabled={registroDevUploading || registroDevRunning || registroDevCapturing}
+                              className="w-full justify-start"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                              Processo AIRES
+                            </GlassButton>
+
                             <GlassButton
                               type="button"
                               variant="secondary"

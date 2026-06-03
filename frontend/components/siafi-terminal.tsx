@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, Loader2, Terminal, XCircle } from "lucide-react";
 import { GlassCard } from "./glass-card";
 import { cn } from "@/lib/utils";
+import { siafiAtulcStreamUrl } from "@/lib/data";
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
 
@@ -47,9 +48,13 @@ interface Props {
 function labelEstado(estado: string): string {
   const map: Record<string, string> = {
     conectando:       "Conectando...",
+    hod_webstart_abrindo: "Abrindo HOD...",
+    hod_webstart_aguardando: "Aguardando HOD",
+    hod_webstart_conectado: "HOD conectado",
     codigo_acesso:    "Código de Acesso HOD",
     login:            "Login",
     menu:             "Menu Principal",
+    atulc_comando_enviado: "ATULC enviado",
     atulc_form:       "Formulário ATULC",
     atulc_credores:   "Lista de Credores",
     erro:             "Erro",
@@ -94,6 +99,11 @@ export function SiafiTerminal({ executionId, onConcluido, className }: Props) {
   const [conectado, setConectado] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const onConcluidoRef = useRef(onConcluido);
+
+  useEffect(() => {
+    onConcluidoRef.current = onConcluido;
+  }, [onConcluido]);
 
   // Rola o log para o último item
   useEffect(() => {
@@ -112,7 +122,7 @@ export function SiafiTerminal({ executionId, onConcluido, className }: Props) {
     setConcluido(null);
     setConectado(false);
 
-    const es = new EventSource(`/api/siafi/atulc/stream/${executionId}`);
+    const es = new EventSource(siafiAtulcStreamUrl(executionId));
     esRef.current = es;
 
     es.addEventListener("ready", () => {
@@ -138,7 +148,7 @@ export function SiafiTerminal({ executionId, onConcluido, className }: Props) {
         if (evt.type === "resultado") {
           const res = { ok: !!evt.ok, mensagem: evt.mensagem ?? "" };
           setConcluido(res);
-          onConcluido?.(res);
+          onConcluidoRef.current?.(res);
           if (evt.tela && (evt.tela as string[]).length > 0) {
             setTela(evt.tela as string[]);
           }
@@ -192,7 +202,7 @@ export function SiafiTerminal({ executionId, onConcluido, className }: Props) {
       {/* ── Tela 3270 ── */}
       <div
         className="bg-black px-4 py-3 overflow-x-auto overflow-y-auto"
-        style={{ minHeight: 240, maxHeight: 320 }}
+        style={{ minHeight: 360, maxHeight: 520 }}
       >
         {tela.length === 0 ? (
           <div className="flex items-center gap-2 text-green-400/50 font-mono text-[11px] pt-2">

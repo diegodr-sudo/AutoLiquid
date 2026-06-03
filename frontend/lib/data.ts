@@ -278,6 +278,33 @@ export interface OpenChromeResponse {
   mensagem: string
   /** Status específico do SIAFI retornado pelo endpoint /api/siafi/abrir */
   siafiStatus?: "pronto" | "login_required" | "abrindo" | "tela_preta_clicado"
+  codigoAcessoHod?: string
+  execution_id?: string
+}
+
+export interface SiafiAtulcCredor {
+  cpf: string
+  banco: string
+  agencia: string
+  conta: string
+  valor: string | number
+}
+
+export interface SiafiAtulcPayload {
+  credores: SiafiAtulcCredor[]
+  codigo_acesso?: string
+  numero_lista?: string
+  ug_emitente?: string
+  gestao_emitente?: string
+  sequencial?: string
+  suprimento_fundos?: string
+  tipo_pagamento?: string
+  cpf_usuario?: string | null
+  senha?: string | null
+}
+
+export interface SiafiAtulcStartResponse {
+  execution_id: string
 }
 
 export interface OpenSolarProcessResponse {
@@ -458,6 +485,61 @@ export interface DevPcoSnapshotResult {
     text?: string
   }>
   deducaoIds?: string[]
+  mensagem: string
+}
+
+export interface AiresFornecedorRetencao {
+  nome: string
+  cnpj: string
+  servico: string
+  voo: string
+  tarifa: number
+  irpj_24: number
+  csll_1: number
+  cofins: number
+  pis: number
+  imp_tarifa: number
+  outras_taxas: number
+  imp_outras_taxas: number
+  total_imposto: number
+}
+
+export interface AiresConcessionariaRetencao {
+  nome: string
+  cnpj: string
+  base_taxa: number
+  ret_taxa: number
+}
+
+export interface AiresFatura {
+  numeroFatura: string
+  emissao: string
+  vencimento: string
+  periodo: string
+  origem: string
+  fornecedores: AiresFornecedorRetencao[]
+  concessionarias: AiresConcessionariaRetencao[]
+}
+
+export interface AiresProcessoAnaliseResult {
+  success: boolean
+  numeroProcesso: string
+  processo: Record<string, unknown>
+  pecasFatura: Array<{
+    titulo: string
+    href?: string
+    arquivoUrl?: string
+    numeroFatura?: string
+    status?: string
+    erro?: string
+  }>
+  faturas: AiresFatura[]
+  rejeitados: Array<{ origem: string; motivo: string }>
+  totais: {
+    faturas: number
+    fornecedores: number
+    concessionarias: number
+  }
   mensagem: string
 }
 
@@ -1005,6 +1087,34 @@ export async function openSiafiIncognito(): Promise<OpenChromeResponse> {
   })
 }
 
+export async function abrirSiafiTelaPreta(): Promise<OpenChromeResponse> {
+  return apiFetch<OpenChromeResponse>("/api/siafi/tela-preta/abrir", {
+    method: "POST",
+  })
+}
+
+export async function executarSiafiAtulc(
+  payload: SiafiAtulcPayload
+): Promise<SiafiAtulcStartResponse> {
+  return apiFetch<SiafiAtulcStartResponse>(
+    "/api/siafi/atulc/executar",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    },
+    {
+      timeoutMs: EXECUTION_API_TIMEOUT_MS,
+    }
+  )
+}
+
+export function siafiAtulcStreamUrl(executionId: string): string {
+  return `${API_BASE_URL}/api/siafi/atulc/stream/${encodeURIComponent(executionId)}`
+}
+
 export async function fetchDatasGlobais(): Promise<ProcessDates> {
   return apiFetch<ProcessDates>("/api/datas-globais", undefined, { timeoutMs: 20000 })
 }
@@ -1465,6 +1575,50 @@ export async function capturarDdf055SnapshotDev(
       },
       body: JSON.stringify({
         prefix: options.prefix ?? "registro-dev",
+        artifactDir: options.artifactDir ?? "",
+      }),
+    },
+    {
+      timeoutMs: EXECUTION_API_TIMEOUT_MS,
+    }
+  )
+}
+
+export async function analisarProcessoAiresDev(
+  numeroProcesso: string,
+  options: { pdfPaths?: string[]; extrairPecasSolar?: boolean } = {}
+): Promise<AiresProcessoAnaliseResult> {
+  return apiFetch<AiresProcessoAnaliseResult>(
+    "/api/dev/aires/processo/analisar",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        numeroProcesso,
+        pdfPaths: options.pdfPaths ?? [],
+        extrairPecasSolar: options.extrairPecasSolar ?? false,
+      }),
+    },
+    {
+      timeoutMs: EXECUTION_API_TIMEOUT_MS,
+    }
+  )
+}
+
+export async function capturarSiafiRegistroSnapshot(
+  options: { prefix?: string; artifactDir?: string } = {}
+): Promise<DevPcoSnapshotResult> {
+  return apiFetch<DevPcoSnapshotResult>(
+    "/api/siafi/registro/snapshot",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prefix: options.prefix ?? "registro-siafi",
         artifactDir: options.artifactDir ?? "",
       }),
     },

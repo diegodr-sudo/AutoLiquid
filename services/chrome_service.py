@@ -433,6 +433,131 @@ _SIAFI_DOMINIO = "siafi.tesouro.gov.br"
 _SIAFI_LOGIN_PATH = "login.jsf"
 
 
+def _extrair_codigo_hod(pagina) -> str:
+    """Extrai o Código de Acesso HOD exibido no popup do SIAFI Web."""
+    try:
+        pagina.wait_for_timeout(800)
+    except Exception:
+        pass
+
+    script = """
+    () => {
+      const valores = [];
+      const push = (v) => {
+        const s = String(v || "").trim();
+        if (s) valores.push(s);
+      };
+      const scan = (doc) => {
+        if (!doc) return;
+        for (const el of doc.querySelectorAll("textarea,input")) {
+          push(el.value || el.getAttribute("value") || el.textContent);
+        }
+        for (const el of doc.querySelectorAll("*")) {
+          const text = (el.textContent || "").replace(/\\s+/g, " ").trim();
+          if (/C[oó]digo de acesso/i.test(text)) push(text);
+        }
+      };
+      scan(document);
+      for (const frame of document.querySelectorAll("iframe")) {
+        try { scan(frame.contentDocument); } catch (_) {}
+      }
+      return valores;
+    }
+    """
+    valores: list[str] = []
+    try:
+        valores = pagina.evaluate(script) or []
+    except Exception:
+        valores = []
+
+    for valor in valores:
+        match = re.search(r"\b(\d{8,14})\b", str(valor))
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _fechar_popup_codigo_hod(pagina) -> bool:
+    """Fecha o popup do Código HOD no SIAFI Web, quando ele estiver aberto."""
+    seletores = [
+        "button:has-text('Fechar')",
+        "input[type='button'][value='Fechar']",
+        "input[type='submit'][value='Fechar']",
+        "a:has-text('Fechar')",
+        "span.ui-button-text:has-text('Fechar')",
+    ]
+    for seletor in seletores:
+        try:
+            alvo = pagina.locator(seletor).first
+            alvo.wait_for(state="visible", timeout=1200)
+            alvo.click(timeout=2500)
+            return True
+        except Exception:
+            continue
+
+    script = """
+    () => {
+      const normalizar = (v) => String(v || "").replace(/\\s+/g, " ").trim().toLowerCase();
+      const tentar = (doc) => {
+        if (!doc) return false;
+        const seletores = [
+          "button",
+          "input[type=button]",
+          "input[type=submit]",
+          "a",
+          "span.ui-button-text"
+        ];
+        for (const el of doc.querySelectorAll(seletores.join(","))) {
+          const texto = normalizar(el.innerText || el.textContent || el.value || el.title);
+          if (texto !== "fechar") continue;
+          const clicavel = el.closest("button,a") || el;
+          clicavel.click();
+          return true;
+        }
+        return false;
+      };
+      if (tentar(document)) return true;
+      for (const frame of document.querySelectorAll("iframe")) {
+        try {
+          if (tentar(frame.contentDocument)) return true;
+        } catch (_) {}
+      }
+      return false;
+    }
+    """
+    try:
+        return bool(pagina.evaluate(script))
+    except Exception:
+        return False
+
+
+def _encontrar_pagina_siafi(navegador_cdp) -> tuple[object | None, str]:
+    """Busca uma página do SIAFI entre os contextos visíveis ao Playwright."""
+    for ctx in navegador_cdp.contexts:
+        for pg in ctx.pages:
+            if _SIAFI_DOMINIO in (pg.url or ""):
+                return pg, pg.url or ""
+    return None, ""
+
+
+def _clicar_siafi_operacional(pagina_siafi) -> bool:
+    """Clica no link Siafi Operacional usando seletores tolerantes à tela atual."""
+    seletores = [
+        "#frmMenu\\:lnkArvoreMenu",
+        "a:has-text('Siafi Operacional')",
+        "text=Siafi Operacional",
+    ]
+    for seletor in seletores:
+        try:
+            link = pagina_siafi.locator(seletor).first
+            link.wait_for(state="visible", timeout=3500)
+            link.click(timeout=5000)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _listar_targets_cdp(porta: int) -> list[dict]:
     """Lista todas as abas abertas via endpoint HTTP do CDP.
 
@@ -506,16 +631,8 @@ def abrir_ou_focar_siafi(url: str) -> dict:
             nav_cdp = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{porta}")
 
             # Busca aba SIAFI em todos os contextos existentes
-            pagina_siafi = None
-            siafi_url = ""
-            for ctx in nav_cdp.contexts:
-                for pg in ctx.pages:
-                    if _SIAFI_DOMINIO in (pg.url or ""):
-                        pagina_siafi = pg
-                        siafi_url = pg.url
-                        break
-                if pagina_siafi:
-                    break
+            pagina_siafi, siafi_url = _encontrar_pagina_siafi(nav_cdp)
+            encontrou_target_siafi = False
 
             # Fallback: verifica via HTTP /json/list (captura abas de
             # processos externos que Playwright pode não enxergar)
@@ -527,12 +644,26 @@ def abrir_ou_focar_siafi(url: str) -> dict:
                     None,
                 )
                 if siafi_target:
+                    encontrou_target_siafi = True
                     siafi_url = siafi_target.get("url", "")
                     _ativar_target_cdp(porta, siafi_target.get("id", ""))
                     _ativar_janela_chrome()
                     if _SIAFI_LOGIN_PATH in siafi_url:
                         return {"action": "login_required", "url": siafi_url}
-                    return {"action": "focused", "url": siafi_url}
+                    try:
+                        nav_cdp.close()
+                    except Exception:
+                        pass
+                    nav_cdp = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{porta}")
+                    try:
+                        nav_cdp.contexts[0].pages[0].wait_for_timeout(500)
+                    except Exception:
+                        pass
+                    pagina_siafi, siafi_url_playwright = _encontrar_pagina_siafi(nav_cdp)
+                    siafi_url = siafi_url_playwright or siafi_url
+
+            if encontrou_target_siafi and pagina_siafi is None:
+                return {"action": "focused", "url": siafi_url}
 
             if pagina_siafi is not None:
                 # Aba encontrada via Playwright — traz para frente
@@ -545,12 +676,13 @@ def abrir_ou_focar_siafi(url: str) -> dict:
                 if _SIAFI_LOGIN_PATH in siafi_url:
                     return {"action": "login_required", "url": siafi_url}
 
+                codigo_hod = _extrair_codigo_hod(pagina_siafi)
+                if codigo_hod:
+                    _fechar_popup_codigo_hod(pagina_siafi)
+                    return {"action": "tela_preta_clicado", "url": siafi_url, "codigo_acesso": codigo_hod}
+
                 # Logado — clica em "Siafi Operacional"
                 try:
-                    link = pagina_siafi.locator(
-                        "#frmMenu\\:lnkArvoreMenu, a:text('Siafi Operacional')"
-                    ).first
-                    link.wait_for(state="visible", timeout=3000)
                     # Antes de clicar, configura auto-download via CDP para
                     # evitar o dialog nativo "Salvar Como" do macOS/Windows.
                     # Isso não exige nenhuma permissão do sistema operacional.
@@ -564,22 +696,21 @@ def abrir_ou_focar_siafi(url: str) -> dict:
                     except Exception:
                         pass
 
-                    link.click(timeout=5000)
-                    return {"action": "tela_preta_clicado", "url": siafi_url}
+                    if not _clicar_siafi_operacional(pagina_siafi):
+                        return {"action": "focused", "url": siafi_url}
+                    codigo_hod = _extrair_codigo_hod(pagina_siafi)
+                    if codigo_hod:
+                        _fechar_popup_codigo_hod(pagina_siafi)
+                    return {"action": "tela_preta_clicado", "url": siafi_url, "codigo_acesso": codigo_hod}
                 except Exception:
                     return {"action": "focused", "url": siafi_url}
 
-            # Nenhuma aba SIAFI — cria contexto incógnito via CDP para que
-            # fique acessível em chamadas futuras (sem processo separado).
-            ctx_incognito = nav_cdp.new_context()
-            nova_pagina = ctx_incognito.new_page()
-            nova_pagina.goto(url, timeout=15000, wait_until="domcontentloaded")
-            try:
-                nova_pagina.bring_to_front()
-            except Exception:
-                pass
+            # Nenhuma aba SIAFI: abre uma janela anônima real do navegador.
+            # Contextos anônimos criados pelo Playwright são descartados quando
+            # a conexão CDP é encerrada, o que fazia a janela abrir e fechar.
+            pronto = abrir_chrome_incognito(url, porta=porta, aguardar=False)
             _ativar_janela_chrome()
-            return {"action": "opened"}
+            return {"action": "opened", "cdpReady": pronto}
         finally:
             try:
                 playwright.stop()

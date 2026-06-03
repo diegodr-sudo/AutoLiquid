@@ -96,7 +96,17 @@ def _resolver_ig_contrato(dados: dict[str, Any]) -> str:
 def _equivalente_digitos(observed: str, expected: str) -> bool:
     esperado = _digits(expected)
     atual = _digits(observed)
-    return bool(esperado and atual and esperado in atual)
+    if not esperado or not atual:
+        return False
+    if esperado in atual:
+        return True
+    esperado_sem_zero = esperado.lstrip("0")
+    atual_sem_zero = atual.lstrip("0")
+    if esperado_sem_zero and atual_sem_zero and esperado_sem_zero in atual_sem_zero:
+        return True
+    if len(esperado) >= 11 and len(atual) >= 11:
+        return esperado.replace("0", "") == atual.replace("0", "")
+    return False
 
 
 def _equivalente_contas_a_pagar(_locator: Any, expected: str) -> bool:
@@ -340,6 +350,21 @@ def preencher_pco_direto(page: PageLike, dados: dict[str, Any], empenho: dict[st
             (valores) => {
               const situacaoSufixo = document.body.getAttribute("data-autoliquid-situacao-sufixo") || "";
               const empenhoSufixo = document.body.getAttribute("data-autoliquid-empenho-sufixo") || "";
+              const digits = (value) => String(value || "").replace(/\\D/g, "");
+              const equivalentDigits = (observed, expected) => {
+                const expectedDigits = digits(expected);
+                const observedDigits = digits(observed);
+                if (!expectedDigits || !observedDigits) return false;
+                if (observedDigits.includes(expectedDigits)) return true;
+                const trimZeros = (value) => String(value || "").replace(/^0+/, "");
+                const expectedTrimmed = trimZeros(expectedDigits);
+                const observedTrimmed = trimZeros(observedDigits);
+                if (expectedTrimmed && observedTrimmed && observedTrimmed.includes(expectedTrimmed)) return true;
+                if (expectedDigits.length >= 11 && observedDigits.length >= 11) {
+                  return expectedDigits.replaceAll("0", "") === observedDigits.replaceAll("0", "");
+                }
+                return false;
+              };
               const setValue = (id, value) => {
                 const el = document.getElementById(id);
                 if (!el) return { id, ok: false, reason: "not_found", expected: value };
@@ -351,14 +376,13 @@ def preencher_pco_direto(page: PageLike, dados: dict[str, Any], empenho: dict[st
                 if (window.$ && $(el).inputmask) {
                   try { $(el).inputmask("setvalue", value); } catch (e) {}
                 }
-                if (!el.value || String(el.value).replace(/\\D/g, "") !== String(value || "").replace(/\\D/g, "")) {
+                if (!el.value || !equivalentDigits(el.value, value)) {
                   if (setter) setter.call(el, value);
                   else el.value = value;
                 }
                 el.defaultValue = el.value || value;
                 el.setAttribute("value", el.value || value);
                 el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true }));
-                el.dispatchEvent(new Event("change", { bubbles: true }));
                 el.dispatchEvent(new Event("blur", { bubbles: true }));
                 return { id, ok: true, expected: value };
               };
@@ -392,13 +416,25 @@ def preencher_pco_direto(page: PageLike, dados: dict[str, Any], empenho: dict[st
             """
             (items) => {
               const digits = (value) => String(value || "").replace(/\\D/g, "");
+              const equivalentDigits = (observed, expected) => {
+                const expectedDigits = digits(expected);
+                const observedDigits = digits(observed);
+                if (!expectedDigits || !observedDigits) return false;
+                if (observedDigits.includes(expectedDigits)) return true;
+                const trimZeros = (value) => String(value || "").replace(/^0+/, "");
+                const expectedTrimmed = trimZeros(expectedDigits);
+                const observedTrimmed = trimZeros(observedDigits);
+                if (expectedTrimmed && observedTrimmed && observedTrimmed.includes(expectedTrimmed)) return true;
+                if (expectedDigits.length >= 11 && observedDigits.length >= 11) {
+                  return expectedDigits.replaceAll("0", "") === observedDigits.replaceAll("0", "");
+                }
+                return false;
+              };
               return (items || []).map((item) => {
                 const el = document.getElementById(item.id);
                 const after = el?.value || "";
-                const expectedDigits = digits(item.expected || "");
-                const afterDigits = digits(after);
                 const stable = String(item.id || "").startsWith("indrtemcontrato")
-                  || Boolean(expectedDigits && afterDigits && afterDigits.includes(expectedDigits));
+                  || equivalentDigits(after, item.expected || "");
                 return { ...item, after, stable };
               });
             }
